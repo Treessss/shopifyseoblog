@@ -10,5 +10,5 @@ export function saveLanguageRoute(request: Request) {
   return handleAdminRoute(async () => {
     const body = await parseUpsertLanguageRequest(request);
     return saveLanguage(getAdminRequestContext(request), body);
-  });
+  }, request);
 }

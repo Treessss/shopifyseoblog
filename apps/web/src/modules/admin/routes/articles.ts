@@ -10,5 +10,5 @@ export function queueArticlePublishRoute(request: Request) {
   return handleAdminRoute(async () => {
     const body = await parseQueueArticlePublishRequest(request);
     return queueArticlePublish(getAdminRequestContext(request), body);
-  });
+  }, request);
 }

@@ -431,6 +431,12 @@ tr:last-child td {
   padding: 0 14px;
 }
 
+.button--small {
+  min-height: 36px;
+  padding: 0 11px;
+  font-size: 13px;
+}
+
 .button--primary {
   border-color: var(--primary);
   background: var(--primary);

@@ -10,5 +10,5 @@ export function queueStoreSyncRoute(request: Request) {
   return handleAdminRoute(async () => {
     const body = await parseQueueStoreSyncRequest(request);
     return queueStoreSync(getAdminRequestContext(request), body);
-  });
+  }, request);
 }

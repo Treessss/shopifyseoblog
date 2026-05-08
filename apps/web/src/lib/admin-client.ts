@@ -110,6 +110,7 @@ export interface AdminBrandVoiceView {
   id: string;
   name: string;
   locale: string;
+  storeId: string;
   storeName: string;
   audience: string;
   tone: string;
@@ -525,6 +526,7 @@ function normalizeBrandVoices(input: unknown[]): AdminBrandVoiceView[] {
       id: pickString(record, ["id", "brandVoiceId"], `brand-voice-${index}`),
       name: pickString(record, ["name"], "默认品牌语气"),
       locale: pickString(record, ["locale"], "zh-CN"),
+      storeId: pickString(record, ["storeId"], ""),
       storeName: pickString(record, ["storeName"], pickString(store, ["name"], "全局")),
       audience: pickString(record, ["audience"], "未配置受众"),
       tone: pickString(record, ["tone"], "未配置语调"),

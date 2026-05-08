@@ -56,6 +56,8 @@ export default async function BrandVoicePage() {
               >
                 <form action="/api/admin/brand-voice" method="post" className="form-grid">
                   <input type="hidden" name="id" value={profile.id} />
+                  <input type="hidden" name="storeId" value={profile.storeId} />
+                  <input type="hidden" name="isDefault" value={String(profile.isDefault)} />
                   <Field label="名称" name="name" value={profile.name} required />
                   <Field label="Locale" name="locale" value={profile.locale} required />
                   <div className="span-2">

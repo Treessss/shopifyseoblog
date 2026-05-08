@@ -10,5 +10,5 @@ export function saveAiSettingsRoute(request: Request) {
   return handleAdminRoute(async () => {
     const body = await parseUpsertAiProviderRequest(request);
     return saveAiSettings(getAdminRequestContext(request), body);
-  });
+  }, request);
 }

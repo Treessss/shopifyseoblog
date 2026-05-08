@@ -25,7 +25,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       publishAt: optionalDateString(body.publishAt, "publishAt"),
       shopifyBlogId: optionalString(body.shopifyBlogId)
     });
-  });
+  }, request);
 }
 
 function optionalString(value: unknown) {

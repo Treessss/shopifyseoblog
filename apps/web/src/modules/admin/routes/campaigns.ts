@@ -10,5 +10,5 @@ export function createCampaignRoute(request: Request) {
   return handleAdminRoute(async () => {
     const body = await parseCreateCampaignRequest(request);
     return createCampaign(getAdminRequestContext(request), body);
-  });
+  }, request);
 }

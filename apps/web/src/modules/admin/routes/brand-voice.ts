@@ -10,5 +10,5 @@ export function saveBrandVoiceRoute(request: Request) {
   return handleAdminRoute(async () => {
     const body = await parseUpsertBrandVoiceRequest(request);
     return saveBrandVoice(getAdminRequestContext(request), body);
-  });
+  }, request);
 }

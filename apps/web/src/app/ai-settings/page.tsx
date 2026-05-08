@@ -95,6 +95,11 @@ export default async function AiSettingsPage() {
                 <form action="/api/admin/ai-settings" method="post" className="inline-form">
                   <input name="name" placeholder="默认 Provider" required />
                   <input name="baseUrl" placeholder="https://api.openai.com/v1" required />
+                  <input type="hidden" name="provider" value="compatible" />
+                  <input type="hidden" name="textModel" value="gpt-4.1" />
+                  <input type="hidden" name="temperature" value="0.8" />
+                  <input type="hidden" name="enabled" value="true" />
+                  <input type="hidden" name="isDefault" value="true" />
                   <button className="button button--primary" type="submit">
                     <Save size={16} aria-hidden="true" />
                     创建
