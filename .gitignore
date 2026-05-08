@@ -10,6 +10,7 @@ coverage
 .turbo
 *.tsbuildinfo
 generated
+.codex-pets
 packages/db/prisma/migrations
 infra/docker/postgres-data
 infra/docker/redis-data
