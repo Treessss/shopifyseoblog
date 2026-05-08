@@ -8,7 +8,10 @@ const dictionary = getDictionary();
 
 export const metadata: Metadata = {
   title: `${dictionary.productName} - ${dictionary.workspaceName}`,
-  description: "多店铺、多语言 Shopify AI Blog 管理后台"
+  description: "多店铺、多语言 Shopify AI Blog 管理后台",
+  icons: {
+    icon: "/icon.svg"
+  }
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

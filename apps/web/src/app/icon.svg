@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Shopify AI Blog">
+  <rect width="64" height="64" rx="14" fill="#0f172a"/>
+  <path d="M18 18.5c0-2.5 2-4.5 4.5-4.5h19c2.5 0 4.5 2 4.5 4.5v27c0 2.5-2 4.5-4.5 4.5h-19c-2.5 0-4.5-2-4.5-4.5v-27Z" fill="#f8fafc"/>
+  <path d="M24 24h16M24 31h16M24 38h10" stroke="#0f766e" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="43" cy="41" r="7" fill="#14b8a6"/>
+  <path d="M43 36.5v9M38.5 41h9" stroke="#ecfeff" stroke-width="2.7" stroke-linecap="round"/>
+</svg>
