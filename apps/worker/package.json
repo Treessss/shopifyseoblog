@@ -13,7 +13,10 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@shopify-ai-blog/content-engine": "0.1.0",
+    "@shopify-ai-blog/db": "0.1.0",
     "@shopify-ai-blog/shared": "0.1.0",
+    "@shopify-ai-blog/shopify": "0.1.0",
     "bullmq": "^5.34.0",
     "ioredis": "^5.4.2"
   },
