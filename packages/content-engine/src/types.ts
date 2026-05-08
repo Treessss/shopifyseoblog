@@ -14,8 +14,7 @@ export type {
   GeneratedArticle,
   ProductContext,
   PublishPolicy,
-  SourceType,
-  SupportedLocale
+  SourceType
 } from "@shopify-ai-blog/shared";
 
 export interface CollectionContext {

@@ -12,18 +12,24 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
-    "test": "turbo test",
+    "test": "vitest run tests",
     "db:generate": "npm --workspace @shopify-ai-blog/db run generate",
     "db:migrate": "npm --workspace @shopify-ai-blog/db run migrate",
     "db:seed": "npm --workspace @shopify-ai-blog/db run seed",
     "docker:up": "docker compose -f infra/docker/docker-compose.yml up --build",
     "docker:down": "docker compose -f infra/docker/docker-compose.yml down"
   },
+  "overrides": {
+    "next": {
+      "postcss": "^8.5.14"
+    },
+    "postcss": "^8.5.14"
+  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "turbo": "^2.3.3",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.5"
   },
   "engines": {
     "node": ">=20.18.0",
