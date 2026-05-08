@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertCircle, Inbox, Loader2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Inbox, Loader2, XCircle } from "lucide-react";
 
 type BadgeTone = "good" | "warn" | "danger" | "neutral";
 type ErrorLike = { message: string; status?: number | string };
@@ -60,6 +60,32 @@ export function Panel(props: {
 
 export function Badge(props: { children: ReactNode; tone?: BadgeTone }) {
   return <span className={`badge badge--${props.tone ?? "neutral"}`}>{props.children}</span>;
+}
+
+export function StatusPill(props: { label: string; value: ReactNode; tone?: BadgeTone; icon?: ReactNode }) {
+  return (
+    <div className={`status-pill status-pill--${props.tone ?? "neutral"}`}>
+      <span className="status-pill__icon">{props.icon ?? <CheckCircle2 size={18} aria-hidden="true" />}</span>
+      <div>
+        <span>{props.label}</span>
+        <strong>{props.value}</strong>
+      </div>
+    </div>
+  );
+}
+
+export function FormNotice(props: { tone: "good" | "danger"; title: string; message: string }) {
+  const Icon = props.tone === "good" ? CheckCircle2 : XCircle;
+
+  return (
+    <div className={`state-card state-card--${props.tone}`} role={props.tone === "danger" ? "alert" : "status"}>
+      <Icon size={22} aria-hidden="true" />
+      <div>
+        <strong>{props.title}</strong>
+        <p>{props.message}</p>
+      </div>
+    </div>
+  );
 }
 
 export function ProgressBar(props: { value: number }) {

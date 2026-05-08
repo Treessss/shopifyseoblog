@@ -22,12 +22,22 @@ export async function handleAdminRoute<T>(action: () => Promise<T>, request?: Re
   try {
     const data = await action();
     if (request && shouldRedirectForm(request)) {
-      return NextResponse.redirect(formRedirectUrl(request), { status: 303 });
+      return NextResponse.redirect(formRedirectUrl(request, { saved: "1" }), { status: 303 });
     }
 
     return ok(data);
   } catch (error) {
     if (isAdminApiError(error)) {
+      if (request && shouldRedirectForm(request)) {
+        return NextResponse.redirect(
+          formRedirectUrl(request, {
+            error: error.message,
+            code: error.code
+          }),
+          { status: 303 }
+        );
+      }
+
       return fail(error.status, {
         code: error.code,
         message: error.message,
@@ -36,6 +46,16 @@ export async function handleAdminRoute<T>(action: () => Promise<T>, request?: Re
     }
 
     console.error("[admin-api]", error);
+    if (request && shouldRedirectForm(request)) {
+      return NextResponse.redirect(
+        formRedirectUrl(request, {
+          error: "Admin API request failed.",
+          code: "ADMIN_INTERNAL_ERROR"
+        }),
+        { status: 303 }
+      );
+    }
+
     return fail(500, {
       code: "ADMIN_INTERNAL_ERROR",
       message: "Admin API request failed."
@@ -54,19 +74,31 @@ function shouldRedirectForm(request: Request | undefined) {
   return isForm && !accept.includes("application/json");
 }
 
-function formRedirectUrl(request: Request) {
+function formRedirectUrl(request: Request, params: Record<string, string>) {
   const requestUrl = new URL(request.url);
   const referer = request.headers.get("referer");
-  if (!referer) return new URL("/dashboard", requestUrl.origin);
+  if (!referer) return withRedirectParams(new URL("/dashboard", requestUrl.origin), params);
 
   try {
     const redirectUrl = new URL(referer);
-    if (redirectUrl.origin === requestUrl.origin) return redirectUrl;
+    if (redirectUrl.origin === requestUrl.origin) return withRedirectParams(redirectUrl, params);
   } catch {
-    return new URL("/dashboard", requestUrl.origin);
+    return withRedirectParams(new URL("/dashboard", requestUrl.origin), params);
   }
 
-  return new URL("/dashboard", requestUrl.origin);
+  return withRedirectParams(new URL("/dashboard", requestUrl.origin), params);
+}
+
+function withRedirectParams(url: URL, params: Record<string, string>) {
+  url.searchParams.delete("saved");
+  url.searchParams.delete("error");
+  url.searchParams.delete("code");
+
+  for (const [key, value] of Object.entries(params)) {
+    url.searchParams.set(key, value);
+  }
+
+  return url;
 }
 
 function getFirstValue(url: URL, key: string) {

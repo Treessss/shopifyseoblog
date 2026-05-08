@@ -6,14 +6,15 @@ import {
   Activity,
   Bell,
   Bot,
+  CheckCircle2,
   FileText,
+  Globe2,
   Languages,
   LayoutDashboard,
   Megaphone,
   MessageSquareText,
   Plus,
   Search,
-  Settings,
   Store,
   Workflow
 } from "lucide-react";
@@ -68,8 +69,15 @@ export function AdminShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="sidebar__footer">
-          <span>{dictionary.common.cnDefault}</span>
+          <div className="sidebar__footer-row">
+            <CheckCircle2 size={16} aria-hidden="true" />
+            <span>{dictionary.common.cnDefault}</span>
+          </div>
           <small>{dictionary.common.enReserved}</small>
+          <div className="sidebar__chips" aria-label="系统能力">
+            <span>8 modules</span>
+            <span>zh-CN</span>
+          </div>
         </div>
       </aside>
 
@@ -83,6 +91,10 @@ export function AdminShell({ children }: { children: ReactNode }) {
             <input id="global-admin-search" name="q" placeholder={dictionary.common.search} />
           </form>
           <div className="topbar__actions">
+            <span className="topbar__status">
+              <Globe2 size={15} aria-hidden="true" />
+              多店铺在线
+            </span>
             <button className="icon-button" type="button" aria-label="通知">
               <Bell size={18} aria-hidden="true" />
             </button>

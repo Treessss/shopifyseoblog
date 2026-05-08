@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
-import { fail, getEnv, ok } from "@/lib/api";
+import { NextResponse } from "next/server";
+import { fail, getEnv } from "@/lib/api";
 import { parseShopDomain, verifyShopifyOAuthHmac } from "@/lib/shopify";
 
 export const runtime = "nodejs";
@@ -47,12 +48,11 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  const response = ok({
-    shop: parsedShop.data,
-    codeReceived: true,
-    hmacVerified: true,
-    nextStep: "用 code 交换 access token，并保存店铺授权记录。"
-  });
+  const redirectUrl = new URL("/stores", request.nextUrl.origin);
+  redirectUrl.searchParams.set("oauth", "verified");
+  redirectUrl.searchParams.set("shop", parsedShop.data);
+
+  const response = NextResponse.redirect(redirectUrl, { status: 303 });
 
   response.cookies.delete("shopify_oauth_state");
   return response;

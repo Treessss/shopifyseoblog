@@ -18,7 +18,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       throw new AdminApiError(400, "ARTICLE_ID_REQUIRED", "article id is required.");
     }
 
-    const body = ((await readJson<PublishRequestBody>(request)) ?? {}) as PublishRequestBody;
+    const body = await readPublishRequest(request);
 
     return queueArticlePublish(getAdminRequestContext(request), {
       articleId: params.id,
@@ -26,6 +26,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       shopifyBlogId: optionalString(body.shopifyBlogId)
     });
   }, request);
+}
+
+async function readPublishRequest(request: Request): Promise<PublishRequestBody> {
+  const contentType = request.headers.get("content-type") ?? "";
+
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    const form = await request.formData();
+    return {
+      publishAt: optionalString(form.get("publishAt")),
+      shopifyBlogId: optionalString(form.get("shopifyBlogId"))
+    };
+  }
+
+  return ((await readJson<PublishRequestBody>(request)) ?? {}) as PublishRequestBody;
 }
 
 function optionalString(value: unknown) {

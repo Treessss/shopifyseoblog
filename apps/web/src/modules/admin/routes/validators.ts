@@ -173,7 +173,7 @@ function stringList(value: unknown) {
   if (value === undefined || value === null) return [];
   if (typeof value === "string") {
     return value
-      .split(",")
+      .split(/\r?\n|,/)
       .map((item) => item.trim())
       .filter(Boolean);
   }

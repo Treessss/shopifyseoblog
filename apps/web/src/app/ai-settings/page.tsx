@@ -1,11 +1,29 @@
 import Link from "next/link";
-import { Bot, FlaskConical, Save } from "lucide-react";
-import { Badge, EmptyState, ErrorState, Field, PageHeader, Panel, SelectField, TableEmpty } from "@/components/ui";
+import { Bot, FlaskConical, Image, KeyRound, Save, ShieldCheck } from "lucide-react";
+import {
+  Badge,
+  EmptyState,
+  ErrorState,
+  Field,
+  FormNotice,
+  PageHeader,
+  Panel,
+  SelectField,
+  StatusPill,
+  TableEmpty
+} from "@/components/ui";
 import { getAiSettingsView } from "@/lib/admin-client";
+import { readFormNotice, type SearchParamRecord } from "@/lib/search-params";
 
-export default async function AiSettingsPage() {
+type PageProps = {
+  searchParams?: Promise<SearchParamRecord>;
+};
+
+export default async function AiSettingsPage({ searchParams }: PageProps) {
+  const params = await searchParams;
   const { data: providers, error } = await getAiSettingsView();
   const defaultProvider = providers.find((provider) => provider.isDefault) ?? providers[0];
+  const notice = readFormNotice(params);
 
   return (
     <>
@@ -16,13 +34,41 @@ export default async function AiSettingsPage() {
         action={
           <Link href="/api/ai/test" className="button">
             <FlaskConical size={16} aria-hidden="true" />
-            查看测试接口
+            接口说明
           </Link>
         }
       />
 
       <div className="stack">
         <ErrorState error={error} title="AI 配置读取失败" />
+        {notice ? <FormNotice {...notice} /> : null}
+
+        <div className="insight-strip">
+          <StatusPill
+            label="可用 Provider"
+            value={providers.filter((provider) => provider.enabled).length}
+            tone={providers.some((provider) => provider.enabled) ? "good" : "warn"}
+            icon={<Bot size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="默认模型"
+            value={defaultProvider?.textModel || "待配置"}
+            tone={defaultProvider?.textModel ? "good" : "warn"}
+            icon={<ShieldCheck size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="图像模型"
+            value={defaultProvider?.imageModel || "待配置"}
+            tone={defaultProvider?.imageModel ? "good" : "warn"}
+            icon={<Image size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="密钥状态"
+            value={defaultProvider?.hasApiKey ? "已加密" : "未设置"}
+            tone={defaultProvider?.hasApiKey ? "good" : "danger"}
+            icon={<KeyRound size={18} aria-hidden="true" />}
+          />
+        </div>
 
         <Panel title="默认 Provider" description="用于生成、改写、配图和质量评分的默认模型配置。">
           {defaultProvider ? (
@@ -132,7 +178,7 @@ export default async function AiSettingsPage() {
                     <tr key={provider.id}>
                       <td>
                         <strong>{provider.name}</strong>
-                        <div className="muted">{provider.apiKeyMasked}</div>
+                        <div className="muted">{provider.apiKeyMasked || "未设置密钥"}</div>
                       </td>
                       <td>{provider.storeName || "全局"}</td>
                       <td>{provider.provider}</td>

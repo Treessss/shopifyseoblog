@@ -1,11 +1,18 @@
-import { Languages as LanguagesIcon, Save } from "lucide-react";
-import { Badge, ErrorState, Field, PageHeader, Panel, SelectField, TableEmpty } from "@/components/ui";
+import { Globe2, Languages as LanguagesIcon, Route, Save, Store } from "lucide-react";
+import { Badge, ErrorState, Field, FormNotice, PageHeader, Panel, SelectField, StatusPill, TableEmpty } from "@/components/ui";
 import { getLanguagesView, getStoresView } from "@/lib/admin-client";
+import { readFormNotice, type SearchParamRecord } from "@/lib/search-params";
 
-export default async function LanguagesPage() {
+type PageProps = {
+  searchParams?: Promise<SearchParamRecord>;
+};
+
+export default async function LanguagesPage({ searchParams }: PageProps) {
+  const params = await searchParams;
   const [languageResult, storeResult] = await Promise.all([getLanguagesView(), getStoresView()]);
   const languages = languageResult.data;
   const stores = storeResult.data;
+  const notice = readFormNotice(params);
 
   return (
     <>
@@ -24,6 +31,34 @@ export default async function LanguagesPage() {
       <div className="stack">
         <ErrorState error={languageResult.error} title="语言矩阵读取失败" />
         <ErrorState error={storeResult.error} title="店铺选项读取失败" />
+        {notice ? <FormNotice {...notice} /> : null}
+
+        <div className="insight-strip">
+          <StatusPill
+            label="启用语言"
+            value={languages.filter((language) => language.enabled).length}
+            tone="good"
+            icon={<LanguagesIcon size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="默认语言"
+            value={languages.find((language) => language.isDefault)?.locale ?? "zh-CN"}
+            tone="neutral"
+            icon={<Globe2 size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="Fallback"
+            value={new Set(languages.map((language) => language.fallback)).size || 1}
+            tone="neutral"
+            icon={<Route size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="店铺覆盖"
+            value={`${new Set(languages.map((language) => language.storeName)).size}/${stores.length || 1}`}
+            tone={stores.length > 0 ? "good" : "warn"}
+            icon={<Store size={18} aria-hidden="true" />}
+          />
+        </div>
 
         <Panel title="语言矩阵" description="每个语言可独立设置 fallback、品牌语气、Blog handle 与质量门槛。">
           <div className="table-wrap">

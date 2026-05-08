@@ -1,21 +1,18 @@
-import { RefreshCw, Search, Store as StoreIcon } from "lucide-react";
-import { Badge, ErrorState, PageHeader, Panel, TableEmpty } from "@/components/ui";
+import { Languages, PackageCheck, RefreshCw, Search, Store as StoreIcon } from "lucide-react";
+import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { getStoresView } from "@/lib/admin-client";
+import { readFormNotice, readSearchParam } from "@/lib/search-params";
 
 type PageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-function param(params: Record<string, string | string[] | undefined> | undefined, key: string) {
-  const value = params?.[key];
-  return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
-}
-
 export default async function StoresPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const query = param(params, "q").trim().toLowerCase();
-  const status = param(params, "status");
+  const query = readSearchParam(params, "q").trim().toLowerCase();
+  const status = readSearchParam(params, "status");
   const { data: stores, error } = await getStoresView();
+  const notice = readFormNotice(params);
   const filteredStores = stores.filter((store) => {
     const matchesQuery =
       !query || `${store.name} ${store.domain} ${store.locale}`.toLowerCase().includes(query);
@@ -51,12 +48,40 @@ export default async function StoresPage({ searchParams }: PageProps) {
 
       <div className="stack">
         <ErrorState error={error} title="店铺数据读取失败" />
+        {notice ? <FormNotice {...notice} /> : null}
+
+        <div className="insight-strip">
+          <StatusPill
+            label="已连接"
+            value={stores.filter((store) => store.statusTone === "good").length}
+            tone={stores.some((store) => store.statusTone === "danger") ? "warn" : "good"}
+            icon={<StoreIcon size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="商品快照"
+            value={stores.reduce((sum, store) => sum + store.products, 0).toLocaleString("zh-CN")}
+            tone="neutral"
+            icon={<PackageCheck size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="内容覆盖"
+            value={stores.reduce((sum, store) => sum + store.articles, 0).toLocaleString("zh-CN")}
+            tone="neutral"
+            icon={<Search size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="默认语言"
+            value={new Set(stores.map((store) => store.locale)).size || "zh-CN"}
+            tone="neutral"
+            icon={<Languages size={18} aria-hidden="true" />}
+          />
+        </div>
 
         <Panel title="店铺列表" description="查看授权状态、Scope 覆盖、商品同步和内容覆盖情况。">
           <form className="filter-bar" action="/stores">
             <label className="filter-field">
               <Search size={15} aria-hidden="true" />
-              <input name="q" defaultValue={param(params, "q")} placeholder="搜索店铺或域名" />
+              <input name="q" defaultValue={readSearchParam(params, "q")} placeholder="搜索店铺或域名" />
             </label>
             <label className="filter-select">
               <span>状态</span>

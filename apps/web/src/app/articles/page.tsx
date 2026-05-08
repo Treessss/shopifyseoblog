@@ -1,23 +1,24 @@
-import { FileText, RefreshCw, Search } from "lucide-react";
+import { CheckCircle2, FileText, Gauge, RefreshCw, Search, Send } from "lucide-react";
 import Link from "next/link";
-import { Badge, ErrorState, PageHeader, Panel, TableEmpty } from "@/components/ui";
+import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { formatArticleStatus, getArticlesView } from "@/lib/admin-client";
+import { readFormNotice, readSearchParam } from "@/lib/search-params";
 
 type PageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-function param(params: Record<string, string | string[] | undefined> | undefined, key: string) {
-  const value = params?.[key];
-  return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
-}
-
 export default async function ArticlesPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const query = param(params, "q").trim().toLowerCase();
-  const status = param(params, "status");
+  const query = readSearchParam(params, "q").trim().toLowerCase();
+  const status = readSearchParam(params, "status");
   const articlesResult = await getArticlesView();
   const articles = articlesResult.data;
+  const notice = readFormNotice(params);
+  const draftCount = articles.filter((article) => article.status === "draft").length;
+  const qualityFailedCount = articles.filter((article) => article.status === "quality_failed").length;
+  const readyCount = articles.filter((article) => article.status === "ready_to_publish").length;
+  const publishedCount = articles.filter((article) => article.status === "published").length;
   const filteredArticles = articles.filter((article) => {
     const matchesQuery = !query || `${article.title} ${article.store} ${article.locale}`.toLowerCase().includes(query);
     const matchesStatus = !status || article.status === status;
@@ -29,7 +30,7 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
       <PageHeader
         eyebrow="Articles"
         title="文章管理"
-        description="查看 AI 生成草稿、SEO 分数、质量门槛状态和 Shopify 发布结果。"
+        description="查看草稿、SEO 分数、质检状态和发布记录。"
         action={
           <div className="toolbar">
             <Link href="/articles" className="button">
@@ -46,12 +47,62 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
 
       <div className="stack">
         <ErrorState error={articlesResult.error} title="文章数据读取失败" />
+        {notice ? <FormNotice {...notice} /> : null}
+
+        <div className="insight-strip">
+          <StatusPill
+            label="平均 SEO"
+            value={
+              articles.length
+                ? Math.round(articles.reduce((sum, article) => sum + (article.seoScore ?? 0), 0) / articles.length)
+                : "暂无"
+            }
+            tone="neutral"
+            icon={<Gauge size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="可发布"
+            value={readyCount}
+            tone={readyCount > 0 ? "good" : "neutral"}
+            icon={<Send size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="已发布"
+            value={publishedCount}
+            tone="good"
+            icon={<CheckCircle2 size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="需处理"
+            value={qualityFailedCount}
+            tone={qualityFailedCount > 0 ? "danger" : "good"}
+            icon={<FileText size={18} aria-hidden="true" />}
+          />
+        </div>
 
         <Panel title="文章列表" description="质量达标的文章可以进入自动发布或人工复核流。">
+          <div className="workflow-rail" aria-label="文章生产流程">
+            <div className="workflow-step">
+              <span>草稿</span>
+              <strong>{draftCount}</strong>
+            </div>
+            <div className="workflow-step">
+              <span>质检失败</span>
+              <strong>{qualityFailedCount}</strong>
+            </div>
+            <div className="workflow-step">
+              <span>待发布</span>
+              <strong>{readyCount}</strong>
+            </div>
+            <div className="workflow-step">
+              <span>已发布</span>
+              <strong>{publishedCount}</strong>
+            </div>
+          </div>
           <form className="filter-bar" action="/articles">
             <label className="filter-field">
               <Search size={15} aria-hidden="true" />
-              <input name="q" defaultValue={param(params, "q")} placeholder="搜索文章、店铺或语言" />
+              <input name="q" defaultValue={readSearchParam(params, "q")} placeholder="搜索文章、店铺或语言" />
             </label>
             <label className="filter-select">
               <span>状态</span>

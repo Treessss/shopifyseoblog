@@ -1,6 +1,16 @@
 import Link from "next/link";
-import { Activity, FileText, RefreshCw, Store } from "lucide-react";
-import { Badge, EmptyState, ErrorState, MetricCard, PageHeader, Panel, ProgressBar, TableEmpty } from "@/components/ui";
+import { Activity, FileText, Languages, RefreshCw, Store } from "lucide-react";
+import {
+  Badge,
+  EmptyState,
+  ErrorState,
+  MetricCard,
+  PageHeader,
+  Panel,
+  ProgressBar,
+  StatusPill,
+  TableEmpty
+} from "@/components/ui";
 import {
   formatArticleStatus,
   formatCampaignStatus,
@@ -10,6 +20,14 @@ import {
 
 export default async function DashboardPage() {
   const { data, error } = await getDashboardView();
+  const healthyStores = data.stores.filter((store) => store.statusTone === "good").length;
+  const runningCampaigns = data.campaigns.filter((campaign) => campaign.status === "active").length;
+  const readyArticles = data.articles.filter((article) => article.status === "ready_to_publish").length;
+  const enabledLocales = new Set([
+    ...data.campaigns.map((campaign) => campaign.locale),
+    ...data.articles.map((article) => article.locale),
+    ...data.stores.map((store) => store.locale)
+  ]).size;
 
   return (
     <>
@@ -27,6 +45,33 @@ export default async function DashboardPage() {
 
       <div className="stack">
         <ErrorState error={error} title="仪表盘数据读取失败" />
+
+        <div className="insight-strip">
+          <StatusPill
+            label="健康店铺"
+            value={`${healthyStores}/${data.stores.length}`}
+            tone={healthyStores > 0 ? "good" : "neutral"}
+            icon={<Store size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="运行任务"
+            value={runningCampaigns}
+            tone={runningCampaigns > 0 ? "warn" : "neutral"}
+            icon={<Activity size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="待发布"
+            value={readyArticles}
+            tone={readyArticles > 0 ? "good" : "neutral"}
+            icon={<FileText size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="语言覆盖"
+            value={enabledLocales || "zh-CN"}
+            tone="neutral"
+            icon={<Languages size={18} aria-hidden="true" />}
+          />
+        </div>
 
         <div className="grid grid--metrics">
           {data.metrics.map((item) => (

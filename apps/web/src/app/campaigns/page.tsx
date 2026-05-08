@@ -1,12 +1,14 @@
-import { Megaphone, Plus, Search } from "lucide-react";
+import { Clock3, Megaphone, Plus, Search, ShieldCheck } from "lucide-react";
 import {
   Badge,
   ErrorState,
   Field,
+  FormNotice,
   PageHeader,
   Panel,
   ProgressBar,
   SelectField,
+  StatusPill,
   TableEmpty
 } from "@/components/ui";
 import {
@@ -15,20 +17,16 @@ import {
   getLanguagesView,
   getStoresView
 } from "@/lib/admin-client";
+import { readFormNotice, readSearchParam } from "@/lib/search-params";
 
 type PageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-function param(params: Record<string, string | string[] | undefined> | undefined, key: string) {
-  const value = params?.[key];
-  return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
-}
-
 export default async function CampaignsPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const query = param(params, "q").trim().toLowerCase();
-  const status = param(params, "status");
+  const query = readSearchParam(params, "q").trim().toLowerCase();
+  const status = readSearchParam(params, "status");
   const [campaignResult, storeResult, languageResult] = await Promise.all([
     getCampaignsView(),
     getStoresView(),
@@ -37,6 +35,7 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
   const campaigns = campaignResult.data;
   const stores = storeResult.data;
   const languages = languageResult.data.filter((language) => language.enabled);
+  const notice = readFormNotice(params);
   const filteredCampaigns = campaigns.filter((campaign) => {
     const matchesQuery =
       !query || `${campaign.name} ${campaign.store} ${campaign.source} ${campaign.primaryKeyword ?? ""}`.toLowerCase().includes(query);
@@ -62,12 +61,40 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
         <ErrorState error={campaignResult.error} title="任务数据读取失败" />
         <ErrorState error={storeResult.error} title="店铺选项读取失败" />
         <ErrorState error={languageResult.error} title="语言选项读取失败" />
+        {notice ? <FormNotice {...notice} /> : null}
+
+        <div className="insight-strip">
+          <StatusPill
+            label="运行中"
+            value={campaigns.filter((campaign) => campaign.status === "active").length}
+            tone="warn"
+            icon={<Megaphone size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="自动发布策略"
+            value={campaigns.filter((campaign) => campaign.publishPolicy === "达标自动发布").length}
+            tone="good"
+            icon={<ShieldCheck size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="平均进度"
+            value={`${campaigns.length ? Math.round(campaigns.reduce((sum, campaign) => sum + campaign.progress, 0) / campaigns.length) : 0}%`}
+            tone="neutral"
+            icon={<Clock3 size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="语言队列"
+            value={languages.length || "zh-CN"}
+            tone={languages.length > 0 ? "good" : "warn"}
+            icon={<Search size={18} aria-hidden="true" />}
+          />
+        </div>
 
         <Panel title="任务队列" description="任务状态将驱动 worker 生成、质检、配图和发布。">
           <form className="filter-bar" action="/campaigns">
             <label className="filter-field">
               <Search size={15} aria-hidden="true" />
-              <input name="q" defaultValue={param(params, "q")} placeholder="搜索任务、店铺、关键词" />
+              <input name="q" defaultValue={readSearchParam(params, "q")} placeholder="搜索任务、店铺、关键词" />
             </label>
             <label className="filter-select">
               <span>状态</span>

@@ -1,16 +1,24 @@
-import { MessageSquareText, Save } from "lucide-react";
+import { Ban, FileText, MessageSquareText, Save, Users } from "lucide-react";
 import {
   EmptyState,
   ErrorState,
   Field,
+  FormNotice,
   PageHeader,
   Panel,
   SelectField,
+  StatusPill,
   TextAreaField
 } from "@/components/ui";
 import { getBrandVoiceView, getLanguagesView, getStoresView } from "@/lib/admin-client";
+import { readFormNotice, type SearchParamRecord } from "@/lib/search-params";
 
-export default async function BrandVoicePage() {
+type PageProps = {
+  searchParams?: Promise<SearchParamRecord>;
+};
+
+export default async function BrandVoicePage({ searchParams }: PageProps) {
+  const params = await searchParams;
   const [brandVoiceResult, storeResult, languageResult] = await Promise.all([
     getBrandVoiceView(),
     getStoresView(),
@@ -19,6 +27,7 @@ export default async function BrandVoicePage() {
   const profiles = brandVoiceResult.data;
   const stores = storeResult.data;
   const languages = languageResult.data.filter((language) => language.enabled);
+  const notice = readFormNotice(params);
 
   return (
     <>
@@ -38,6 +47,34 @@ export default async function BrandVoicePage() {
         <ErrorState error={brandVoiceResult.error} title="品牌语气读取失败" />
         <ErrorState error={storeResult.error} title="店铺选项读取失败" />
         <ErrorState error={languageResult.error} title="语言选项读取失败" />
+        {notice ? <FormNotice {...notice} /> : null}
+
+        <div className="insight-strip">
+          <StatusPill
+            label="语气档案"
+            value={profiles.length}
+            tone={profiles.length > 0 ? "good" : "warn"}
+            icon={<MessageSquareText size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="语言覆盖"
+            value={new Set(profiles.map((profile) => profile.locale)).size || "zh-CN"}
+            tone="neutral"
+            icon={<Users size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="禁用词"
+            value={profiles.reduce((sum, profile) => sum + profile.bannedWords.length, 0)}
+            tone="warn"
+            icon={<Ban size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="示例规则"
+            value={profiles.reduce((sum, profile) => sum + profile.examples.length, 0)}
+            tone="neutral"
+            icon={<FileText size={18} aria-hidden="true" />}
+          />
+        </div>
 
         {profiles.length === 0 ? (
           <Panel>

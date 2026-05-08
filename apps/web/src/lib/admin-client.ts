@@ -89,6 +89,7 @@ export interface AdminAiSettingsView {
   temperature: number;
   enabled: boolean;
   isDefault: boolean;
+  hasApiKey: boolean;
   apiKeyMasked: string;
   storeName?: string;
   updatedAt?: string;
@@ -490,7 +491,8 @@ function normalizeAiSettings(input: unknown[]): AdminAiSettingsView[] {
       temperature: pickNumber(record, ["temperature"], 0.8),
       enabled: pickBoolean(record, ["enabled", "isEnabled"], true),
       isDefault: pickBoolean(record, ["isDefault", "default"], false),
-      apiKeyMasked: pickString(record, ["apiKeyMasked", "maskedApiKey"], "已加密保存，不回显明文"),
+      hasApiKey: pickBoolean(record, ["hasApiKey"], Boolean(pickString(record, ["apiKeyMasked", "maskedApiKey"], ""))),
+      apiKeyMasked: pickString(record, ["apiKeyMasked", "maskedApiKey"], ""),
       storeName: pickString(record, ["storeName"], pickString(store, ["name"], "")),
       updatedAt: formatDate(pickString(record, ["updatedAt"], ""))
     };

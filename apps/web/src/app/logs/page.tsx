@@ -1,22 +1,20 @@
 import Link from "next/link";
-import { Activity, RefreshCw, Search } from "lucide-react";
-import { Badge, ErrorState, PageHeader, Panel, TableEmpty } from "@/components/ui";
+import { Activity, AlertTriangle, CheckCircle2, RefreshCw, Search } from "lucide-react";
+import { Badge, ErrorState, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { formatJobStatus, formatLogLevel, getLogsView } from "@/lib/admin-client";
+import { readSearchParam } from "@/lib/search-params";
 
 type PageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-function param(params: Record<string, string | string[] | undefined> | undefined, key: string) {
-  const value = params?.[key];
-  return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
-}
-
 export default async function LogsPage({ searchParams }: PageProps) {
   const params = await searchParams;
-  const query = param(params, "q").trim().toLowerCase();
-  const level = param(params, "level");
+  const query = readSearchParam(params, "q").trim().toLowerCase();
+  const level = readSearchParam(params, "level");
   const { data: logs, error } = await getLogsView();
+  const errorCount = logs.filter((log) => log.levelTone === "danger" || log.statusTone === "danger").length;
+  const warningCount = logs.filter((log) => log.levelTone === "warn" || log.statusTone === "warn").length;
   const filteredLogs = logs.filter((log) => {
     const matchesQuery = !query || `${log.message} ${log.module} ${log.status}`.toLowerCase().includes(query);
     const matchesLevel = !level || log.level === level;
@@ -40,11 +38,38 @@ export default async function LogsPage({ searchParams }: PageProps) {
       <div className="stack">
         <ErrorState error={error} title="日志数据读取失败" />
 
+        <div className="insight-strip">
+          <StatusPill
+            label="事件总量"
+            value={logs.length}
+            tone="neutral"
+            icon={<Activity size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="成功"
+            value={logs.filter((log) => log.statusTone === "good").length}
+            tone="good"
+            icon={<CheckCircle2 size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="警告"
+            value={warningCount}
+            tone={warningCount > 0 ? "warn" : "good"}
+            icon={<AlertTriangle size={18} aria-hidden="true" />}
+          />
+          <StatusPill
+            label="异常"
+            value={errorCount}
+            tone={errorCount > 0 ? "danger" : "good"}
+            icon={<Search size={18} aria-hidden="true" />}
+          />
+        </div>
+
         <Panel title="最近事件" description="可按模块、任务 ID、严重级别和状态排查生成、同步与发布问题。">
           <form className="filter-bar" action="/logs">
             <label className="filter-field">
               <Search size={15} aria-hidden="true" />
-              <input name="q" defaultValue={param(params, "q")} placeholder="搜索模块、状态或消息" />
+              <input name="q" defaultValue={readSearchParam(params, "q")} placeholder="搜索模块、状态或消息" />
             </label>
             <label className="filter-select">
               <span>级别</span>
