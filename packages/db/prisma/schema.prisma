@@ -1,0 +1,606 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OrganizationStatus {
+  active
+  suspended
+  archived
+}
+
+enum MembershipRole {
+  owner
+  admin
+  editor
+  viewer
+}
+
+enum MembershipStatus {
+  invited
+  active
+  suspended
+  removed
+}
+
+enum StoreStatus {
+  installing
+  active
+  disconnected
+  suspended
+  archived
+}
+
+enum AiProvider {
+  openai
+  compatible
+  custom
+}
+
+enum SourceType {
+  product
+  collection
+  manual_topic
+}
+
+enum CampaignStatus {
+  draft
+  active
+  paused
+  completed
+  failed
+}
+
+enum PublishPolicy {
+  auto_when_qualified
+  manual_review
+  direct
+}
+
+enum ArticleStatus {
+  draft
+  quality_failed
+  ready_to_publish
+  publishing
+  published
+  failed
+}
+
+enum TranslationStatus {
+  draft
+  translating
+  ready_to_publish
+  publishing
+  published
+  failed
+}
+
+enum AssetType {
+  featured_image
+  inline_image
+  social_image
+}
+
+enum AssetStatus {
+  requested
+  generating
+  generated
+  uploaded
+  failed
+}
+
+enum JobType {
+  generate_article
+  translate_article
+  generate_asset
+  publish_article
+  sync_product
+  sync_collection
+}
+
+enum JobStatus {
+  queued
+  running
+  succeeded
+  failed
+  retrying
+}
+
+enum PublishEvent {
+  queued
+  started
+  succeeded
+  failed
+  skipped
+  retry_scheduled
+}
+
+enum LogLevel {
+  debug
+  info
+  warn
+  error
+}
+
+enum AuditAction {
+  create
+  update
+  delete
+  invite
+  login
+  oauth_connect
+  oauth_disconnect
+  publish
+  generate
+  sync
+}
+
+model Organization {
+  id        String             @id @default(cuid())
+  name      String
+  slug      String             @unique
+  status    OrganizationStatus @default(active)
+  plan      String             @default("demo")
+  timezone  String             @default("Asia/Shanghai")
+  locale    String             @default("zh-CN")
+  metadata  Json?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  memberships         Membership[]
+  stores              ShopifyStore[]
+  localeConfigs       LocaleConfig[]
+  aiProviderConfigs   AiProviderConfig[]
+  brandVoices         BrandVoice[]
+  campaigns           BlogCampaign[]
+  articles            BlogArticle[]
+  articleTranslations ArticleTranslation[]
+  generatedAssets     GeneratedAsset[]
+  publishJobs         PublishJob[]
+  publishLogs         PublishLog[]
+  auditLogs           AuditLog[]
+  productSnapshots    ProductSnapshot[]
+  collectionSnapshots CollectionSnapshot[]
+
+  @@index([status])
+}
+
+model User {
+  id        String    @id @default(cuid())
+  email     String    @unique
+  name      String?
+  imageUrl  String?
+  metadata  Json?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  lastSeenAt DateTime?
+
+  memberships Membership[]
+  auditLogs   AuditLog[]
+}
+
+model Membership {
+  id             String           @id @default(cuid())
+  organizationId String
+  userId         String
+  role           MembershipRole   @default(viewer)
+  status         MembershipStatus @default(active)
+  invitedEmail   String?
+  invitedAt      DateTime?
+  acceptedAt     DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId, role])
+}
+
+model ShopifyStore {
+  id                        String      @id @default(cuid())
+  organizationId            String
+  name                      String
+  myshopifyDomain           String      @unique
+  shopifyShopGid            String?     @unique
+  adminAccessTokenEncrypted String?
+  webhookSecretEncrypted    String?
+  scopes                    String[]    @default([])
+  apiVersion                String      @default("2026-04")
+  status                    StoreStatus @default(installing)
+  primaryLocale             String      @default("zh-CN")
+  timezone                  String?
+  currencyCode              String?
+  shopOwnerEmail            String?
+  installedAt               DateTime?
+  disconnectedAt            DateTime?
+  lastSyncedAt              DateTime?
+  metadata                  Json?
+  createdAt                 DateTime    @default(now())
+  updatedAt                 DateTime    @updatedAt
+
+  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  localeConfigs       LocaleConfig[]
+  aiProviderConfigs   AiProviderConfig[]
+  brandVoices         BrandVoice[]
+  campaigns           BlogCampaign[]
+  articles            BlogArticle[]
+  articleTranslations ArticleTranslation[]
+  generatedAssets     GeneratedAsset[]
+  publishJobs         PublishJob[]
+  publishLogs         PublishLog[]
+  auditLogs           AuditLog[]
+  productSnapshots    ProductSnapshot[]
+  collectionSnapshots CollectionSnapshot[]
+
+  @@index([organizationId, status])
+}
+
+model LocaleConfig {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  storeId             String
+  locale              String
+  label               String
+  isDefault           Boolean  @default(false)
+  isEnabled           Boolean  @default(true)
+  shopifyMarketHandle String?
+  shopifyBlogId       String?
+  shopifyBlogHandle   String?
+  seoDefaults         Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, locale])
+  @@index([organizationId, locale])
+  @@index([storeId, isEnabled])
+}
+
+model AiProviderConfig {
+  id              String     @id @default(cuid())
+  organizationId  String
+  storeId         String?
+  slug            String
+  name            String
+  provider        AiProvider @default(openai)
+  baseUrl         String
+  apiKeyEncrypted String?
+  textModel       String
+  imageModel      String?
+  temperature     Float      @default(0.8)
+  isDefault       Boolean    @default(false)
+  enabled         Boolean    @default(true)
+  settings        Json?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore? @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, slug])
+  @@index([storeId, enabled])
+  @@index([organizationId, isDefault])
+}
+
+model BrandVoice {
+  id             String   @id @default(cuid())
+  organizationId String
+  storeId        String?
+  locale         String
+  name           String
+  audience       String?
+  tone           String?
+  styleGuide     Json?
+  bannedWords    String[] @default([])
+  examples       String[] @default([])
+  isDefault      Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore?  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaigns    BlogCampaign[]
+
+  @@unique([organizationId, storeId, locale, name])
+  @@index([organizationId, locale])
+  @@index([storeId, isDefault])
+}
+
+model BlogCampaign {
+  id              String         @id @default(cuid())
+  organizationId  String
+  storeId         String
+  brandVoiceId    String?
+  locale          String
+  title           String
+  sourceType      SourceType
+  sourceId        String?
+  topic           String?
+  status          CampaignStatus @default(draft)
+  publishPolicy   PublishPolicy  @default(auto_when_qualified)
+  targetWordCount Int            @default(1400)
+  primaryKeyword  String?
+  keywords        String[]       @default([])
+  scheduleAt      DateTime?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  metadata        Json?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  brandVoice   BrandVoice?   @relation(fields: [brandVoiceId], references: [id], onDelete: SetNull)
+  articles     BlogArticle[]
+
+  @@index([organizationId, status])
+  @@index([storeId, locale, status])
+  @@index([sourceType, sourceId])
+}
+
+model BlogArticle {
+  id                 String        @id @default(cuid())
+  organizationId     String
+  storeId            String
+  campaignId         String?
+  locale             String
+  sourceType         SourceType
+  sourceId           String?
+  status             ArticleStatus @default(draft)
+  publishPolicy      PublishPolicy @default(auto_when_qualified)
+  title              String?
+  handle             String?
+  summary            String?       @db.Text
+  bodyHtml           String?       @db.Text
+  primaryKeyword     String?
+  secondaryKeywords  String[]      @default([])
+  tags               String[]      @default([])
+  seoTitle           String?
+  seoDescription     String?
+  seoScore           Float?
+  qualityPassed      Boolean       @default(false)
+  qualityReport      Json?
+  shopifyBlogId      String?
+  shopifyArticleId   String?
+  canonicalUrl       String?
+  scheduledAt        DateTime?
+  publishedAt        DateTime?
+  lastGeneratedAt    DateTime?
+  failureReason      String?       @db.Text
+  generationMetadata Json?
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore         @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaign     BlogCampaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  translations ArticleTranslation[]
+  assets       GeneratedAsset[]
+  publishJobs  PublishJob[]
+  publishLogs  PublishLog[]
+
+  @@unique([storeId, locale, handle])
+  @@index([organizationId, status])
+  @@index([storeId, locale, status])
+  @@index([campaignId])
+  @@index([sourceType, sourceId])
+}
+
+model ArticleTranslation {
+  id                 String            @id @default(cuid())
+  organizationId     String
+  storeId            String
+  articleId          String
+  locale             String
+  status             TranslationStatus @default(draft)
+  title              String?
+  handle             String?
+  summary            String?           @db.Text
+  bodyHtml           String?           @db.Text
+  primaryKeyword     String?
+  secondaryKeywords  String[]          @default([])
+  tags               String[]          @default([])
+  seoTitle           String?
+  seoDescription     String?
+  seoScore           Float?
+  qualityPassed      Boolean           @default(false)
+  qualityReport      Json?
+  shopifyBlogId      String?
+  shopifyArticleId   String?
+  canonicalUrl       String?
+  publishedAt        DateTime?
+  failureReason      String?           @db.Text
+  generationMetadata Json?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  article      BlogArticle      @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  assets       GeneratedAsset[]
+  publishJobs  PublishJob[]
+  publishLogs  PublishLog[]
+
+  @@unique([articleId, locale])
+  @@unique([storeId, locale, handle])
+  @@index([organizationId, status])
+  @@index([storeId, locale, status])
+}
+
+model GeneratedAsset {
+  id             String      @id @default(cuid())
+  organizationId String
+  storeId        String
+  articleId      String?
+  translationId  String?
+  type           AssetType
+  status         AssetStatus @default(requested)
+  provider       AiProvider?
+  prompt         String?     @db.Text
+  altText        String?
+  sourceUrl      String?
+  storageKey     String?
+  publicUrl      String?
+  mimeType       String?
+  width          Int?
+  height         Int?
+  checksum       String?
+  metadata       Json?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  article      BlogArticle?        @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  translation  ArticleTranslation? @relation(fields: [translationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status])
+  @@index([storeId, type, status])
+  @@index([articleId])
+  @@index([translationId])
+}
+
+model PublishJob {
+  id             String    @id @default(cuid())
+  organizationId String
+  storeId        String
+  articleId      String?
+  translationId  String?
+  type           JobType   @default(publish_article)
+  status         JobStatus @default(queued)
+  runAt          DateTime  @default(now())
+  lockedAt       DateTime?
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  externalJobId  String?   @unique
+  payload        Json?
+  errorMessage   String?   @db.Text
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  article      BlogArticle?        @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  translation  ArticleTranslation? @relation(fields: [translationId], references: [id], onDelete: Cascade)
+  logs         PublishLog[]
+
+  @@index([organizationId, status])
+  @@index([storeId, status, runAt])
+  @@index([articleId])
+  @@index([translationId])
+}
+
+model PublishLog {
+  id             String       @id @default(cuid())
+  organizationId String
+  storeId        String?
+  jobId          String?
+  articleId      String?
+  translationId  String?
+  event          PublishEvent
+  level          LogLevel     @default(info)
+  message        String
+  payload        Json?
+  createdAt      DateTime     @default(now())
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore?       @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  job          PublishJob?         @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  article      BlogArticle?        @relation(fields: [articleId], references: [id], onDelete: SetNull)
+  translation  ArticleTranslation? @relation(fields: [translationId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([storeId, createdAt])
+  @@index([jobId])
+  @@index([articleId])
+}
+
+model AuditLog {
+  id             String      @id @default(cuid())
+  organizationId String
+  userId         String?
+  storeId        String?
+  action         AuditAction
+  entityType     String
+  entityId       String?
+  ipAddress      String?
+  userAgent      String?
+  metadata       Json?
+  createdAt      DateTime    @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  store        ShopifyStore? @relation(fields: [storeId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+  @@index([storeId, createdAt])
+  @@index([entityType, entityId])
+}
+
+model ProductSnapshot {
+  id               String   @id @default(cuid())
+  organizationId   String
+  storeId          String
+  shopifyProductId String
+  handle           String
+  title            String
+  descriptionHtml  String?  @db.Text
+  productType      String?
+  vendor           String?
+  status           String?
+  tags             String[] @default([])
+  imageUrls        String[] @default([])
+  seoTitle         String?
+  seoDescription   String?
+  options          Json?
+  variants         Json?
+  raw              Json?
+  syncedAt         DateTime @default(now())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, shopifyProductId])
+  @@unique([storeId, handle])
+  @@index([organizationId, syncedAt])
+  @@index([storeId, productType])
+}
+
+model CollectionSnapshot {
+  id                  String   @id @default(cuid())
+  organizationId      String
+  storeId             String
+  shopifyCollectionId String
+  handle              String
+  title               String
+  descriptionHtml     String?  @db.Text
+  imageUrl            String?
+  collectionType      String?
+  ruleSet             Json?
+  seoTitle            String?
+  seoDescription      String?
+  raw                 Json?
+  syncedAt            DateTime @default(now())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, shopifyCollectionId])
+  @@unique([storeId, handle])
+  @@index([organizationId, syncedAt])
+  @@index([storeId, collectionType])
+}
