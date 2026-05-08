@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@shopify-ai-blog/ai": ["packages/ai/src"],
+      "@shopify-ai-blog/content-engine": ["packages/content-engine/src"],
+      "@shopify-ai-blog/db": ["packages/db/src"],
+      "@shopify-ai-blog/i18n": ["packages/i18n/src"],
+      "@shopify-ai-blog/shared": ["packages/shared/src"],
+      "@shopify-ai-blog/shopify": ["packages/shopify/src"]
+    }
+  }
+}

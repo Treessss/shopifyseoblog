@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules
+.next
+out
+dist
+coverage
+.turbo
+*.tsbuildinfo
+generated
+packages/db/prisma/migrations
+infra/docker/postgres-data
+infra/docker/redis-data
+infra/docker/minio-data
