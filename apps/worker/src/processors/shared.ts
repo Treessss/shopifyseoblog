@@ -105,7 +105,7 @@ export function failurePayload(error: unknown, extra: Record<string, unknown> = 
 
 export function trimForDb(value: string, maxLength = 4000): string {
   if (value.length <= maxLength) return value;
-  return `${value.slice(0, maxLength - 1)}…`;
+  return `${value.slice(0, maxLength - 3)}...`;
 }
 
 function sanitizeJson(value: unknown, seen: WeakSet<object>): unknown {

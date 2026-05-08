@@ -1,6 +1,7 @@
 import type { Job } from "bullmq";
 import { prisma } from "@shopify-ai-blog/db";
 import type { QueueName, WorkerJobName } from "../queues";
+import { toPrismaJson, trimForDb } from "./shared";
 
 export interface OperationalContext {
   organizationId: string;
@@ -32,7 +33,7 @@ export async function startPublishJob(input: {
     type: input.type,
     status: "running" as const,
     lockedAt: new Date(),
-    payload: sanitizeJsonObject(input.payload),
+    payload: input.payload ? toPrismaJson(input.payload) : undefined,
     errorMessage: null
   };
 
@@ -68,19 +69,24 @@ export async function completePublishJob(jobId: string, payload?: Record<string,
       status: "succeeded",
       lockedAt: null,
       errorMessage: null,
-      payload: sanitizeJsonObject(payload)
+      payload: payload ? toPrismaJson(payload) : undefined
     }
   });
 }
 
-export async function failPublishJob(jobId: string, errorMessage: string, payload?: Record<string, unknown>) {
+export async function failPublishJob(
+  jobId: string,
+  errorMessage: string,
+  payload?: Record<string, unknown>,
+  status: "failed" | "retrying" = "failed"
+) {
   return prisma.publishJob.update({
     where: { id: jobId },
     data: {
-      status: "failed",
-      lockedAt: null,
-      errorMessage,
-      payload: sanitizeJsonObject(payload)
+      status,
+      lockedAt: status === "retrying" ? new Date() : null,
+      errorMessage: trimForDb(errorMessage),
+      payload: payload ? toPrismaJson(payload) : undefined
     }
   });
 }
@@ -100,7 +106,7 @@ export async function writePublishLog(input: OperationalContext & {
       event: input.event,
       level: input.level ?? "info",
       message: input.message,
-      payload: sanitizeJsonObject(input.payload)
+      payload: input.payload ? toPrismaJson(input.payload) : undefined
     }
   });
 }
@@ -120,18 +126,11 @@ export async function writeAuditLog(input: OperationalContext & {
       action: input.action,
       entityType: input.entityType,
       entityId: input.entityId,
-      metadata: sanitizeJsonObject(input.metadata)
+      metadata: input.metadata ? toPrismaJson(input.metadata) : undefined
     }
   });
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function sanitizeJsonObject(input: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!input) return undefined;
-  return JSON.parse(
-    JSON.stringify(input, (_key, value) => (value === undefined ? null : value))
-  ) as Record<string, unknown>;
+  return trimForDb(error instanceof Error ? error.message : String(error));
 }
