@@ -401,7 +401,7 @@ function mapAiProvider(provider: AiProviderRow): AdminAiProviderOverview {
     storeId: provider.store?.id ?? null,
     store: provider.store?.name ?? null,
     hasApiKey: Boolean(provider.apiKeyEncrypted),
-    apiKey: repository.redactApiKey(provider.apiKeyEncrypted),
+    apiKeyMasked: provider.apiKeyEncrypted ? "sk-••••••••••••••••" : null,
     createdAt: provider.createdAt.toISOString(),
     updatedAt: provider.updatedAt.toISOString()
   };

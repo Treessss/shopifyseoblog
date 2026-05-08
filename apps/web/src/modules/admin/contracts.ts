@@ -165,7 +165,7 @@ export interface AdminAiProviderOverview {
   storeId: string | null;
   store: string | null;
   hasApiKey: boolean;
-  apiKey: string | null;
+  apiKeyMasked: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -1,4 +1,4 @@
-import { encryptSecret, prisma, redactSecret } from "@shopify-ai-blog/db";
+import { encryptSecret, prisma } from "@shopify-ai-blog/db";
 import type {
   AdminRequestContextInput,
   AuditLogCreateInput,
@@ -802,11 +802,6 @@ export async function createPublishLog(
       payload: input.payload ? compactJsonObject(input.payload) : undefined
     }
   });
-}
-
-export function redactApiKey(value: string | null | undefined) {
-  if (!value) return null;
-  return redactSecret(value);
 }
 
 function compactJsonObject(input: Record<string, unknown>): Record<string, unknown> {

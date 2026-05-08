@@ -54,7 +54,12 @@ export function AdminShell({ children }: { children: ReactNode }) {
             const Icon = item.icon;
             const isActive = pathname === item.href || pathname.startsWith(`${item.href}/`);
             return (
-              <Link key={item.href} href={item.href} className={isActive ? "nav-link nav-link--active" : "nav-link"}>
+              <Link
+                key={item.href}
+                href={item.href}
+                className={isActive ? "nav-link nav-link--active" : "nav-link"}
+                aria-current={isActive ? "page" : undefined}
+              >
                 <Icon size={18} aria-hidden="true" />
                 <span>{item.label}</span>
               </Link>
@@ -70,12 +75,15 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
       <div className="workspace">
         <header className="topbar">
-          <label className="search-box">
+          <form className="search-box" action={pathname} method="get" role="search">
             <Search size={17} aria-hidden="true" />
-            <input placeholder={dictionary.common.search} />
-          </label>
+            <label className="sr-only" htmlFor="global-admin-search">
+              {dictionary.common.search}
+            </label>
+            <input id="global-admin-search" name="q" placeholder={dictionary.common.search} />
+          </form>
           <div className="topbar__actions">
-            <button className="icon-button" aria-label="通知">
+            <button className="icon-button" type="button" aria-label="通知">
               <Bell size={18} aria-hidden="true" />
             </button>
             <Link href="/campaigns" className="button button--primary">
