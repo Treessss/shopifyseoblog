@@ -1,0 +1,272 @@
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export type ChatMessageRole = "system" | "user" | "assistant" | "tool";
+
+export interface ChatMessage {
+  role: ChatMessageRole;
+  content: string;
+  name?: string;
+  tool_call_id?: string;
+}
+
+export interface OpenAICompatibleClientConfig {
+  baseUrl?: string;
+  apiKey?: string;
+  model?: string;
+  defaultHeaders?: Record<string, string>;
+  fetch?: FetchLike;
+  organization?: string;
+  project?: string;
+  timeoutMs?: number;
+}
+
+export interface GenerateTextOptions {
+  prompt?: string;
+  system?: string;
+  messages?: ChatMessage[];
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  responseFormat?: { type: "text" | "json_object" } | Record<string, unknown>;
+  stop?: string | string[];
+  signal?: AbortSignal;
+  extraBody?: Record<string, unknown>;
+}
+
+export interface AIUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+}
+
+export interface GenerateTextResult {
+  id?: string;
+  model?: string;
+  content: string;
+  finishReason?: string;
+  usage?: AIUsage;
+  raw: unknown;
+}
+
+export class AIClientError extends Error {
+  constructor(
+    message: string,
+    readonly details?: unknown,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = "AIClientError";
+  }
+}
+
+const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+
+export class OpenAICompatibleClient {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  readonly model: string;
+
+  private readonly defaultHeaders: Record<string, string>;
+  private readonly fetchImpl: FetchLike;
+  private readonly timeoutMs?: number;
+
+  constructor(config: OpenAICompatibleClientConfig) {
+    this.baseUrl = normalizeBaseUrl(config.baseUrl ?? DEFAULT_BASE_URL);
+    this.apiKey = config.apiKey ?? readEnv("OPENAI_API_KEY") ?? "";
+    this.model = config.model ?? readEnv("OPENAI_MODEL") ?? "";
+    this.defaultHeaders = {
+      ...config.defaultHeaders
+    };
+
+    if (config.organization) {
+      this.defaultHeaders["OpenAI-Organization"] = config.organization;
+    }
+
+    if (config.project) {
+      this.defaultHeaders["OpenAI-Project"] = config.project;
+    }
+
+    this.fetchImpl = config.fetch ?? getGlobalFetch();
+    this.timeoutMs = config.timeoutMs;
+  }
+
+  async generateText(options: GenerateTextOptions): Promise<GenerateTextResult> {
+    const model = options.model ?? this.model;
+    if (!model) {
+      throw new AIClientError("OpenAI-compatible model is required.");
+    }
+
+    if (!this.apiKey) {
+      throw new AIClientError("OpenAI-compatible apiKey is required.");
+    }
+
+    const messages = buildMessages(options);
+    const controller = createAbortController(options.signal, this.timeoutMs);
+
+    const body = removeUndefined({
+      model,
+      messages,
+      temperature: options.temperature,
+      max_tokens: options.maxTokens,
+      top_p: options.topP,
+      response_format: options.responseFormat,
+      stop: options.stop,
+      stream: false,
+      ...options.extraBody
+    });
+
+    const response = await this.fetchImpl(joinUrl(this.baseUrl, "chat/completions"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+        ...this.defaultHeaders
+      },
+      body: JSON.stringify(body),
+      signal: controller?.signal ?? options.signal
+    });
+
+    controller?.clear();
+
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new AIClientError(`OpenAI-compatible request failed with HTTP ${response.status}.`, payload, response.status);
+    }
+
+    return parseChatCompletion(payload);
+  }
+
+  async generateJson<T>(options: GenerateTextOptions): Promise<T> {
+    const result = await this.generateText({
+      ...options,
+      responseFormat: options.responseFormat ?? { type: "json_object" }
+    });
+
+    try {
+      return JSON.parse(stripJsonFence(result.content)) as T;
+    } catch (error) {
+      throw new AIClientError("OpenAI-compatible response was not valid JSON.", { error, content: result.content });
+    }
+  }
+}
+
+export function createOpenAICompatibleClient(config: OpenAICompatibleClientConfig): OpenAICompatibleClient {
+  return new OpenAICompatibleClient(config);
+}
+
+function buildMessages(options: GenerateTextOptions): ChatMessage[] {
+  if (options.messages?.length) {
+    return options.messages;
+  }
+
+  if (!options.prompt) {
+    throw new AIClientError("Either messages or prompt is required.");
+  }
+
+  const messages: ChatMessage[] = [];
+  if (options.system) {
+    messages.push({ role: "system", content: options.system });
+  }
+  messages.push({ role: "user", content: options.prompt });
+  return messages;
+}
+
+function parseChatCompletion(payload: unknown): GenerateTextResult {
+  if (!isRecord(payload)) {
+    throw new AIClientError("OpenAI-compatible response was not an object.", payload);
+  }
+
+  const error = payload.error;
+  if (error) {
+    const message = isRecord(error) && typeof error.message === "string" ? error.message : "OpenAI-compatible response returned an error.";
+    throw new AIClientError(message, payload);
+  }
+
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const firstChoice = choices[0];
+  if (!isRecord(firstChoice)) {
+    throw new AIClientError("OpenAI-compatible response did not include choices.", payload);
+  }
+
+  const message = isRecord(firstChoice.message) ? firstChoice.message : undefined;
+  const content = typeof message?.content === "string" ? message.content : "";
+  const usage = isRecord(payload.usage)
+    ? {
+        promptTokens: asNumber(payload.usage.prompt_tokens),
+        completionTokens: asNumber(payload.usage.completion_tokens),
+        totalTokens: asNumber(payload.usage.total_tokens)
+      }
+    : undefined;
+
+  return {
+    id: typeof payload.id === "string" ? payload.id : undefined,
+    model: typeof payload.model === "string" ? payload.model : undefined,
+    content,
+    finishReason: typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : undefined,
+    usage,
+    raw: payload
+  };
+}
+
+function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): (AbortController & { clear: () => void }) | undefined {
+  if (!timeoutMs && !parentSignal) return undefined;
+
+  const controller = new AbortController() as AbortController & { clear: () => void };
+  const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  const abort = () => controller.abort();
+  parentSignal?.addEventListener("abort", abort, { once: true });
+  controller.clear = () => {
+    if (timeout) clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abort);
+  };
+  return controller;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { raw: text };
+  }
+}
+
+function getGlobalFetch(): FetchLike {
+  if (typeof fetch !== "function") {
+    throw new AIClientError("No fetch implementation is available.");
+  }
+  return fetch.bind(globalThis) as FetchLike;
+}
+
+function readEnv(key: string): string | undefined {
+  return (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.[key];
+}
+
+function normalizeBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "");
+}
+
+function joinUrl(baseUrl: string, path: string): string {
+  return `${baseUrl}/${path.replace(/^\/+/, "")}`;
+}
+
+function removeUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
+
+function stripJsonFence(content: string): string {
+  const trimmed = content.trim();
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced?.[1]?.trim() ?? trimmed;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}

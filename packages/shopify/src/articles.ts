@@ -1,0 +1,210 @@
+import { isRecord, ShopifyError, type ShopifyGraphQLClient } from "./client";
+
+export interface ShopifyArticleAuthorInput {
+  name: string;
+}
+
+export interface ShopifyArticleImageInput {
+  url?: string;
+  altText?: string;
+}
+
+export interface ShopifyArticleWriteInput {
+  blogId?: string;
+  title?: string;
+  author?: ShopifyArticleAuthorInput | string;
+  handle?: string;
+  body?: string;
+  bodyHtml?: string;
+  summary?: string;
+  isPublished?: boolean;
+  publishDate?: string;
+  tags?: string[];
+  image?: ShopifyArticleImageInput;
+  metafields?: Array<Record<string, unknown>>;
+  templateSuffix?: string;
+}
+
+export interface ShopifyArticleCreateInput extends ShopifyArticleWriteInput {
+  blogId: string;
+  title: string;
+}
+
+export interface ShopifyArticleUpdateInput extends ShopifyArticleWriteInput {
+  id: string;
+  redirectNewHandle?: boolean;
+}
+
+export interface ShopifyArticle {
+  id: string;
+  title: string;
+  handle: string;
+  body?: string;
+  summary?: string;
+  tags: string[];
+  isPublished?: boolean;
+  author?: {
+    name?: string;
+  };
+  blog?: {
+    id: string;
+    title?: string;
+    handle?: string;
+  };
+  image?: {
+    altText?: string;
+    originalSrc?: string;
+  } | null;
+}
+
+export interface ShopifyMutationUserError {
+  code?: string;
+  field?: string[];
+  message: string;
+}
+
+export class ShopifyUserError extends ShopifyError {
+  constructor(
+    readonly mutation: string,
+    readonly userErrors: ShopifyMutationUserError[]
+  ) {
+    super(`${mutation} returned user errors: ${userErrors.map((error) => error.message).join("; ")}`, userErrors);
+    this.name = "ShopifyUserError";
+  }
+}
+
+const ARTICLE_FIELDS = /* GraphQL */ `
+  id
+  title
+  handle
+  body
+  summary
+  tags
+  isPublished
+  author {
+    name
+  }
+  blog {
+    id
+    title
+    handle
+  }
+  image {
+    altText
+    originalSrc
+  }
+`;
+
+const ARTICLE_CREATE_MUTATION = /* GraphQL */ `
+  mutation ShopifyArticleCreate($article: ArticleCreateInput!) {
+    articleCreate(article: $article) {
+      article {
+        ${ARTICLE_FIELDS}
+      }
+      userErrors {
+        code
+        field
+        message
+      }
+    }
+  }
+`;
+
+const ARTICLE_UPDATE_MUTATION = /* GraphQL */ `
+  mutation ShopifyArticleUpdate($id: ID!, $article: ArticleUpdateInput!, $redirectNewHandle: Boolean) {
+    articleUpdate(id: $id, article: $article, redirectNewHandle: $redirectNewHandle) {
+      article {
+        ${ARTICLE_FIELDS}
+      }
+      userErrors {
+        code
+        field
+        message
+      }
+    }
+  }
+`;
+
+export async function articleCreate(client: ShopifyGraphQLClient, input: ShopifyArticleCreateInput): Promise<ShopifyArticle> {
+  const data = await client.request<{ articleCreate: ShopifyArticlePayload }>(ARTICLE_CREATE_MUTATION, {
+    article: normalizeArticleInput(input, true)
+  });
+
+  return unwrapArticlePayload("articleCreate", data.articleCreate);
+}
+
+export async function createArticle(client: ShopifyGraphQLClient, input: ShopifyArticleCreateInput): Promise<ShopifyArticle> {
+  return articleCreate(client, input);
+}
+
+export async function articleUpdate(
+  client: ShopifyGraphQLClient,
+  idOrInput: string | ShopifyArticleUpdateInput,
+  input?: ShopifyArticleWriteInput
+): Promise<ShopifyArticle> {
+  const id = typeof idOrInput === "string" ? idOrInput : idOrInput.id;
+  const articleInput = typeof idOrInput === "string" ? input : idOrInput;
+  if (!articleInput) {
+    throw new ShopifyError("articleUpdate requires article input.");
+  }
+
+  const data = await client.request<{ articleUpdate: ShopifyArticlePayload }>(ARTICLE_UPDATE_MUTATION, {
+    id,
+    article: normalizeArticleInput(articleInput, false),
+    redirectNewHandle: "redirectNewHandle" in articleInput ? articleInput.redirectNewHandle : undefined
+  });
+
+  return unwrapArticlePayload("articleUpdate", data.articleUpdate);
+}
+
+export async function updateArticle(
+  client: ShopifyGraphQLClient,
+  idOrInput: string | ShopifyArticleUpdateInput,
+  input?: ShopifyArticleWriteInput
+): Promise<ShopifyArticle> {
+  return articleUpdate(client, idOrInput, input);
+}
+
+function normalizeArticleInput(input: ShopifyArticleWriteInput, requireTitle: boolean): Record<string, unknown> {
+  if (requireTitle && !input.title) {
+    throw new ShopifyError("articleCreate requires title.");
+  }
+
+  const author = typeof input.author === "string" ? { name: input.author } : input.author;
+  return removeUndefined({
+    blogId: input.blogId,
+    title: input.title,
+    author: author ?? { name: "Shopify AI Blog" },
+    handle: input.handle,
+    body: input.body ?? input.bodyHtml,
+    summary: input.summary,
+    isPublished: input.isPublished,
+    publishDate: input.publishDate,
+    tags: input.tags,
+    image: input.image,
+    metafields: input.metafields,
+    templateSuffix: input.templateSuffix
+  });
+}
+
+interface ShopifyArticlePayload {
+  article?: ShopifyArticle | null;
+  userErrors?: ShopifyMutationUserError[];
+}
+
+function unwrapArticlePayload(mutation: string, payload: ShopifyArticlePayload): ShopifyArticle {
+  const userErrors = payload.userErrors ?? [];
+  if (userErrors.length > 0) {
+    throw new ShopifyUserError(mutation, userErrors);
+  }
+
+  if (!payload.article || !isRecord(payload.article)) {
+    throw new ShopifyError(`${mutation} did not return an article.`, payload);
+  }
+
+  return payload.article;
+}
+
+function removeUndefined(input: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+}
