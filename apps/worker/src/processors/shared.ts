@@ -1,4 +1,5 @@
 import { UnrecoverableError, type Job } from "bullmq";
+import type { Prisma } from "@shopify-ai-blog/db";
 export class WorkerDomainError extends Error {
   readonly code: string;
   readonly retryable: boolean;
@@ -89,11 +90,12 @@ export function parseIntegerEnv(name: string, fallback: number): number {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function toPrismaJson(value: unknown): unknown {
-  return sanitizeJson(value, new WeakSet());
+export function toPrismaJson(value: unknown): Prisma.InputJsonValue | undefined {
+  const sanitized = sanitizeJson(value, new WeakSet());
+  return sanitized === undefined ? undefined : (sanitized as Prisma.InputJsonValue);
 }
 
-export function failurePayload(error: unknown, extra: Record<string, unknown> = {}): unknown {
+export function failurePayload(error: unknown, extra: Record<string, unknown> = {}): Prisma.InputJsonValue | undefined {
   return toPrismaJson({
     ...extra,
     code: getErrorCode(error),

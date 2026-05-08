@@ -6,7 +6,10 @@ import {
   blogCampaignInputSchema,
   generatedArticleSchema,
   normalizeLocale,
-  type GeneratedArticle
+  type GeneratedArticle,
+  type PublishPolicy,
+  type SourceType,
+  type SupportedLocale
 } from "@shopify-ai-blog/shared";
 import {
   articleCreate,
@@ -78,6 +81,45 @@ interface ResolvedAiProvider {
   };
 }
 
+interface GenerationCampaignInput {
+  locale: string;
+  sourceType: SourceType;
+  sourceId: string | null;
+  topic: string | null;
+  title: string;
+  publishPolicy: PublishPolicy;
+  targetWordCount: number;
+  primaryKeyword: string | null;
+}
+
+interface BrandVoiceContextRow {
+  audience: string | null;
+  tone: string | null;
+  bannedWords: string[];
+  examples: string[];
+}
+
+interface PublishableArticleRow {
+  title: string | null;
+  handle: string | null;
+  bodyHtml: string | null;
+  summary: string | null;
+  tags: string[];
+  shopifyArticleId: string | null;
+}
+
+interface ParsedGenerationInput {
+  organizationId: string;
+  storeId: string;
+  locale: SupportedLocale;
+  sourceType: SourceType;
+  sourceId?: string;
+  topic?: string;
+  publishPolicy: PublishPolicy;
+  targetWordCount: number;
+  primaryKeyword?: string;
+}
+
 export async function processBlogGenerationJob(job: BlogGenerationJob): Promise<WorkerJobResult> {
   const jobName = job.name;
 
@@ -121,6 +163,7 @@ async function generateBlogArticle(
         details: parsedInput.error.flatten()
       });
     }
+    const generationInput = parsedInput.data;
 
     publishJob = await startPublishJob({
       organizationId: job.data.organizationId,
@@ -152,9 +195,9 @@ async function generateBlogArticle(
     });
 
     await markCampaignRunning(context.campaign?.id);
-    const pipelineResult = await runContentPipeline(input, context.sourceContext);
+    const pipelineResult = await runContentPipeline(generationInput, context.sourceContext);
     const aiProvider = resolveAiProvider(context.aiProvider);
-    const aiResult = await generateArticleWithAi(aiProvider, input, context.sourceContext, pipelineResult);
+    const aiResult = await generateArticleWithAi(aiProvider, generationInput, context.sourceContext, pipelineResult);
     const generated = aiResult.article;
     const status = generated.qualityPassed ? "ready_to_publish" : "quality_failed";
     const article = await upsertGeneratedArticle({
@@ -162,9 +205,9 @@ async function generateBlogArticle(
       campaignId: context.campaign?.id ?? job.data.campaignId,
       organizationId: job.data.organizationId,
       storeId: job.data.storeId,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      publishPolicy: input.publishPolicy,
+      sourceType: generationInput.sourceType,
+      sourceId: generationInput.sourceId,
+      publishPolicy: generationInput.publishPolicy,
       generated,
       status,
       qualityReport: pipelineResult.artifacts.quality,
@@ -343,7 +386,7 @@ function resolveAiProvider(provider: AiProviderRecord | null): ResolvedAiProvide
 
 async function generateArticleWithAi(
   provider: ResolvedAiProvider,
-  input: ReturnType<typeof mergeGenerationInput>,
+  input: ParsedGenerationInput,
   context: ContentSourceContext,
   pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
 ): Promise<{
@@ -872,7 +915,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     throw new Error(`Store ${data.storeId} was not found for organization ${data.organizationId}.`);
   }
 
-  const locale = campaign?.locale ?? article?.locale ?? data.locale;
+  const locale = normalizeLocale(campaign?.locale ?? article?.locale ?? data.locale);
   const sourceType = campaign?.sourceType ?? article?.sourceType ?? data.sourceType;
   const sourceId = campaign?.sourceId ?? article?.sourceId ?? data.sourceId;
   const [brandVoice, sourceContext] = await Promise.all([
@@ -890,8 +933,8 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
       brandVoice: brandVoice
         ? {
             locale,
-            audience: brandVoice.audience,
-            tone: brandVoice.tone,
+            audience: brandVoice.audience ?? undefined,
+            tone: brandVoice.tone ?? undefined,
             bannedWords: brandVoice.bannedWords ?? [],
             examples: brandVoice.examples ?? []
           }
@@ -902,7 +945,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
   };
 }
 
-function mergeGenerationInput(data: BlogGenerationJobData, campaign: Record<string, any> | null) {
+function mergeGenerationInput(data: BlogGenerationJobData, campaign: GenerationCampaignInput | null) {
   return {
     organizationId: data.organizationId,
     storeId: data.storeId,
@@ -920,7 +963,7 @@ async function loadBrandVoice(
   organizationId: string,
   storeId: string,
   locale: string,
-  campaignBrandVoice?: Record<string, any> | null
+  campaignBrandVoice?: BrandVoiceContextRow | null
 ) {
   if (campaignBrandVoice) return campaignBrandVoice;
 
@@ -957,13 +1000,13 @@ async function loadSourceContext(
         id: product.shopifyProductId,
         title: product.title,
         handle: product.handle,
-        description: product.descriptionHtml,
-        productType: product.productType,
-        vendor: product.vendor,
+        description: product.descriptionHtml ?? undefined,
+        productType: product.productType ?? undefined,
+        vendor: product.vendor ?? undefined,
         tags: product.tags ?? [],
         imageUrls: product.imageUrls ?? [],
-        seoTitle: product.seoTitle,
-        seoDescription: product.seoDescription
+        seoTitle: product.seoTitle ?? undefined,
+        seoDescription: product.seoDescription ?? undefined
       }
     };
   }
@@ -984,7 +1027,7 @@ async function loadSourceContext(
         id: collection.shopifyCollectionId,
         title: collection.title,
         handle: collection.handle,
-        description: collection.descriptionHtml,
+        description: collection.descriptionHtml ?? undefined,
         imageUrls: collection.imageUrl ? [collection.imageUrl] : []
       }
     };
@@ -998,9 +1041,9 @@ async function upsertGeneratedArticle(input: {
   campaignId?: string;
   organizationId: string;
   storeId: string;
-  sourceType: string;
+  sourceType: SourceType;
   sourceId?: string;
-  publishPolicy: string;
+  publishPolicy: PublishPolicy;
   generated: {
     title: string;
     handle: string;
@@ -1037,8 +1080,8 @@ async function upsertGeneratedArticle(input: {
     seoDescription: input.generated.summary,
     seoScore: input.generated.seoScore,
     qualityPassed: input.generated.qualityPassed,
-    qualityReport: input.qualityReport,
-    generationMetadata: input.generationMetadata,
+    qualityReport: toPrismaJson(input.qualityReport),
+    generationMetadata: toPrismaJson(input.generationMetadata),
     lastGeneratedAt: new Date(),
     failureReason: input.generated.qualityPassed ? null : "Generated content did not pass the quality gate."
   };
@@ -1078,15 +1121,15 @@ async function markArticleFailed(articleId: string | undefined, failureReason: s
 }
 
 async function publishToShopify(
-  client: ReturnType<typeof createShopifyGraphQLClient>,
-  article: Record<string, any>,
+  client: ShopifyGraphQLClient,
+  article: PublishableArticleRow,
   shopifyBlogId: string,
   publishAt: string | undefined
 ): Promise<ShopifyArticle> {
   const input = {
     blogId: shopifyBlogId,
     title: article.title ?? "Untitled article",
-    handle: article.handle,
+    handle: article.handle ?? undefined,
     bodyHtml: article.bodyHtml ?? "",
     summary: article.summary ?? undefined,
     isPublished: true,

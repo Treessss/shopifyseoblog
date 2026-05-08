@@ -485,7 +485,7 @@ async function upsertCollectionSnapshot(
     descriptionHtml: collection.descriptionHtml ?? null,
     imageUrl: collection.image?.url ?? null,
     collectionType: null,
-    ruleSet: null,
+    ruleSet: undefined,
     seoTitle: null,
     seoDescription: null,
     raw: toPrismaJson(collection),
