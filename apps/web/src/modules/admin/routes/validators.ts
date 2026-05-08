@@ -1,0 +1,244 @@
+import { AdminApiError } from "../policies/errors";
+import type {
+  CreateCampaignInput,
+  QueueArticlePublishInput,
+  QueueStoreSyncInput,
+  UpsertAiProviderInput,
+  UpsertBrandVoiceInput,
+  UpsertLanguageInput
+} from "../contracts";
+
+const SOURCE_TYPES = ["product", "collection", "manual_topic"] as const;
+const PUBLISH_POLICIES = ["auto_when_qualified", "manual_review", "direct"] as const;
+const AI_PROVIDERS = ["openai", "compatible", "custom"] as const;
+
+export async function parseQueueStoreSyncRequest(request: Request): Promise<QueueStoreSyncInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    storeId: requiredString(body, "storeId"),
+    fullSync: booleanValue(body.fullSync, false),
+    products: booleanValue(body.products, true),
+    collections: booleanValue(body.collections, true),
+    limit: optionalInteger(body.limit, "limit", 1, 250)
+  };
+}
+
+export async function parseCreateCampaignRequest(request: Request): Promise<CreateCampaignInput> {
+  const body = await readRequestObject(request);
+  const sourceType = optionalEnum(body.sourceType, SOURCE_TYPES, "sourceType") ?? "manual_topic";
+  const publishPolicy =
+    optionalEnum(body.publishPolicy, PUBLISH_POLICIES, "publishPolicy") ?? "auto_when_qualified";
+  const scheduleAt = optionalDateString(body.scheduleAt, "scheduleAt");
+
+  return {
+    storeId: requiredString(body, "storeId"),
+    title: requiredString(body, "title"),
+    locale: requiredString(body, "locale"),
+    sourceType,
+    sourceId: optionalString(body.sourceId),
+    topic: optionalString(body.topic),
+    brandVoiceId: optionalString(body.brandVoiceId),
+    publishPolicy,
+    targetWordCount: integerValue(body.targetWordCount, "targetWordCount", 1400, 300, 5000),
+    primaryKeyword: optionalString(body.primaryKeyword),
+    keywords: stringList(body.keywords),
+    scheduleAt,
+    queueGeneration: booleanValue(body.queueGeneration, true)
+  };
+}
+
+export async function parseQueueArticlePublishRequest(request: Request): Promise<QueueArticlePublishInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    articleId: requiredString(body, "articleId"),
+    publishAt: optionalDateString(body.publishAt, "publishAt"),
+    shopifyBlogId: optionalString(body.shopifyBlogId)
+  };
+}
+
+export async function parseUpsertAiProviderRequest(request: Request): Promise<UpsertAiProviderInput> {
+  const body = await readRequestObject(request);
+  const provider = optionalEnum(body.provider, AI_PROVIDERS, "provider") ?? "compatible";
+
+  return {
+    id: optionalString(body.id),
+    storeId: optionalString(body.storeId),
+    slug: optionalString(body.slug),
+    name: requiredString(body, "name"),
+    provider,
+    baseUrl: requiredString(body, "baseUrl"),
+    apiKey: optionalString(body.apiKey),
+    textModel: requiredString(body, "textModel"),
+    imageModel: optionalString(body.imageModel),
+    temperature: integerOrFloatValue(body.temperature, "temperature", 0.8, 0, 2),
+    enabled: booleanValue(body.enabled, true),
+    isDefault: booleanValue(body.isDefault, false)
+  };
+}
+
+export async function parseUpsertLanguageRequest(request: Request): Promise<UpsertLanguageInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    storeId: requiredString(body, "storeId"),
+    locale: requiredString(body, "locale"),
+    label: requiredString(body, "label"),
+    fallback: optionalString(body.fallback),
+    enabled: booleanValue(body.enabled, true),
+    isDefault: booleanValue(body.isDefault, false),
+    shopifyMarketHandle: optionalString(body.shopifyMarketHandle),
+    shopifyBlogId: optionalString(body.shopifyBlogId),
+    shopifyBlogHandle: optionalString(body.shopifyBlogHandle)
+  };
+}
+
+export async function parseUpsertBrandVoiceRequest(request: Request): Promise<UpsertBrandVoiceInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    id: optionalString(body.id),
+    storeId: optionalString(body.storeId),
+    locale: requiredString(body, "locale"),
+    name: requiredString(body, "name"),
+    audience: optionalString(body.audience),
+    tone: optionalString(body.tone),
+    bannedWords: stringList(body.bannedWords),
+    examples: stringList(body.examples),
+    isDefault: booleanValue(body.isDefault, false)
+  };
+}
+
+async function readRequestObject(request: Request): Promise<Record<string, unknown>> {
+  const contentType = request.headers.get("content-type") ?? "";
+
+  if (contentType.includes("application/json")) {
+    const raw = await request.text();
+    if (!raw.trim()) return {};
+
+    try {
+      return asRecord(JSON.parse(raw) as unknown);
+    } catch {
+      throw new AdminApiError(400, "INVALID_JSON", "Request body must be valid JSON.");
+    }
+  }
+
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
+    const form = await request.formData();
+    const output: Record<string, unknown> = {};
+
+    for (const [key, value] of form.entries()) {
+      if (typeof value !== "string") continue;
+      const existing = output[key];
+      if (Array.isArray(existing)) {
+        existing.push(value);
+      } else if (typeof existing === "string") {
+        output[key] = [existing, value];
+      } else {
+        output[key] = value;
+      }
+    }
+
+    return output;
+  }
+
+  return {};
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  throw new AdminApiError(400, "REQUEST_BODY_INVALID", "Request body must be a JSON object.");
+}
+
+function requiredString(body: Record<string, unknown>, key: string) {
+  const value = optionalString(body[key]);
+  if (!value) {
+    throw new AdminApiError(400, `${key.toUpperCase()}_REQUIRED`, `${key} is required.`);
+  }
+  return value;
+}
+
+function optionalString(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringList(value: unknown) {
+  if (value === undefined || value === null) return [];
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+  }
+
+  throw new AdminApiError(400, "KEYWORDS_INVALID", "keywords must be an array or comma-separated string.");
+}
+
+function booleanValue(value: unknown, fallback: boolean) {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+  }
+
+  throw new AdminApiError(400, "BOOLEAN_INVALID", "Boolean fields must be true or false.");
+}
+
+function integerValue(value: unknown, key: string, fallback: number, min: number, max: number) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const number = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isInteger(number) || number < min || number > max) {
+    throw new AdminApiError(400, `${key.toUpperCase()}_INVALID`, `${key} must be an integer between ${min} and ${max}.`);
+  }
+
+  return number;
+}
+
+function integerOrFloatValue(value: unknown, key: string, fallback: number, min: number, max: number) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const number = typeof value === "number" ? value : Number(value);
+
+  if (!Number.isFinite(number) || number < min || number > max) {
+    throw new AdminApiError(400, `${key.toUpperCase()}_INVALID`, `${key} must be a number between ${min} and ${max}.`);
+  }
+
+  return number;
+}
+
+function optionalInteger(value: unknown, key: string, min: number, max: number) {
+  if (value === undefined || value === null || value === "") return undefined;
+  return integerValue(value, key, 0, min, max);
+}
+
+function optionalEnum<T extends readonly string[]>(value: unknown, allowed: T, key: string): T[number] | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "string" && (allowed as readonly string[]).includes(value)) return value as T[number];
+
+  throw new AdminApiError(400, `${key.toUpperCase()}_INVALID`, `${key} is invalid.`);
+}
+
+function optionalDateString(value: unknown, key: string) {
+  const raw = optionalString(value);
+  if (!raw) return undefined;
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw new AdminApiError(400, `${key.toUpperCase()}_INVALID`, `${key} must be a valid date string.`);
+  }
+
+  return date.toISOString();
+}

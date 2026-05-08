@@ -1,5 +1,6 @@
 import { blogCampaignInputSchema } from "@shopify-ai-blog/shared";
-import { fail, ok, publicId, readJson, toHandle } from "@/lib/api";
+import { prisma } from "@shopify-ai-blog/db";
+import { fail, ok, readJson } from "@/lib/api";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -23,31 +24,97 @@ export async function POST(request: Request) {
   }
 
   const input = parsed.data;
+  const store = await prisma.shopifyStore.findFirst({
+    where: {
+      id: input.storeId,
+      organizationId: input.organizationId
+    }
+  });
+
+  if (!store) {
+    return fail(404, {
+      code: "STORE_NOT_FOUND",
+      message: "未找到当前组织下的 Shopify 店铺。"
+    });
+  }
+
   const topic = input.topic ?? input.primaryKeyword ?? "Shopify 多语言内容增长";
-  const title = `${topic}：从商品卖点到可发布博客的实战指南`;
-  const primaryKeyword = input.primaryKeyword ?? topic;
+  const campaign = await prisma.blogCampaign.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      locale: input.locale,
+      title: topic,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      topic,
+      status: "active",
+      publishPolicy: input.publishPolicy,
+      targetWordCount: input.targetWordCount,
+      primaryKeyword: input.primaryKeyword,
+      keywords: input.primaryKeyword ? [input.primaryKeyword] : []
+    }
+  });
+
+  const job = await prisma.publishJob.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      type: "generate_article",
+      status: "queued",
+      payload: {
+        ...input,
+        campaignId: campaign.id,
+        queue: "blog-generation",
+        jobName: "blog.generate"
+      }
+    }
+  });
+
+  await prisma.publishLog.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      jobId: job.id,
+      event: "queued",
+      level: "info",
+      message: `Queued blog generation for ${topic}.`,
+      payload: {
+        campaignId: campaign.id,
+        jobType: job.type
+      }
+    }
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      action: "generate",
+      entityType: "blog_campaign",
+      entityId: campaign.id,
+      metadata: {
+        jobId: job.id,
+        sourceType: input.sourceType,
+        locale: input.locale
+      }
+    }
+  });
 
   return ok({
-    mode: "mock-contract",
+    mode: "database-queued",
     job: {
-      id: publicId("gen"),
-      status: "queued",
-      nextStep: "worker 接入后执行生成、质检、配图与发布。"
+      id: job.id,
+      status: job.status,
+      type: job.type,
+      runAt: job.runAt.toISOString()
     },
-    article: {
-      title,
-      handle: toHandle(title),
-      summary: `围绕「${primaryKeyword}」生成的文章草稿摘要，覆盖搜索意图、商品场景和 Shopify 发布结构。`,
-      bodyHtml:
-        `<article><h2>${topic}</h2><p>这是一篇由 API route 生成的契约草稿，用于验证前端、任务输入和 worker 对接。` +
-        `正式接入内容引擎后，这里会返回带有标题层级、内部链接建议、SEO 描述、图片提示词和多语言质量门槛的完整 HTML。</p>` +
-        `<p>当前请求来自店铺 ${input.storeId}，语言为 ${input.locale}，发布策略为 ${input.publishPolicy}。</p></article>`,
-      primaryKeyword,
-      secondaryKeywords: [input.sourceType, input.locale, "Shopify Blog"],
-      tags: ["ai-generated", input.locale, input.sourceType],
-      locale: input.locale,
-      seoScore: 82,
-      qualityPassed: true
+    campaign: {
+      id: campaign.id,
+      title: campaign.title,
+      status: campaign.status,
+      storeId: campaign.storeId,
+      locale: campaign.locale
     },
     input
   });
