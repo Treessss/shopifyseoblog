@@ -5,7 +5,10 @@ describe("shopify oauth", () => {
   it("exchanges client credentials using Shopify form encoding", async () => {
     const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
       expect(init?.method).toBe("POST");
-      expect(init?.headers).toEqual({ "Content-Type": "application/x-www-form-urlencoded" });
+      expect(init?.headers).toEqual({
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json"
+      });
       expect(init?.body).toBe("grant_type=client_credentials&client_id=client_123&client_secret=secret_456");
 
       return new Response(

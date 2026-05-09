@@ -64,7 +64,8 @@ export async function exchangeShopifyOAuthCode(options: ShopifyOAuthExchangeOpti
   const response = await fetchImpl(`https://${shopDomain}/admin/oauth/access_token`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
+      "Accept": "application/json"
     },
     body: JSON.stringify({
       client_id: options.apiKey,
@@ -73,7 +74,7 @@ export async function exchangeShopifyOAuthCode(options: ShopifyOAuthExchangeOpti
     })
   });
 
-  const payload = (await response.json()) as unknown;
+  const payload = await readJson(response);
   if (!response.ok) {
     throw new ShopifyError(`Shopify OAuth exchange failed with HTTP ${response.status}.`, payload, response.status);
   }
@@ -95,12 +96,13 @@ export async function exchangeShopifyClientCredentials(
   const response = await fetchImpl(`https://${shopDomain}/admin/oauth/access_token`, {
     method: "POST",
     headers: {
-      "Content-Type": "application/x-www-form-urlencoded"
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Accept": "application/json"
     },
     body: body.toString()
   });
 
-  const payload = (await response.json()) as unknown;
+  const payload = await readJson(response);
   if (!response.ok) {
     throw new ShopifyError(`Shopify client credentials exchange failed with HTTP ${response.status}.`, payload, response.status);
   }
@@ -163,4 +165,15 @@ function getGlobalFetch(): FetchLike {
     throw new ShopifyError("No fetch implementation is available.");
   }
   return fetch.bind(globalThis) as FetchLike;
+}
+
+async function readJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { raw: text };
+  }
 }

@@ -4,7 +4,7 @@ import {
   assertStoreSyncAllowed,
   assertTenantResource
 } from "../policies/admin-policy";
-import { exchangeShopifyClientCredentials } from "@shopify-ai-blog/shopify";
+import { exchangeShopifyClientCredentials, ShopifyGraphQLError } from "@shopify-ai-blog/shopify";
 import { AdminApiError } from "../policies/errors";
 import * as repository from "../repository/admin-repository";
 import { syncShopifyStoreResources } from "./shopify-sync-service";
@@ -329,7 +329,7 @@ export async function queueStoreSync(input: AdminRequestContextInput, body: Queu
     result = await syncShopifyStoreResources(context.organizationId, store, body, context);
   } catch (error) {
     await repository.recordStoreSyncFailure(context.organizationId, store.id, error, context);
-    throw error;
+    throw mapShopifySyncError(error);
   }
 
   return {
@@ -449,6 +449,33 @@ function mapMetrics(stats: DashboardStats): AdminMetric[] {
       tone: stats.failedArticles + stats.failedJobs > 0 ? "danger" : "good"
     }
   ];
+}
+
+function mapShopifySyncError(error: unknown): AdminApiError | unknown {
+  if (error instanceof AdminApiError) return error;
+  if (error instanceof ShopifyGraphQLError) {
+    const details = {
+      errors: error.errors,
+      status: error.status
+    };
+
+    if (shopifyErrorsInclude(error.errors, "Access denied")) {
+      return new AdminApiError(
+        403,
+        "SHOPIFY_SYNC_PERMISSION_DENIED",
+        "Shopify Admin API permissions are missing for this sync target.",
+        details
+      );
+    }
+
+    return new AdminApiError(502, "SHOPIFY_GRAPHQL_ERROR", "Shopify GraphQL returned errors during sync.", details);
+  }
+
+  return error;
+}
+
+function shopifyErrorsInclude(errors: unknown, pattern: string): boolean {
+  return JSON.stringify(errors).toLowerCase().includes(pattern.toLowerCase());
 }
 
 function mapStore(store: StoreRow): AdminStoreOverview {
