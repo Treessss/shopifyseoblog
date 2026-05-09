@@ -138,7 +138,7 @@ export default async function StoresPage({ searchParams }: PageProps) {
                             <input type="hidden" name="storeId" value={store.id} />
                             <button className="button button--ghost button--small" type="submit">
                               <RefreshCw size={14} aria-hidden="true" />
-                              同步
+                              校验并同步
                             </button>
                           </form>
                           <StoreDeleteButton storeId={store.id} storeName={store.name} domain={store.domain} />

@@ -1,4 +1,5 @@
-import { encryptSecret, prisma } from "@shopify-ai-blog/db";
+import { encryptSecret, prisma, Prisma } from "@shopify-ai-blog/db";
+import type { ShopifyBlog, ShopifyCollection, ShopifyProduct } from "@shopify-ai-blog/shopify";
 import type {
   AdminRequestContextInput,
   AuditLogCreateInput,
@@ -14,6 +15,25 @@ import type {
 } from "../contracts";
 
 export type AdminDbClient = typeof prisma | any;
+
+interface ShopifyStoreSyncPersistenceInput {
+  storeId: string;
+  shop: {
+    id: string;
+    name: string;
+    myshopifyDomain: string;
+    email?: string | null;
+    currencyCode?: string | null;
+  };
+  products?: ShopifyProduct[];
+  productsCapped: boolean;
+  collections?: ShopifyCollection[];
+  collectionsCapped: boolean;
+  blogs: ShopifyBlog[];
+  fullSync: boolean;
+  limit?: number;
+  syncedAt: Date;
+}
 
 export async function findOrganizationForAdmin(preferredSlug?: string) {
   const slug = preferredSlug?.trim();
@@ -361,6 +381,200 @@ export async function createStoreSyncJobs(
     });
 
     return jobs;
+  });
+}
+
+export async function persistShopifyStoreSync(
+  organizationId: string,
+  input: ShopifyStoreSyncPersistenceInput,
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const store = await tx.shopifyStore.findFirst({
+      where: { id: input.storeId, organizationId },
+      include: {
+        localeConfigs: true
+      }
+    });
+
+    if (!store) {
+      throw new Error(`Store ${input.storeId} was not found.`);
+    }
+
+    for (const product of input.products ?? []) {
+      await upsertProductSnapshot(tx, organizationId, input.storeId, product, input.syncedAt);
+    }
+
+    for (const collection of input.collections ?? []) {
+      await upsertCollectionSnapshot(tx, organizationId, input.storeId, collection, input.syncedAt);
+    }
+
+    let blogMappingsUpdated = 0;
+    for (const localeConfig of store.localeConfigs) {
+      if (!localeConfig.shopifyBlogHandle) continue;
+      const matchedBlog = input.blogs.find((blog) => blog.handle === localeConfig.shopifyBlogHandle);
+      if (!matchedBlog) continue;
+
+      await tx.localeConfig.update({
+        where: { id: localeConfig.id },
+        data: {
+          shopifyBlogId: matchedBlog.id,
+          shopifyBlogHandle: matchedBlog.handle
+        }
+      });
+      blogMappingsUpdated += 1;
+    }
+
+    await tx.shopifyStore.update({
+      where: { id: input.storeId },
+      data: {
+        name: input.shop.name || store.name,
+        shopifyShopGid: input.shop.id,
+        shopOwnerEmail: input.shop.email ?? store.shopOwnerEmail,
+        currencyCode: input.shop.currencyCode ?? store.currencyCode,
+        status: "active",
+        disconnectedAt: null,
+        lastSyncedAt: input.syncedAt,
+        metadata: toPrismaJson({
+          ...(isRecord(store.metadata) ? store.metadata : {}),
+          lastConnectionVerifiedAt: input.syncedAt.toISOString(),
+          lastSync: {
+            products: input.products?.length ?? 0,
+            collections: input.collections?.length ?? 0,
+            blogs: input.blogs.length,
+            productsCapped: input.productsCapped,
+            collectionsCapped: input.collectionsCapped,
+            fullSync: input.fullSync,
+            limit: input.limit
+          }
+        })
+      }
+    });
+
+    await tx.publishLog.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        event: "succeeded",
+        level: "info",
+        message: "Shopify store resources synced.",
+        payload: toPrismaJson({
+          shopId: input.shop.id,
+          products: input.products?.length ?? 0,
+          collections: input.collections?.length ?? 0,
+          blogs: input.blogs.length,
+          blogMappingsUpdated,
+          productsCapped: input.productsCapped,
+          collectionsCapped: input.collectionsCapped
+        })
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        userId: requestContext.requestedByUserId,
+        action: "sync",
+        entityType: "shopify_store",
+        entityId: input.storeId,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: toPrismaJson({
+          mode: "immediate_shopify_graphql",
+          shopId: input.shop.id,
+          products: input.products?.length ?? 0,
+          collections: input.collections?.length ?? 0,
+          blogs: input.blogs.length,
+          blogMappingsUpdated
+        })
+      }
+    });
+
+    const refreshedStore = await tx.shopifyStore.findFirstOrThrow({
+      where: { id: input.storeId, organizationId },
+      include: {
+        _count: {
+          select: {
+            productSnapshots: true,
+            collectionSnapshots: true,
+            articles: true,
+            campaigns: true
+          }
+        }
+      }
+    });
+
+    return {
+      store: refreshedStore,
+      productsSynced: input.products?.length ?? 0,
+      collectionsSynced: input.collections?.length ?? 0,
+      blogsSynced: input.blogs.length,
+      blogMappingsUpdated,
+      productsCapped: input.productsCapped,
+      collectionsCapped: input.collectionsCapped
+    };
+  });
+}
+
+export async function recordStoreSyncFailure(
+  organizationId: string,
+  storeId: string,
+  error: unknown,
+  requestContext: AdminRequestContextInput
+) {
+  const now = new Date();
+  const failure = errorPayload(error);
+
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const store = await tx.shopifyStore.findFirst({
+      where: { id: storeId, organizationId }
+    });
+
+    if (!store) return null;
+
+    await tx.shopifyStore.update({
+      where: { id: store.id },
+      data: {
+        status: "disconnected",
+        disconnectedAt: now,
+        metadata: toPrismaJson({
+          ...(isRecord(store.metadata) ? store.metadata : {}),
+          lastConnectionFailedAt: now.toISOString(),
+          lastConnectionError: failure
+        })
+      }
+    });
+
+    await tx.publishLog.create({
+      data: {
+        organizationId,
+        storeId,
+        event: "failed",
+        level: "error",
+        message: "Shopify store sync failed.",
+        payload: toPrismaJson(failure)
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId,
+        userId: requestContext.requestedByUserId,
+        action: "sync",
+        entityType: "shopify_store",
+        entityId: storeId,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: toPrismaJson({
+          event: "failed",
+          error: failure
+        })
+      }
+    });
+
+    return store;
   });
 }
 
@@ -979,6 +1193,194 @@ function compactJsonObject(input: Record<string, unknown>): Record<string, unkno
   }
 
   return output;
+}
+
+async function upsertProductSnapshot(
+  tx: AdminDbClient,
+  organizationId: string,
+  storeId: string,
+  product: ShopifyProduct,
+  syncedAt: Date
+) {
+  const snapshotData = {
+    shopifyProductId: product.id,
+    handle: product.handle || fallbackHandle("product", product.id),
+    title: product.title || product.id,
+    descriptionHtml: product.descriptionHtml ?? product.description ?? null,
+    productType: product.productType ?? null,
+    vendor: product.vendor ?? null,
+    tags: product.tags ?? [],
+    imageUrls: product.featuredImage?.url ? [product.featuredImage.url] : [],
+    seoTitle: product.seo?.title ?? null,
+    seoDescription: product.seo?.description ?? null,
+    raw: toPrismaJson(product),
+    syncedAt
+  };
+
+  try {
+    await tx.productSnapshot.upsert({
+      where: {
+        storeId_shopifyProductId: {
+          storeId,
+          shopifyProductId: product.id
+        }
+      },
+      update: snapshotData,
+      create: {
+        organizationId,
+        storeId,
+        ...snapshotData
+      }
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+
+    await tx.productSnapshot.update({
+      where: {
+        storeId_handle: {
+          storeId,
+          handle: snapshotData.handle
+        }
+      },
+      data: snapshotData
+    });
+  }
+}
+
+async function upsertCollectionSnapshot(
+  tx: AdminDbClient,
+  organizationId: string,
+  storeId: string,
+  collection: ShopifyCollection,
+  syncedAt: Date
+) {
+  const snapshotData = {
+    shopifyCollectionId: collection.id,
+    handle: collection.handle || fallbackHandle("collection", collection.id),
+    title: collection.title || collection.id,
+    descriptionHtml: collection.descriptionHtml ?? null,
+    imageUrl: collection.image?.url ?? null,
+    collectionType: null,
+    ruleSet: undefined,
+    seoTitle: null,
+    seoDescription: null,
+    raw: toPrismaJson(collection),
+    syncedAt
+  };
+
+  try {
+    await tx.collectionSnapshot.upsert({
+      where: {
+        storeId_shopifyCollectionId: {
+          storeId,
+          shopifyCollectionId: collection.id
+        }
+      },
+      update: snapshotData,
+      create: {
+        organizationId,
+        storeId,
+        ...snapshotData
+      }
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+
+    await tx.collectionSnapshot.update({
+      where: {
+        storeId_handle: {
+          storeId,
+          handle: snapshotData.handle
+        }
+      },
+      data: snapshotData
+    });
+  }
+}
+
+function toPrismaJson(value: unknown): Prisma.InputJsonValue | undefined {
+  const sanitized = sanitizeJson(value, new WeakSet());
+  return sanitized === undefined ? undefined : (sanitized as Prisma.InputJsonValue);
+}
+
+function errorPayload(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      code: "code" in error ? (error as { code?: unknown }).code : undefined,
+      status: "status" in error ? (error as { status?: unknown }).status : undefined,
+      details: "details" in error ? (error as { details?: unknown }).details : undefined
+    };
+  }
+
+  return {
+    message: String(error)
+  };
+}
+
+function sanitizeJson(value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+
+  const type = typeof value;
+  if (type === "string" || type === "number" || type === "boolean") return value;
+  if (type === "bigint") return value.toString();
+  if (type === "symbol" || type === "function") return undefined;
+  if (value instanceof Date) return value.toISOString();
+
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeJson(item, seen) ?? null);
+  }
+
+  if (typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+
+    const output: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value)) {
+      const sanitized = sanitizeJson(item, seen);
+      if (sanitized !== undefined) output[key] = sanitized;
+    }
+
+    seen.delete(value);
+    return output;
+  }
+
+  return String(value);
+}
+
+function fallbackHandle(prefix: string, shopifyId: string): string {
+  const id = extractShopifySearchId(shopifyId) || String(hashString(shopifyId));
+  return `${prefix}-${id}`.toLowerCase();
+}
+
+function extractShopifySearchId(value: string): string {
+  const trimmed = value.trim();
+  const numericGid = trimmed.match(/\/(\d+)$/);
+  if (numericGid?.[1]) return numericGid[1];
+  return trimmed.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "P2002"
+  );
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function localeLabel(locale: string) {

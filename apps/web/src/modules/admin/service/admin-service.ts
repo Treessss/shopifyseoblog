@@ -6,6 +6,7 @@ import {
 } from "../policies/admin-policy";
 import { AdminApiError } from "../policies/errors";
 import * as repository from "../repository/admin-repository";
+import { syncShopifyStoreResources } from "./shopify-sync-service";
 import type {
   AdminAiProviderOverview,
   AdminArticleOverview,
@@ -265,16 +266,32 @@ export async function queueStoreSync(input: AdminRequestContextInput, body: Queu
     throw new AdminApiError(400, "SYNC_TARGET_REQUIRED", "At least one sync target is required.");
   }
 
-  const jobs = await repository.createStoreSyncJobs(context.organizationId, body, context);
+  let result: Awaited<ReturnType<typeof syncShopifyStoreResources>>;
+  try {
+    result = await syncShopifyStoreResources(context.organizationId, store, body, context);
+  } catch (error) {
+    await repository.recordStoreSyncFailure(context.organizationId, store.id, error, context);
+    throw error;
+  }
 
   return {
     organization: context.organization,
-    queued: true,
-    queueMode: "database_job_rows",
-    workerQueue: "not_enqueued",
-    message: "Sync jobs were persisted as queued PublishJob rows. BullMQ enqueue requires adding @shopify-ai-blog/worker to the web app.",
+    synced: true,
+    connectionVerified: true,
+    syncMode: "immediate_shopify_graphql",
+    message: "Shopify connection was verified and store resources were synced.",
     storeId: store.id,
-    jobs: jobs.map((job: QueuedJobRow) => mapQueuedJob(job, "Store sync queued."))
+    store: mapStore(result.store),
+    counts: {
+      products: result.productsSynced,
+      collections: result.collectionsSynced,
+      blogs: result.blogsSynced,
+      blogMappingsUpdated: result.blogMappingsUpdated
+    },
+    capped: {
+      products: result.productsCapped,
+      collections: result.collectionsCapped
+    }
   };
 }
 
