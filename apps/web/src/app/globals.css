@@ -1114,6 +1114,8 @@ tr:last-child td {
 }
 
 .modal {
+  display: flex;
+  flex-direction: column;
   width: min(620px, 100%);
   max-height: min(760px, calc(100vh - 48px));
   overflow: hidden;
@@ -1125,6 +1127,7 @@ tr:last-child td {
 
 .modal__header {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -1147,8 +1150,13 @@ tr:last-child td {
 
 .modal__body {
   display: grid;
+  flex: 1 1 auto;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
   padding: 22px;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .modal__form {
@@ -1393,7 +1401,7 @@ tr:last-child td {
 
   .modal {
     max-height: calc(100vh - 28px);
-    overflow-y: auto;
+    overflow: hidden;
   }
 
   .modal__header,
