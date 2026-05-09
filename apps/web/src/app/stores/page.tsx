@@ -1,4 +1,5 @@
 import { Languages, PackageCheck, RefreshCw, Search, Store as StoreIcon } from "lucide-react";
+import { StoreConnectDialog } from "@/components/store-connect-dialog";
 import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { getStoresView } from "@/lib/admin-client";
 import { readFormNotice, readSearchParam } from "@/lib/search-params";
@@ -32,16 +33,7 @@ export default async function StoresPage({ searchParams }: PageProps) {
               <RefreshCw size={16} aria-hidden="true" />
               刷新列表
             </a>
-            <form action="/api/shopify/oauth/start" method="get" className="inline-form">
-              <label className="sr-only" htmlFor="shop-domain">
-                Shopify 店铺域名
-              </label>
-              <input id="shop-domain" name="shop" placeholder="your-store.myshopify.com" required />
-              <button className="button button--primary" type="submit">
-                <StoreIcon size={16} aria-hidden="true" />
-                连接店铺
-              </button>
-            </form>
+            <StoreConnectDialog />
           </div>
         }
       />
