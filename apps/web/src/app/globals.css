@@ -758,6 +758,17 @@ tr:last-child td {
   box-shadow: none;
 }
 
+.button--danger {
+  border-color: rgba(180, 35, 24, 0.28);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.button--danger:hover {
+  border-color: rgba(180, 35, 24, 0.44);
+  background: #ffe4e0;
+}
+
 .icon-button {
   width: 44px;
   flex: 0 0 auto;
@@ -805,6 +816,17 @@ tr:last-child td {
   display: inline-flex;
   align-items: center;
   gap: 10px;
+}
+
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.row-actions form {
+  display: inline-flex;
 }
 
 .progress-cell span {

@@ -1,5 +1,6 @@
 import { FileText, Languages, ListFilter, PackageCheck, RefreshCw, Search, Store as StoreIcon } from "lucide-react";
 import { StoreConnectDialog } from "@/components/store-connect-dialog";
+import { StoreDeleteButton } from "@/components/store-delete-button";
 import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { getStoresView } from "@/lib/admin-client";
 import { readFormNotice, readSearchParam } from "@/lib/search-params";
@@ -132,13 +133,16 @@ export default async function StoresPage({ searchParams }: PageProps) {
                       </td>
                       <td>{store.lastSync}</td>
                       <td>
-                        <form action="/api/admin/stores/sync" method="post">
-                          <input type="hidden" name="storeId" value={store.id} />
-                          <button className="button button--ghost" type="submit">
-                            <RefreshCw size={15} aria-hidden="true" />
-                            同步
-                          </button>
-                        </form>
+                        <div className="row-actions">
+                          <form action="/api/admin/stores/sync" method="post">
+                            <input type="hidden" name="storeId" value={store.id} />
+                            <button className="button button--ghost button--small" type="submit">
+                              <RefreshCw size={14} aria-hidden="true" />
+                              同步
+                            </button>
+                          </form>
+                          <StoreDeleteButton storeId={store.id} storeName={store.name} domain={store.domain} />
+                        </div>
                       </td>
                     </tr>
                   ))

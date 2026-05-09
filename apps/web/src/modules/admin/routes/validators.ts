@@ -2,6 +2,7 @@ import { AdminApiError } from "../policies/errors";
 import { localeSchema, shopDomainSchema } from "@shopify-ai-blog/shared";
 import type {
   CreateCampaignInput,
+  DeleteStoreInput,
   QueueArticlePublishInput,
   QueueStoreSyncInput,
   UpsertAiProviderInput,
@@ -23,6 +24,15 @@ export async function parseQueueStoreSyncRequest(request: Request): Promise<Queu
     products: booleanValue(body.products, true),
     collections: booleanValue(body.collections, true),
     limit: optionalInteger(body.limit, "limit", 1, 250)
+  };
+}
+
+export async function parseDeleteStoreRequest(request: Request): Promise<DeleteStoreInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    storeId: requiredString(body, "storeId"),
+    confirmDomain: optionalString(body.confirmDomain)
   };
 }
 

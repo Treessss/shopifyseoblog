@@ -299,6 +299,11 @@ export interface QueueStoreSyncInput {
   limit?: number;
 }
 
+export interface DeleteStoreInput {
+  storeId: string;
+  confirmDomain?: string;
+}
+
 export interface QueueArticlePublishInput {
   articleId: string;
   publishAt?: string;

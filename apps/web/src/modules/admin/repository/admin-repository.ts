@@ -3,6 +3,7 @@ import type {
   AdminRequestContextInput,
   AuditLogCreateInput,
   CreateCampaignInput,
+  DeleteStoreInput,
   PublishLogCreateInput,
   QueueArticlePublishInput,
   QueueStoreSyncInput,
@@ -455,6 +456,66 @@ export async function upsertStoreCredentials(
           webhookSecretUpdated: Boolean(input.webhookSecret)
         })
       }
+    });
+
+    return store;
+  });
+}
+
+export async function deleteStore(
+  organizationId: string,
+  input: DeleteStoreInput,
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const store = await tx.shopifyStore.findFirst({
+      where: { id: input.storeId, organizationId },
+      include: {
+        _count: {
+          select: {
+            localeConfigs: true,
+            aiProviderConfigs: true,
+            brandVoices: true,
+            campaigns: true,
+            articles: true,
+            articleTranslations: true,
+            generatedAssets: true,
+            publishJobs: true,
+            publishLogs: true,
+            auditLogs: true,
+            productSnapshots: true,
+            collectionSnapshots: true
+          }
+        }
+      }
+    });
+
+    if (!store) return null;
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: store.id,
+        userId: requestContext.requestedByUserId,
+        action: "delete",
+        entityType: "shopify_store",
+        entityId: store.id,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: compactJsonObject({
+          deletedStoreId: store.id,
+          name: store.name,
+          domain: store.myshopifyDomain,
+          apiVersion: store.apiVersion,
+          primaryLocale: store.primaryLocale,
+          status: store.status,
+          removedCounts: store._count
+        })
+      }
+    });
+
+    await tx.shopifyStore.delete({
+      where: { id: store.id }
     });
 
     return store;

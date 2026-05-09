@@ -17,6 +17,7 @@ import type {
   AdminRequestContextInput,
   AdminStoreOverview,
   CreateCampaignInput,
+  DeleteStoreInput,
   JobStatus,
   LogLevel,
   PublishEvent,
@@ -122,6 +123,41 @@ export async function saveStoreCredentials(input: AdminRequestContextInput, body
     connected: true,
     connectionMode: "manual_token",
     message: "Store credentials were encrypted and saved."
+  };
+}
+
+export async function deleteStore(input: AdminRequestContextInput, body: DeleteStoreInput) {
+  const context = await resolveAdminContext(input);
+  const store = await repository.findStoreById(context.organizationId, body.storeId);
+
+  if (!store) {
+    throw new AdminApiError(404, "STORE_NOT_FOUND", "Store was not found.");
+  }
+
+  assertTenantResource(store, context.organizationId, "store");
+
+  if (body.confirmDomain && body.confirmDomain !== store.myshopifyDomain) {
+    throw new AdminApiError(409, "STORE_DELETE_CONFIRMATION_MISMATCH", "Store confirmation domain does not match.", {
+      storeId: store.id,
+      confirmDomain: body.confirmDomain
+    });
+  }
+
+  const deleted = await repository.deleteStore(context.organizationId, body, context);
+  if (!deleted) {
+    throw new AdminApiError(404, "STORE_NOT_FOUND", "Store was not found.");
+  }
+
+  return {
+    organization: context.organization,
+    deleted: true,
+    message: "Store was removed from this management system. Shopify store data outside this app was not deleted.",
+    store: {
+      id: deleted.id,
+      name: deleted.name,
+      domain: deleted.myshopifyDomain
+    },
+    removedCounts: deleted._count
   };
 }
 
