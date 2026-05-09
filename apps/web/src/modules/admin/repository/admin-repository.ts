@@ -8,7 +8,8 @@ import type {
   QueueStoreSyncInput,
   UpsertAiProviderInput,
   UpsertBrandVoiceInput,
-  UpsertLanguageInput
+  UpsertLanguageInput,
+  UpsertStoreCredentialsInput
 } from "../contracts";
 
 export type AdminDbClient = typeof prisma | any;
@@ -55,6 +56,12 @@ export function findStores(organizationId: string, take = 50) {
 export function findStoreById(organizationId: string, storeId: string, db: AdminDbClient = prisma) {
   return db.shopifyStore.findFirst({
     where: { id: storeId, organizationId }
+  });
+}
+
+export function findStoreByDomain(shopDomain: string, db: AdminDbClient = prisma) {
+  return db.shopifyStore.findUnique({
+    where: { myshopifyDomain: shopDomain }
   });
 }
 
@@ -353,6 +360,104 @@ export async function createStoreSyncJobs(
     });
 
     return jobs;
+  });
+}
+
+export async function upsertStoreCredentials(
+  organizationId: string,
+  input: UpsertStoreCredentialsInput,
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const now = new Date();
+    const existing = await findStoreByDomain(input.shopDomain, tx);
+    const storeName = input.name ?? input.shopDomain.replace(".myshopify.com", "");
+    const scopes = input.scopes.length > 0 ? input.scopes : ["read_products", "read_content", "write_content"];
+    const metadata = compactJsonObject({
+      connectionMode: "manual_token",
+      shopifyApiKey: input.shopifyApiKey,
+      defaultBlogHandle: input.shopifyBlogHandle,
+      credentialsUpdatedAt: now.toISOString()
+    });
+
+    const store = existing
+      ? await tx.shopifyStore.update({
+          where: { id: existing.id },
+          data: {
+            name: storeName,
+            adminAccessTokenEncrypted: encryptSecret(input.adminAccessToken),
+            webhookSecretEncrypted: input.webhookSecret ? encryptSecret(input.webhookSecret) : existing.webhookSecretEncrypted,
+            scopes,
+            apiVersion: input.apiVersion,
+            status: "active",
+            primaryLocale: input.primaryLocale,
+            installedAt: existing.installedAt ?? now,
+            disconnectedAt: null,
+            metadata
+          }
+        })
+      : await tx.shopifyStore.create({
+          data: {
+            organizationId,
+            name: storeName,
+            myshopifyDomain: input.shopDomain,
+            adminAccessTokenEncrypted: encryptSecret(input.adminAccessToken),
+            webhookSecretEncrypted: input.webhookSecret ? encryptSecret(input.webhookSecret) : null,
+            scopes,
+            apiVersion: input.apiVersion,
+            status: "active",
+            primaryLocale: input.primaryLocale,
+            installedAt: now,
+            metadata
+          }
+        });
+
+    await tx.localeConfig.upsert({
+      where: {
+        storeId_locale: {
+          storeId: store.id,
+          locale: input.primaryLocale
+        }
+      },
+      update: {
+        label: localeLabel(input.primaryLocale),
+        isDefault: true,
+        isEnabled: true,
+        shopifyBlogHandle: input.shopifyBlogHandle
+      },
+      create: {
+        organizationId,
+        storeId: store.id,
+        locale: input.primaryLocale,
+        label: localeLabel(input.primaryLocale),
+        isDefault: true,
+        isEnabled: true,
+        shopifyBlogHandle: input.shopifyBlogHandle
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: store.id,
+        userId: requestContext.requestedByUserId,
+        action: existing ? "update" : "create",
+        entityType: "shopify_store",
+        entityId: store.id,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: compactJsonObject({
+          connectionMode: "manual_token",
+          shopDomain: input.shopDomain,
+          apiVersion: input.apiVersion,
+          scopes,
+          tokenUpdated: true,
+          webhookSecretUpdated: Boolean(input.webhookSecret)
+        })
+      }
+    });
+
+    return store;
   });
 }
 
@@ -813,6 +918,19 @@ function compactJsonObject(input: Record<string, unknown>): Record<string, unkno
   }
 
   return output;
+}
+
+function localeLabel(locale: string) {
+  const labels: Record<string, string> = {
+    "zh-CN": "简体中文",
+    "en-US": "English",
+    "ja-JP": "日本語",
+    "de-DE": "Deutsch",
+    "fr-FR": "Français",
+    "es-ES": "Español"
+  };
+
+  return labels[locale] ?? locale;
 }
 
 function slugify(value: string) {

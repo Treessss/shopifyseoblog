@@ -26,7 +26,8 @@ import type {
   ResolvedAdminContext,
   UpsertAiProviderInput,
   UpsertBrandVoiceInput,
-  UpsertLanguageInput
+  UpsertLanguageInput,
+  UpsertStoreCredentialsInput
 } from "../contracts";
 
 type StoreRow = Awaited<ReturnType<typeof repository.findStores>>[number];
@@ -94,6 +95,33 @@ export async function getStores(input: AdminRequestContextInput) {
   return {
     organization: context.organization,
     stores: stores.map(mapStore)
+  };
+}
+
+export async function saveStoreCredentials(input: AdminRequestContextInput, body: UpsertStoreCredentialsInput) {
+  const context = await resolveAdminContext(input);
+  const existing = await repository.findStoreByDomain(body.shopDomain);
+
+  if (existing && existing.organizationId !== context.organizationId) {
+    throw new AdminApiError(409, "STORE_DOMAIN_OWNED_BY_ANOTHER_ORG", "Store domain is already connected to another organization.");
+  }
+
+  const store = await repository.upsertStoreCredentials(context.organizationId, body, context);
+
+  return {
+    organization: context.organization,
+    store: mapStore({
+      ...store,
+      _count: {
+        productSnapshots: 0,
+        collectionSnapshots: 0,
+        articles: 0,
+        campaigns: 0
+      }
+    }),
+    connected: true,
+    connectionMode: "manual_token",
+    message: "Store credentials were encrypted and saved."
   };
 }
 

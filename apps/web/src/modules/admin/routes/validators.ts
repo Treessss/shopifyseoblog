@@ -1,11 +1,13 @@
 import { AdminApiError } from "../policies/errors";
+import { localeSchema, shopDomainSchema } from "@shopify-ai-blog/shared";
 import type {
   CreateCampaignInput,
   QueueArticlePublishInput,
   QueueStoreSyncInput,
   UpsertAiProviderInput,
   UpsertBrandVoiceInput,
-  UpsertLanguageInput
+  UpsertLanguageInput,
+  UpsertStoreCredentialsInput
 } from "../contracts";
 
 const SOURCE_TYPES = ["product", "collection", "manual_topic"] as const;
@@ -21,6 +23,31 @@ export async function parseQueueStoreSyncRequest(request: Request): Promise<Queu
     products: booleanValue(body.products, true),
     collections: booleanValue(body.collections, true),
     limit: optionalInteger(body.limit, "limit", 1, 250)
+  };
+}
+
+export async function parseUpsertStoreCredentialsRequest(request: Request): Promise<UpsertStoreCredentialsInput> {
+  const body = await readRequestObject(request);
+  const parsedDomain = shopDomainSchema.safeParse(requiredString(body, "shopDomain"));
+  if (!parsedDomain.success) {
+    throw new AdminApiError(400, "SHOP_DOMAIN_INVALID", "shopDomain must be a valid myshopify.com domain.");
+  }
+
+  const parsedLocale = localeSchema.safeParse(optionalString(body.primaryLocale) ?? "zh-CN");
+  if (!parsedLocale.success) {
+    throw new AdminApiError(400, "PRIMARY_LOCALE_INVALID", "primaryLocale is invalid.");
+  }
+
+  return {
+    shopDomain: parsedDomain.data,
+    name: optionalString(body.name),
+    adminAccessToken: requiredString(body, "adminAccessToken"),
+    apiVersion: apiVersionValue(body.apiVersion),
+    primaryLocale: parsedLocale.data,
+    shopifyBlogHandle: optionalString(body.shopifyBlogHandle),
+    shopifyApiKey: optionalString(body.shopifyApiKey),
+    webhookSecret: optionalString(body.webhookSecret),
+    scopes: stringList(body.scopes)
   };
 }
 
@@ -222,6 +249,14 @@ function integerOrFloatValue(value: unknown, key: string, fallback: number, min:
 function optionalInteger(value: unknown, key: string, min: number, max: number) {
   if (value === undefined || value === null || value === "") return undefined;
   return integerValue(value, key, 0, min, max);
+}
+
+function apiVersionValue(value: unknown) {
+  const version = optionalString(value) ?? "2026-04";
+  if (!/^\d{4}-\d{2}$/.test(version)) {
+    throw new AdminApiError(400, "API_VERSION_INVALID", "apiVersion must use YYYY-MM format.");
+  }
+  return version;
 }
 
 function optionalEnum<T extends readonly string[]>(value: unknown, allowed: T, key: string): T[number] | undefined {

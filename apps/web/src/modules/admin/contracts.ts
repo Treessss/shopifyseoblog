@@ -228,6 +228,18 @@ export interface UpsertLanguageInput {
   shopifyBlogHandle?: string;
 }
 
+export interface UpsertStoreCredentialsInput {
+  shopDomain: string;
+  name?: string;
+  adminAccessToken: string;
+  apiVersion: string;
+  primaryLocale: string;
+  shopifyBlogHandle?: string;
+  shopifyApiKey?: string;
+  webhookSecret?: string;
+  scopes: string[];
+}
+
 export interface UpsertBrandVoiceInput {
   id?: string;
   storeId?: string;
