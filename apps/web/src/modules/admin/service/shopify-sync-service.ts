@@ -1,6 +1,7 @@
 import { maybeDecryptSecret } from "@shopify-ai-blog/db";
 import {
   createShopifyGraphQLClient,
+  exchangeShopifyClientCredentials,
   listBlogs,
   listCollections,
   listProducts,
@@ -46,7 +47,7 @@ export async function syncShopifyStoreResources(
   input: QueueStoreSyncInput,
   requestContext: AdminRequestContextInput
 ) {
-  const client = createStoreClient(store);
+  const client = await createStoreClient(organizationId, store);
   const shop = await verifyShopifyConnection(client, store);
   const maxItems = resolveMaxSyncItems(input.limit, input.fullSync);
   const syncedAt = new Date();
@@ -71,7 +72,17 @@ export async function syncShopifyStoreResources(
   }, requestContext);
 }
 
-function createStoreClient(store: StoreForSync): ShopifyGraphQLClient {
+async function createStoreClient(organizationId: string, store: StoreForSync): Promise<ShopifyGraphQLClient> {
+  const accessToken = await resolveFreshStoreAccessToken(organizationId, store);
+
+  return createShopifyGraphQLClient({
+    shopDomain: store.myshopifyDomain,
+    accessToken,
+    apiVersion: store.apiVersion
+  });
+}
+
+async function resolveFreshStoreAccessToken(organizationId: string, store: StoreForSync): Promise<string> {
   let accessToken: string | null | undefined;
 
   try {
@@ -83,18 +94,85 @@ function createStoreClient(store: StoreForSync): ShopifyGraphQLClient {
     });
   }
 
-  if (!accessToken) {
+  const hasClientCredentials = Boolean(store.shopifyClientId && store.shopifyClientSecretEncrypted);
+  if (accessToken && (!hasClientCredentials || !shouldRefreshToken(store.adminAccessTokenExpiresAt))) {
+    return accessToken;
+  }
+
+  if (!hasClientCredentials) {
+    if (accessToken) return accessToken;
     throw new AdminApiError(409, "SHOPIFY_TOKEN_MISSING", "Store does not have an Admin API access token.", {
       storeId: store.id,
       domain: store.myshopifyDomain
     });
   }
 
-  return createShopifyGraphQLClient({
-    shopDomain: store.myshopifyDomain,
-    accessToken,
-    apiVersion: store.apiVersion
-  });
+  let clientSecret: string | null | undefined;
+  try {
+    clientSecret = maybeDecryptSecret(store.shopifyClientSecretEncrypted);
+  } catch (error) {
+    throw new AdminApiError(409, "SHOPIFY_CLIENT_SECRET_DECRYPT_FAILED", "Could not decrypt the Shopify client secret.", {
+      storeId: store.id,
+      domain: store.myshopifyDomain
+    });
+  }
+
+  if (!store.shopifyClientId || !clientSecret) {
+    if (accessToken) return accessToken;
+    throw new AdminApiError(409, "SHOPIFY_CLIENT_CREDENTIALS_MISSING", "Store does not have Shopify client credentials.", {
+      storeId: store.id,
+      domain: store.myshopifyDomain
+    });
+  }
+
+  try {
+    const refreshedToken = await exchangeShopifyClientCredentials({
+      shop: store.myshopifyDomain,
+      clientId: store.shopifyClientId,
+      clientSecret
+    });
+
+    if (!refreshedToken.access_token) {
+      throw new AdminApiError(502, "SHOPIFY_ACCESS_TOKEN_MISSING", "Shopify did not return an Admin API access token.", {
+        storeId: store.id,
+        domain: store.myshopifyDomain
+      });
+    }
+
+    await repository.updateStoreAccessTokenFromClientCredentials(organizationId, store.id, {
+      accessToken: refreshedToken.access_token,
+      scopes: parseShopifyScopeList(refreshedToken.scope),
+      expiresAt: tokenExpiryDate(refreshedToken.expires_in),
+      refreshedAt: new Date()
+    });
+
+    return refreshedToken.access_token;
+  } catch (error) {
+    if (error instanceof AdminApiError) throw error;
+    throw new AdminApiError(502, "SHOPIFY_CLIENT_CREDENTIALS_REFRESH_FAILED", "Could not refresh the Shopify Admin API token.", {
+      storeId: store.id,
+      domain: store.myshopifyDomain,
+      reason: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+function shouldRefreshToken(expiresAt: Date | null | undefined): boolean {
+  if (!expiresAt) return true;
+  return expiresAt.getTime() - Date.now() <= 5 * 60 * 1000;
+}
+
+function parseShopifyScopeList(scope: string | undefined): string[] {
+  if (!scope) return [];
+  return scope
+    .split(/\s*,\s*|\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function tokenExpiryDate(expiresInSeconds: number | undefined): Date | undefined {
+  if (!Number.isFinite(expiresInSeconds) || !expiresInSeconds) return undefined;
+  return new Date(Date.now() + expiresInSeconds * 1000);
 }
 
 async function verifyShopifyConnection(client: ShopifyGraphQLClient, store: StoreForSync) {

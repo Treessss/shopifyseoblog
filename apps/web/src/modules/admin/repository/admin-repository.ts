@@ -587,11 +587,23 @@ export async function upsertStoreCredentials(
     const now = new Date();
     const existing = await findStoreByDomain(input.shopDomain, tx);
     const storeName = input.name ?? input.shopDomain.replace(".myshopify.com", "");
+    const adminAccessToken = input.adminAccessToken;
+    if (!adminAccessToken) {
+      throw new Error("Resolved Shopify Admin API access token is required before saving store credentials.");
+    }
     const scopes = input.scopes.length > 0 ? input.scopes : ["read_products", "read_content", "write_content"];
+    const adminAccessTokenExpiresAt = input.adminAccessTokenExpiresAt ? new Date(input.adminAccessTokenExpiresAt) : null;
+    const shopifyClientId = input.connectionMode === "client_credentials" ? input.shopifyClientId : input.shopifyApiKey;
+    const shopifyClientSecretEncrypted =
+      input.connectionMode === "client_credentials" && input.shopifyClientSecret
+        ? encryptSecret(input.shopifyClientSecret)
+        : null;
+    const webhookSecret = input.webhookSecret ?? (input.connectionMode === "client_credentials" ? input.shopifyClientSecret : undefined);
     const metadata = compactJsonObject({
-      connectionMode: "manual_token",
-      shopifyApiKey: input.shopifyApiKey,
+      connectionMode: input.connectionMode,
+      shopifyApiKey: shopifyClientId,
       defaultBlogHandle: input.shopifyBlogHandle,
+      adminAccessTokenExpiresAt: adminAccessTokenExpiresAt?.toISOString(),
       credentialsUpdatedAt: now.toISOString()
     });
 
@@ -600,8 +612,11 @@ export async function upsertStoreCredentials(
           where: { id: existing.id },
           data: {
             name: storeName,
-            adminAccessTokenEncrypted: encryptSecret(input.adminAccessToken),
-            webhookSecretEncrypted: input.webhookSecret ? encryptSecret(input.webhookSecret) : existing.webhookSecretEncrypted,
+            adminAccessTokenEncrypted: encryptSecret(adminAccessToken),
+            adminAccessTokenExpiresAt,
+            shopifyClientId,
+            shopifyClientSecretEncrypted,
+            webhookSecretEncrypted: webhookSecret ? encryptSecret(webhookSecret) : existing.webhookSecretEncrypted,
             scopes,
             apiVersion: input.apiVersion,
             status: "active",
@@ -616,8 +631,11 @@ export async function upsertStoreCredentials(
             organizationId,
             name: storeName,
             myshopifyDomain: input.shopDomain,
-            adminAccessTokenEncrypted: encryptSecret(input.adminAccessToken),
-            webhookSecretEncrypted: input.webhookSecret ? encryptSecret(input.webhookSecret) : null,
+            adminAccessTokenEncrypted: encryptSecret(adminAccessToken),
+            adminAccessTokenExpiresAt,
+            shopifyClientId,
+            shopifyClientSecretEncrypted,
+            webhookSecretEncrypted: webhookSecret ? encryptSecret(webhookSecret) : null,
             scopes,
             apiVersion: input.apiVersion,
             status: "active",
@@ -662,17 +680,53 @@ export async function upsertStoreCredentials(
         ipAddress: requestContext.ipAddress,
         userAgent: requestContext.userAgent,
         metadata: compactJsonObject({
-          connectionMode: "manual_token",
+          connectionMode: input.connectionMode,
           shopDomain: input.shopDomain,
           apiVersion: input.apiVersion,
           scopes,
+          tokenExpiresAt: adminAccessTokenExpiresAt?.toISOString(),
           tokenUpdated: true,
-          webhookSecretUpdated: Boolean(input.webhookSecret)
+          clientCredentialsStored: Boolean(shopifyClientSecretEncrypted),
+          webhookSecretUpdated: Boolean(webhookSecret)
         })
       }
     });
 
     return store;
+  });
+}
+
+export async function updateStoreAccessTokenFromClientCredentials(
+  organizationId: string,
+  storeId: string,
+  input: {
+    accessToken: string;
+    scopes: string[];
+    expiresAt?: Date;
+    refreshedAt: Date;
+  }
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const store = await tx.shopifyStore.findFirst({
+      where: { id: storeId, organizationId }
+    });
+
+    if (!store) return null;
+
+    return tx.shopifyStore.update({
+      where: { id: store.id },
+      data: {
+        adminAccessTokenEncrypted: encryptSecret(input.accessToken),
+        adminAccessTokenExpiresAt: input.expiresAt ?? null,
+        scopes: input.scopes.length > 0 ? input.scopes : store.scopes,
+        metadata: toPrismaJson({
+          ...(isRecord(store.metadata) ? store.metadata : {}),
+          connectionMode: "client_credentials",
+          adminAccessTokenExpiresAt: input.expiresAt?.toISOString(),
+          lastTokenRefreshAt: input.refreshedAt.toISOString()
+        })
+      }
+    });
   });
 }
 

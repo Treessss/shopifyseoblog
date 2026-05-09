@@ -20,6 +20,13 @@ export interface ShopifyOAuthExchangeOptions {
   fetch?: FetchLike;
 }
 
+export interface ShopifyClientCredentialsExchangeOptions {
+  shop: string;
+  clientId: string;
+  clientSecret: string;
+  fetch?: FetchLike;
+}
+
 export interface ShopifyOAuthTokenResponse {
   access_token: string;
   scope: string;
@@ -69,6 +76,33 @@ export async function exchangeShopifyOAuthCode(options: ShopifyOAuthExchangeOpti
   const payload = (await response.json()) as unknown;
   if (!response.ok) {
     throw new ShopifyError(`Shopify OAuth exchange failed with HTTP ${response.status}.`, payload, response.status);
+  }
+
+  return payload as ShopifyOAuthTokenResponse;
+}
+
+export async function exchangeShopifyClientCredentials(
+  options: ShopifyClientCredentialsExchangeOptions
+): Promise<ShopifyOAuthTokenResponse> {
+  const shopDomain = normalizeShopDomain(options.shop);
+  const fetchImpl = options.fetch ?? getGlobalFetch();
+  const body = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: options.clientId,
+    client_secret: options.clientSecret
+  });
+
+  const response = await fetchImpl(`https://${shopDomain}/admin/oauth/access_token`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: body.toString()
+  });
+
+  const payload = (await response.json()) as unknown;
+  if (!response.ok) {
+    throw new ShopifyError(`Shopify client credentials exchange failed with HTTP ${response.status}.`, payload, response.status);
   }
 
   return payload as ShopifyOAuthTokenResponse;

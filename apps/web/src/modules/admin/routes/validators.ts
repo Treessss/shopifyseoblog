@@ -14,6 +14,7 @@ import type {
 const SOURCE_TYPES = ["product", "collection", "manual_topic"] as const;
 const PUBLISH_POLICIES = ["auto_when_qualified", "manual_review", "direct"] as const;
 const AI_PROVIDERS = ["openai", "compatible", "custom"] as const;
+const STORE_CONNECTION_MODES = ["manual_token", "client_credentials"] as const;
 
 export async function parseQueueStoreSyncRequest(request: Request): Promise<QueueStoreSyncInput> {
   const body = await readRequestObject(request);
@@ -38,6 +39,9 @@ export async function parseDeleteStoreRequest(request: Request): Promise<DeleteS
 
 export async function parseUpsertStoreCredentialsRequest(request: Request): Promise<UpsertStoreCredentialsInput> {
   const body = await readRequestObject(request);
+  const connectionMode =
+    optionalEnum(body.connectionMode, STORE_CONNECTION_MODES, "connectionMode") ??
+    (optionalString(body.clientId) || optionalString(body.clientSecret) ? "client_credentials" : "manual_token");
   const parsedDomain = shopDomainSchema.safeParse(requiredString(body, "shopDomain"));
   if (!parsedDomain.success) {
     throw new AdminApiError(400, "SHOP_DOMAIN_INVALID", "shopDomain must be a valid myshopify.com domain.");
@@ -48,13 +52,28 @@ export async function parseUpsertStoreCredentialsRequest(request: Request): Prom
     throw new AdminApiError(400, "PRIMARY_LOCALE_INVALID", "primaryLocale is invalid.");
   }
 
+  const adminAccessToken = optionalString(body.adminAccessToken);
+  const clientId = optionalString(body.clientId);
+  const clientSecret = optionalString(body.clientSecret);
+
+  if (connectionMode === "manual_token" && !adminAccessToken) {
+    throw new AdminApiError(400, "ADMIN_ACCESS_TOKEN_REQUIRED", "adminAccessToken is required.");
+  }
+
+  if (connectionMode === "client_credentials" && (!clientId || !clientSecret)) {
+    throw new AdminApiError(400, "SHOPIFY_CLIENT_CREDENTIALS_REQUIRED", "clientId and clientSecret are required.");
+  }
+
   return {
+    connectionMode,
     shopDomain: parsedDomain.data,
     name: optionalString(body.name),
-    adminAccessToken: requiredString(body, "adminAccessToken"),
+    adminAccessToken,
     apiVersion: apiVersionValue(body.apiVersion),
     primaryLocale: parsedLocale.data,
     shopifyBlogHandle: optionalString(body.shopifyBlogHandle),
+    shopifyClientId: clientId,
+    shopifyClientSecret: clientSecret,
     shopifyApiKey: optionalString(body.shopifyApiKey),
     webhookSecret: optionalString(body.webhookSecret),
     scopes: stringList(body.scopes)

@@ -1,13 +1,13 @@
 "use client";
 
-import { Globe2, KeyRound, Newspaper, ShieldCheck, Store, X } from "lucide-react";
+import { Globe2, KeyRound, Newspaper, RefreshCcw, ShieldCheck, Store, X } from "lucide-react";
 import { useId, useState } from "react";
 
-type ConnectMode = "oauth" | "manual";
+type ConnectMode = "client" | "manual" | "oauth";
 
 export function StoreConnectDialog() {
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<ConnectMode>("manual");
+  const [mode, setMode] = useState<ConnectMode>("client");
   const titleId = useId();
   const descriptionId = useId();
 
@@ -32,7 +32,7 @@ export function StoreConnectDialog() {
               <div>
                 <p className="eyebrow">New Store</p>
                 <h2 id={titleId}>新增 Shopify 店铺</h2>
-                <p id={descriptionId}>选择 OAuth 授权或手动 Token 接入，保存后可用于商品同步和 Blog 发布。</p>
+                <p id={descriptionId}>选择客户端凭证、手动 Token 或 OAuth 授权，保存后可用于商品同步和 Blog 发布。</p>
               </div>
               <button className="icon-button" type="button" aria-label="关闭新增店铺弹窗" onClick={() => setOpen(false)}>
                 <X size={18} aria-hidden="true" />
@@ -41,6 +41,15 @@ export function StoreConnectDialog() {
 
             <div className="modal__body">
               <div className="segmented-control" aria-label="店铺接入方式">
+                <button
+                  type="button"
+                  aria-pressed={mode === "client"}
+                  className={mode === "client" ? "segmented-control__item segmented-control__item--active" : "segmented-control__item"}
+                  onClick={() => setMode("client")}
+                >
+                  <RefreshCcw size={16} aria-hidden="true" />
+                  客户端凭证
+                </button>
                 <button
                   type="button"
                   aria-pressed={mode === "manual"}
@@ -61,7 +70,13 @@ export function StoreConnectDialog() {
                 </button>
               </div>
 
-              {mode === "manual" ? <ManualTokenForm onCancel={() => setOpen(false)} /> : <OAuthForm onCancel={() => setOpen(false)} />}
+              {mode === "client" ? (
+                <ClientCredentialsForm onCancel={() => setOpen(false)} />
+              ) : mode === "manual" ? (
+                <ManualTokenForm onCancel={() => setOpen(false)} />
+              ) : (
+                <OAuthForm onCancel={() => setOpen(false)} />
+              )}
             </div>
           </section>
         </div>
@@ -70,9 +85,83 @@ export function StoreConnectDialog() {
   );
 }
 
+function ClientCredentialsForm(props: { onCancel: () => void }) {
+  return (
+    <form action="/api/admin/stores" method="post" className="modal__form">
+      <input type="hidden" name="connectionMode" value="client_credentials" />
+
+      <label className="field">
+        <span>Shopify 店铺域名</span>
+        <input name="shopDomain" type="text" placeholder="your-store.myshopify.com" autoComplete="off" required />
+        <small>必须是这组客户端凭证已安装的 myshopify.com 店铺。</small>
+      </label>
+
+      <div className="modal__grid">
+        <label className="field">
+          <span>店铺显示名称</span>
+          <input name="name" type="text" placeholder="品牌店铺名称" autoComplete="organization" />
+        </label>
+        <label className="field">
+          <span>Admin API Version</span>
+          <input name="apiVersion" type="text" defaultValue="2026-04" placeholder="2026-04" required />
+        </label>
+      </div>
+
+      <div className="modal__grid">
+        <label className="field">
+          <span>客户端 ID</span>
+          <input name="clientId" type="text" placeholder="d5a315b0a833e37f798d96666380e765" autoComplete="off" required />
+        </label>
+        <label className="field">
+          <span>加密密钥</span>
+          <input name="clientSecret" type="password" placeholder="shpss_..." autoComplete="new-password" required />
+        </label>
+      </div>
+
+      <label className="field">
+        <span>Scopes</span>
+        <input name="scopes" type="text" defaultValue="read_products,read_content,write_content" />
+        <small>系统会用客户端 ID + 加密密钥换取短期 Admin API token，并在过期前自动刷新。</small>
+      </label>
+
+      <div className="modal__grid">
+        <label className="field">
+          <span>默认内容语言</span>
+          <select name="primaryLocale" defaultValue="zh-CN">
+            <option value="zh-CN">简体中文 zh-CN</option>
+            <option value="en-US">English en-US</option>
+            <option value="ja-JP">日本語 ja-JP</option>
+            <option value="de-DE">Deutsch de-DE</option>
+            <option value="fr-FR">Français fr-FR</option>
+            <option value="es-ES">Español es-ES</option>
+          </select>
+        </label>
+        <label className="field">
+          <span>默认 Blog Handle</span>
+          <input name="shopifyBlogHandle" type="text" placeholder="news" defaultValue="news" />
+        </label>
+      </div>
+
+      <ConnectionBadges active="client" />
+
+      <div className="modal__footer">
+        <button className="button" type="button" onClick={props.onCancel}>
+          取消
+        </button>
+        <button className="button button--primary" type="submit">
+          <RefreshCcw size={16} aria-hidden="true" />
+          换取 Token 并连接
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function ManualTokenForm(props: { onCancel: () => void }) {
   return (
     <form action="/api/admin/stores" method="post" className="modal__form">
+      <input type="hidden" name="connectionMode" value="manual_token" />
+
       <label className="field">
         <span>Shopify 店铺域名</span>
         <input name="shopDomain" type="text" placeholder="your-store.myshopify.com" autoComplete="off" required />
@@ -187,11 +276,16 @@ function OAuthForm(props: { onCancel: () => void }) {
 }
 
 function ConnectionBadges(props: { active: ConnectMode }) {
+  const credentialLabel =
+    props.active === "client" ? "自动换取 Token" : props.active === "manual" ? "Token 加密保存" : "OAuth 授权";
+  const credentialIcon =
+    props.active === "client" ? <RefreshCcw size={17} aria-hidden="true" /> : props.active === "manual" ? <KeyRound size={17} aria-hidden="true" /> : <ShieldCheck size={17} aria-hidden="true" />;
+
   return (
     <div className="modal__note">
       <span>
-        {props.active === "manual" ? <KeyRound size={17} aria-hidden="true" /> : <ShieldCheck size={17} aria-hidden="true" />}
-        {props.active === "manual" ? "Token 加密保存" : "OAuth 授权"}
+        {credentialIcon}
+        {credentialLabel}
       </span>
       <span>
         <Globe2 size={17} aria-hidden="true" />

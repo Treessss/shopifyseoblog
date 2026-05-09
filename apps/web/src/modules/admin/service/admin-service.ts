@@ -4,6 +4,7 @@ import {
   assertStoreSyncAllowed,
   assertTenantResource
 } from "../policies/admin-policy";
+import { exchangeShopifyClientCredentials } from "@shopify-ai-blog/shopify";
 import { AdminApiError } from "../policies/errors";
 import * as repository from "../repository/admin-repository";
 import { syncShopifyStoreResources } from "./shopify-sync-service";
@@ -108,7 +109,8 @@ export async function saveStoreCredentials(input: AdminRequestContextInput, body
     throw new AdminApiError(409, "STORE_DOMAIN_OWNED_BY_ANOTHER_ORG", "Store domain is already connected to another organization.");
   }
 
-  const store = await repository.upsertStoreCredentials(context.organizationId, body, context);
+  const resolvedCredentials = await resolveStoreCredentialInput(body);
+  const store = await repository.upsertStoreCredentials(context.organizationId, resolvedCredentials, context);
 
   return {
     organization: context.organization,
@@ -122,9 +124,65 @@ export async function saveStoreCredentials(input: AdminRequestContextInput, body
       }
     }),
     connected: true,
-    connectionMode: "manual_token",
-    message: "Store credentials were encrypted and saved."
+    connectionMode: resolvedCredentials.connectionMode,
+    message:
+      resolvedCredentials.connectionMode === "client_credentials"
+        ? "Shopify client credentials were exchanged and encrypted."
+        : "Store credentials were encrypted and saved."
   };
+}
+
+async function resolveStoreCredentialInput(input: UpsertStoreCredentialsInput): Promise<UpsertStoreCredentialsInput> {
+  if (input.connectionMode === "manual_token") {
+    if (!input.adminAccessToken) {
+      throw new AdminApiError(400, "ADMIN_ACCESS_TOKEN_REQUIRED", "adminAccessToken is required.");
+    }
+    return input;
+  }
+
+  if (!input.shopifyClientId || !input.shopifyClientSecret) {
+    throw new AdminApiError(400, "SHOPIFY_CLIENT_CREDENTIALS_REQUIRED", "clientId and clientSecret are required.");
+  }
+
+  try {
+    const token = await exchangeShopifyClientCredentials({
+      shop: input.shopDomain,
+      clientId: input.shopifyClientId,
+      clientSecret: input.shopifyClientSecret
+    });
+
+    if (!token.access_token) {
+      throw new AdminApiError(502, "SHOPIFY_ACCESS_TOKEN_MISSING", "Shopify did not return an Admin API access token.");
+    }
+
+    const returnedScopes = parseShopifyScopeList(token.scope);
+
+    return {
+      ...input,
+      adminAccessToken: token.access_token,
+      adminAccessTokenExpiresAt: tokenExpiresAt(token.expires_in),
+      scopes: returnedScopes.length > 0 ? returnedScopes : input.scopes
+    };
+  } catch (error) {
+    if (error instanceof AdminApiError) throw error;
+    throw new AdminApiError(502, "SHOPIFY_CLIENT_CREDENTIALS_EXCHANGE_FAILED", "Shopify could not exchange these client credentials for an Admin API token.", {
+      shopDomain: input.shopDomain,
+      reason: error instanceof Error ? error.message : String(error)
+    });
+  }
+}
+
+function parseShopifyScopeList(scope: string | undefined): string[] {
+  if (!scope) return [];
+  return scope
+    .split(/\s*,\s*|\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function tokenExpiresAt(expiresInSeconds: number | undefined): string | undefined {
+  if (!Number.isFinite(expiresInSeconds) || !expiresInSeconds) return undefined;
+  return new Date(Date.now() + expiresInSeconds * 1000).toISOString();
 }
 
 export async function deleteStore(input: AdminRequestContextInput, body: DeleteStoreInput) {

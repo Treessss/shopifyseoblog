@@ -53,8 +53,10 @@ describe("prisma schema", () => {
   });
 
   it("keeps status and encrypted secret fields in the schema", () => {
-    expect(schema).toContain("adminAccessTokenEncrypted String?");
-    expect(schema).toContain("apiKeyEncrypted String?");
+    expect(schema).toMatch(/adminAccessTokenEncrypted\s+String\?/);
+    expect(schema).toMatch(/adminAccessTokenExpiresAt\s+DateTime\?/);
+    expect(schema).toMatch(/shopifyClientSecretEncrypted\s+String\?/);
+    expect(schema).toMatch(/apiKeyEncrypted\s+String\?/);
     expect(schema).toContain("enum ArticleStatus");
     expect(schema).toContain("ready_to_publish");
     expect(schema).toContain("enum JobStatus");

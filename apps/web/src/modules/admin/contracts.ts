@@ -229,12 +229,16 @@ export interface UpsertLanguageInput {
 }
 
 export interface UpsertStoreCredentialsInput {
+  connectionMode: "manual_token" | "client_credentials";
   shopDomain: string;
   name?: string;
-  adminAccessToken: string;
+  adminAccessToken?: string;
+  adminAccessTokenExpiresAt?: string;
   apiVersion: string;
   primaryLocale: string;
   shopifyBlogHandle?: string;
+  shopifyClientId?: string;
+  shopifyClientSecret?: string;
   shopifyApiKey?: string;
   webhookSecret?: string;
   scopes: string[];

@@ -47,6 +47,7 @@ import {
   trimForDb,
   willRetryJob
 } from "./shared";
+import { resolveFreshStoreAccessToken } from "./shopify-token";
 
 export type BlogGenerationJob = Job<
   BlogGenerationQueueJobData,
@@ -533,7 +534,7 @@ async function publishArticle(
     });
 
     const shopifyBlogId = await resolveShopifyBlogId(job.data, article);
-    const accessToken = resolveStoreAccessToken(store);
+    const accessToken = await resolveFreshStoreAccessToken(store, "publish");
     validatePublishInputs(article, shopifyBlogId);
 
     const client = createShopifyGraphQLClient({
@@ -665,29 +666,6 @@ async function resolveShopifyBlogId(
   }
 
   return localeConfig.shopifyBlogId;
-}
-
-function resolveStoreAccessToken(store: { adminAccessTokenEncrypted: string | null; myshopifyDomain: string }): string {
-  let accessToken: string | null | undefined;
-  try {
-    accessToken = maybeDecryptSecret(store.adminAccessTokenEncrypted);
-  } catch (error) {
-    throw domainError(
-      "SHOPIFY_TOKEN_DECRYPT_FAILED",
-      `Could not decrypt the Shopify Admin API token for ${store.myshopifyDomain}: ${getErrorMessage(error)}`,
-      { retryable: false }
-    );
-  }
-
-  if (!accessToken) {
-    throw domainError(
-      "SHOPIFY_TOKEN_MISSING",
-      `Store ${store.myshopifyDomain} does not have an Admin API access token. Reconnect Shopify OAuth before publishing.`,
-      { retryable: false }
-    );
-  }
-
-  return accessToken;
 }
 
 function validatePublishInputs(

@@ -1,5 +1,5 @@
 import type { Job } from "bullmq";
-import { maybeDecryptSecret, prisma, Prisma } from "@shopify-ai-blog/db";
+import { prisma, Prisma } from "@shopify-ai-blog/db";
 import {
   createShopifyGraphQLClient,
   listCollections,
@@ -33,12 +33,12 @@ import {
   failureJobStatus,
   failurePayload,
   failurePublishEvent,
-  getErrorMessage,
   parseIntegerEnv,
   throwForBullMQ,
   toPrismaJson,
   willRetryJob
 } from "./shared";
+import { resolveFreshStoreAccessToken } from "./shopify-token";
 
 export type ShopifySyncJob = Job<ShopifySyncJobData, WorkerJobResult, ShopifySyncJobName>;
 
@@ -47,6 +47,10 @@ interface WorkerShopifyStore {
   organizationId: string;
   myshopifyDomain: string;
   adminAccessTokenEncrypted: string | null;
+  adminAccessTokenExpiresAt: Date | null;
+  shopifyClientId: string | null;
+  shopifyClientSecretEncrypted: string | null;
+  scopes: string[];
   apiVersion: string;
   status: string;
 }
@@ -106,7 +110,7 @@ async function syncProducts(
       payload: { bullJobId: job.id }
     });
 
-    const client = createStoreClient(loadedStore);
+    const client = await createStoreClient(loadedStore);
     const result = await listAllProducts(client, job.data);
     const products = result.connection.nodes;
     const syncedAt = new Date();
@@ -221,7 +225,7 @@ async function syncCollections(
       payload: { bullJobId: job.id }
     });
 
-    const client = createStoreClient(loadedStore);
+    const client = await createStoreClient(loadedStore);
     const result = await listAllCollections(client, job.data);
     const collections = result.connection.nodes;
     const syncedAt = new Date();
@@ -330,25 +334,8 @@ async function loadStore(organizationId: string, storeId: string): Promise<Worke
   return store;
 }
 
-function createStoreClient(store: WorkerShopifyStore): ShopifyGraphQLClient {
-  let accessToken: string | null | undefined;
-
-  try {
-    accessToken = maybeDecryptSecret(store.adminAccessTokenEncrypted);
-  } catch (error) {
-    throw domainError(
-      "SHOPIFY_TOKEN_DECRYPT_FAILED",
-      `Could not decrypt the Shopify Admin API token for ${store.myshopifyDomain}: ${getErrorMessage(error)}`
-    );
-  }
-
-  if (!accessToken) {
-    throw domainError(
-      "SHOPIFY_TOKEN_MISSING",
-      `Store ${store.myshopifyDomain} does not have an Admin API access token. Reconnect Shopify OAuth before syncing.`
-    );
-  }
-
+async function createStoreClient(store: WorkerShopifyStore): Promise<ShopifyGraphQLClient> {
+  const accessToken = await resolveFreshStoreAccessToken(store, "sync");
   return createShopifyGraphQLClient({
     shopDomain: store.myshopifyDomain,
     accessToken,
