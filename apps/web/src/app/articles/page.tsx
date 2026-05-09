@@ -1,4 +1,4 @@
-import { CheckCircle2, FileText, Gauge, RefreshCw, Search, Send } from "lucide-react";
+import { CheckCircle2, FileText, Gauge, ListFilter, Megaphone, RefreshCw, Search, Send } from "lucide-react";
 import Link from "next/link";
 import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { formatArticleStatus, getArticlesView } from "@/lib/admin-client";
@@ -38,8 +38,8 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
               刷新
             </Link>
             <Link href="/campaigns#new-campaign" className="button button--primary">
-              <FileText size={16} aria-hidden="true" />
-              新建任务生成
+              <Megaphone size={16} aria-hidden="true" />
+              新建内容任务
             </Link>
           </div>
         }
@@ -116,6 +116,7 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
               </select>
             </label>
             <button className="button" type="submit">
+              <ListFilter size={16} aria-hidden="true" />
               筛选
             </button>
             <span className="filter-bar__summary">当前 {filteredArticles.length} 篇文章</span>
@@ -162,6 +163,7 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
                       <td>
                         <form action={`/api/admin/articles/${article.id}/publish`} method="post">
                           <button className="button button--small" type="submit" disabled={article.status !== "ready_to_publish"}>
+                            <Send size={14} aria-hidden="true" />
                             发布
                           </button>
                         </form>

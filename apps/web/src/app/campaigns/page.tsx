@@ -1,4 +1,4 @@
-import { Clock3, Megaphone, Plus, Search, ShieldCheck } from "lucide-react";
+import { Clock3, Languages, ListFilter, Megaphone, Plus, Search, ShieldCheck } from "lucide-react";
 import {
   Badge,
   ErrorState,
@@ -86,7 +86,7 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
             label="语言队列"
             value={languages.length || "zh-CN"}
             tone={languages.length > 0 ? "good" : "warn"}
-            icon={<Search size={18} aria-hidden="true" />}
+            icon={<Languages size={18} aria-hidden="true" />}
           />
         </div>
 
@@ -108,6 +108,7 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
               </select>
             </label>
             <button className="button" type="submit">
+              <ListFilter size={16} aria-hidden="true" />
               筛选
             </button>
             <span className="filter-bar__summary">当前 {filteredCampaigns.length} 个任务</span>

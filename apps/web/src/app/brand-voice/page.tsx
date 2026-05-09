@@ -1,4 +1,4 @@
-import { Ban, FileText, MessageSquareText, Save, Users } from "lucide-react";
+import { Ban, FileText, Globe2, MessageSquareText, Save } from "lucide-react";
 import {
   EmptyState,
   ErrorState,
@@ -60,7 +60,7 @@ export default async function BrandVoicePage({ searchParams }: PageProps) {
             label="语言覆盖"
             value={new Set(profiles.map((profile) => profile.locale)).size || "zh-CN"}
             tone="neutral"
-            icon={<Users size={18} aria-hidden="true" />}
+            icon={<Globe2 size={18} aria-hidden="true" />}
           />
           <StatusPill
             label="禁用词"

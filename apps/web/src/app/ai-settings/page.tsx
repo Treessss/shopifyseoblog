@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Bot, FlaskConical, Image, KeyRound, Save, ShieldCheck } from "lucide-react";
+import { Bot, Cpu, FlaskConical, Image, KeyRound, Save } from "lucide-react";
 import {
   Badge,
   EmptyState,
@@ -34,7 +34,7 @@ export default async function AiSettingsPage({ searchParams }: PageProps) {
         action={
           <Link href="/api/ai/test" className="button">
             <FlaskConical size={16} aria-hidden="true" />
-            接口说明
+            测试接口
           </Link>
         }
       />
@@ -54,7 +54,7 @@ export default async function AiSettingsPage({ searchParams }: PageProps) {
             label="默认模型"
             value={defaultProvider?.textModel || "待配置"}
             tone={defaultProvider?.textModel ? "good" : "warn"}
-            icon={<ShieldCheck size={18} aria-hidden="true" />}
+            icon={<Cpu size={18} aria-hidden="true" />}
           />
           <StatusPill
             label="图像模型"

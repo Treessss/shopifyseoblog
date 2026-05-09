@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Activity, AlertTriangle, CheckCircle2, RefreshCw, Search } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle2, CircleAlert, ListFilter, RefreshCw, Search } from "lucide-react";
 import { Badge, ErrorState, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { formatJobStatus, formatLogLevel, getLogsView } from "@/lib/admin-client";
 import { readSearchParam } from "@/lib/search-params";
@@ -61,7 +61,7 @@ export default async function LogsPage({ searchParams }: PageProps) {
             label="异常"
             value={errorCount}
             tone={errorCount > 0 ? "danger" : "good"}
-            icon={<Search size={18} aria-hidden="true" />}
+            icon={<CircleAlert size={18} aria-hidden="true" />}
           />
         </div>
 
@@ -83,6 +83,7 @@ export default async function LogsPage({ searchParams }: PageProps) {
               </select>
             </label>
             <button className="button" type="submit">
+              <ListFilter size={16} aria-hidden="true" />
               筛选
             </button>
             <span className="filter-bar__summary">当前 {filteredLogs.length} 条事件</span>

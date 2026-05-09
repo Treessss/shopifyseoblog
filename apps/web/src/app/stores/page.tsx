@@ -1,4 +1,4 @@
-import { Languages, PackageCheck, RefreshCw, Search, Store as StoreIcon } from "lucide-react";
+import { FileText, Languages, ListFilter, PackageCheck, RefreshCw, Search, Store as StoreIcon } from "lucide-react";
 import { StoreConnectDialog } from "@/components/store-connect-dialog";
 import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { getStoresView } from "@/lib/admin-client";
@@ -59,7 +59,7 @@ export default async function StoresPage({ searchParams }: PageProps) {
             label="内容覆盖"
             value={stores.reduce((sum, store) => sum + store.articles, 0).toLocaleString("zh-CN")}
             tone="neutral"
-            icon={<Search size={18} aria-hidden="true" />}
+            icon={<FileText size={18} aria-hidden="true" />}
           />
           <StatusPill
             label="默认语言"
@@ -87,6 +87,7 @@ export default async function StoresPage({ searchParams }: PageProps) {
               </select>
             </label>
             <button className="button" type="submit">
+              <ListFilter size={16} aria-hidden="true" />
               筛选
             </button>
             <span className="filter-bar__summary">当前 {filteredStores.length} 家店铺</span>
