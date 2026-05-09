@@ -593,7 +593,7 @@ select:disabled,
 }
 
 .status-pill strong,
-.status-pill span {
+.status-pill > div > span {
   display: block;
 }
 
@@ -604,7 +604,7 @@ select:disabled,
   overflow-wrap: anywhere;
 }
 
-.status-pill span {
+.status-pill > div > span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 750;
