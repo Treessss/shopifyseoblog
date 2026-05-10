@@ -25,6 +25,15 @@ export function readFormNotice(params: SearchParamRecord) {
     };
   }
 
+  const tested = readSearchParam(params, "tested");
+  if (tested) {
+    return {
+      tone: "good" as const,
+      title: "测试成功",
+      message: readSearchParam(params, "message") || "AI 接口已通过服务端测试。"
+    };
+  }
+
   const oauth = readSearchParam(params, "oauth");
   if (oauth) {
     return {

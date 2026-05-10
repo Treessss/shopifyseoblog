@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Bot, Cpu, FlaskConical, Image, KeyRound, Save } from "lucide-react";
 import {
   Badge,
@@ -32,10 +31,14 @@ export default async function AiSettingsPage({ searchParams }: PageProps) {
         title="AI 设置"
         description="配置 OpenAI-compatible Provider。店铺级配置可覆盖全局默认值，密钥只提交到服务端。"
         action={
-          <Link href="/api/ai/test" className="button">
-            <FlaskConical size={16} aria-hidden="true" />
-            测试接口
-          </Link>
+          <form action="/api/ai/test" method="post" className="toolbar">
+            {defaultProvider ? <input type="hidden" name="providerId" value={defaultProvider.id} /> : null}
+            <input type="hidden" name="dryRun" value="false" />
+            <button className="button" type="submit" disabled={!defaultProvider}>
+              <FlaskConical size={16} aria-hidden="true" />
+              测试接口
+            </button>
+          </form>
         }
       />
 
