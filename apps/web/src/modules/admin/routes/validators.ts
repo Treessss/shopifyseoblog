@@ -24,7 +24,7 @@ export async function parseQueueStoreSyncRequest(request: Request): Promise<Queu
     fullSync: booleanValue(body.fullSync, false),
     products: booleanValue(body.products, true),
     collections: booleanValue(body.collections, true),
-    limit: optionalInteger(body.limit, "limit", 1, 250)
+    limit: optionalInteger(body.limit, "limit", 1, 2500)
   };
 }
 

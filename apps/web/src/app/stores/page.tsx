@@ -136,6 +136,8 @@ export default async function StoresPage({ searchParams }: PageProps) {
                         <div className="row-actions">
                           <form action="/api/admin/stores/sync" method="post">
                             <input type="hidden" name="storeId" value={store.id} />
+                            <input type="hidden" name="fullSync" value="true" />
+                            <input type="hidden" name="limit" value="2500" />
                             <button className="button button--ghost button--small" type="submit">
                               <RefreshCw size={14} aria-hidden="true" />
                               校验并同步
