@@ -423,7 +423,7 @@ function normalizeCampaigns(input: unknown[]): AdminCampaignView[] {
     return {
       id: pickString(record, ["id", "campaignId"], `campaign-${index}`),
       name: pickString(record, ["name", "title"], "未命名任务"),
-      store: pickString(record, ["storeName"], pickString(store, ["name", "myshopifyDomain"], "未绑定店铺")),
+      store: pickString(record, ["storeName", "store"], pickString(store, ["name", "myshopifyDomain"], "未绑定店铺")),
       locale: pickString(record, ["locale"], "zh-CN"),
       source: formatSource(record),
       status,
@@ -445,7 +445,7 @@ function normalizeArticles(input: unknown[]): AdminArticleView[] {
     return {
       id: pickString(record, ["id", "articleId"], `article-${index}`),
       title: pickString(record, ["title", "seoTitle"], "未命名文章"),
-      store: pickString(record, ["storeName"], pickString(store, ["name", "myshopifyDomain"], "未绑定店铺")),
+      store: pickString(record, ["storeName", "store"], pickString(store, ["name", "myshopifyDomain"], "未绑定店铺")),
       locale: pickString(record, ["locale"], "zh-CN"),
       status,
       statusTone: articleTone(status),
