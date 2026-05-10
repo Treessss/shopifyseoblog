@@ -646,6 +646,8 @@ function summarizeGenerationMetadata(metadata: unknown) {
   const contentEngine = asRecord(record.contentEngine);
   const finalQuality = asRecord(contentEngine.finalQuality);
   const finalSeo = asRecord(contentEngine.finalSeo);
+  const artifacts = asRecord(contentEngine.artifacts);
+  const keywords = asRecord(artifacts.keywords);
   const imageAsset = asRecord(record.imageAsset);
 
   return {
@@ -661,12 +663,15 @@ function summarizeGenerationMetadata(metadata: unknown) {
       finishReason: stringValue(ai.finishReason),
       usage: ai.usage ?? null
     },
+    topicSelection: artifacts.topicSelection ?? null,
+    keywordEvidence: artifacts.keywordEvidence ?? keywords.evidenceItems ?? keywords.evidence ?? null,
     image: Object.keys(imageAsset).length
       ? {
           publicUrl: stringValue(imageAsset.publicUrl),
           sourceUrl: stringValue(imageAsset.sourceUrl),
           altText: stringValue(imageAsset.altText),
-          error: stringValue(imageAsset.error)
+          error: stringValue(imageAsset.error),
+          referenceImageUrls: imageAsset.referenceImageUrls ?? null
         }
       : null,
     quality: {

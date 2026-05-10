@@ -5,6 +5,8 @@ export type SourceType = "product" | "collection" | "manual_topic";
 export type TrendSource = "google_trends" | "google_news";
 export type InternalLinkStrategy = "auto" | "product" | "collection" | "article";
 export type ImagePlacement = "featured" | "inline" | "both";
+export type TopicDiscoveryStrategy = "trend_product_fit" | "seo_opportunity" | "product_education";
+export type ImageFusionMode = "single_product" | "multi_product_fusion" | "lifestyle_scene";
 export type ProductImageReferenceSource = "source_product" | "selected_products" | "urls";
 
 export interface ProductContext {
@@ -43,10 +45,21 @@ export interface InternalLinksConfig {
   strategy?: InternalLinkStrategy;
 }
 
+export interface TopicDiscoveryConfig {
+  enabled: boolean;
+  strategy?: TopicDiscoveryStrategy;
+  maxCandidates?: number;
+  preferTrendSignals?: boolean;
+  minEvidenceScore?: number;
+}
+
 export interface ImageGenerationConfig {
   enabled: boolean;
   placement?: ImagePlacement;
   promptStyle?: string;
+  scenePrompt?: string;
+  fusionMode?: ImageFusionMode;
+  referenceImageLimit?: number;
 }
 
 export interface ProductImageReferenceConfig {
@@ -54,6 +67,8 @@ export interface ProductImageReferenceConfig {
   source?: ProductImageReferenceSource;
   productIds?: string[];
   imageUrls?: string[];
+  maxImages?: number;
+  maxImagesPerProduct?: number;
 }
 
 export interface QualityGateConfig {
@@ -65,6 +80,7 @@ export interface QualityGateConfig {
 }
 
 export interface GenerationConfig {
+  topicDiscovery?: TopicDiscoveryConfig;
   hotNews?: HotNewsConfig;
   internalLinks?: InternalLinksConfig;
   imageGeneration?: ImageGenerationConfig;
@@ -82,6 +98,7 @@ export interface BlogCampaignInput {
   publishPolicy: PublishPolicy;
   targetWordCount: number;
   primaryKeyword?: string;
+  keywords?: string[];
   generationConfig?: GenerationConfig;
 }
 

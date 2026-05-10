@@ -38,6 +38,12 @@ export interface ShopifyProduct {
     url?: string;
     altText?: string;
   } | null;
+  images?: {
+    nodes?: Array<{
+      url?: string;
+      altText?: string;
+    }>;
+  } | null;
   seo?: {
     title?: string;
     description?: string;
@@ -124,6 +130,12 @@ const PRODUCTS_QUERY = /* GraphQL */ `
           featuredImage {
             url
             altText
+          }
+          images(first: 6) {
+            nodes {
+              url
+              altText
+            }
           }
           seo {
             title

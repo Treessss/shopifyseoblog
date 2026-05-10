@@ -34,6 +34,15 @@ export default async function ArticleReviewPage({ params }: PageProps) {
   const generationQuality = asRecord(generationMetadata.quality);
   const provider = asRecord(generationMetadata.provider);
   const ai = asRecord(generationMetadata.ai);
+  const topicSelection = generationMetadata.topicSelection;
+  const keywordEvidence = generationMetadata.keywordEvidence;
+  const evidenceSummary =
+    topicSelection || (Array.isArray(keywordEvidence) && keywordEvidence.length > 0)
+      ? {
+          topicSelection,
+          keywordEvidence
+        }
+      : null;
 
   return (
     <>
@@ -188,6 +197,10 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                       </span>
                     ))}
                   </div>
+                </Panel>
+
+                <Panel title="选题与关键词依据" compact>
+                  <JsonBlock value={evidenceSummary} empty="暂无关键词依据" />
                 </Panel>
 
                 <Panel title="SEO 摘要" compact>

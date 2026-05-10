@@ -52,6 +52,32 @@ export interface ImageReference {
   title?: string;
 }
 
+export interface KeywordEvidenceItem {
+  type: "product" | "collection" | "seed_keyword" | "trend" | "internal_link";
+  source: string;
+  label: string;
+  value: string;
+  url?: string;
+  snippet?: string;
+  publishedAt?: string;
+  metric?: string;
+  relevanceScore?: number;
+  confidence: number;
+}
+
+export interface TopicCandidate {
+  topic: string;
+  primaryKeyword: string;
+  score: number;
+  reasons: string[];
+  evidence: KeywordEvidenceItem[];
+}
+
+export interface TopicSelectionResult {
+  selected: TopicCandidate;
+  candidates: TopicCandidate[];
+}
+
 export interface ContentSourceContext {
   product?: ProductContext;
   collection?: CollectionContext;
@@ -62,6 +88,8 @@ export interface ContentSourceContext {
   trendSignals?: TrendSignal[];
   internalLinks?: InternalLinkCandidate[];
   imageReferences?: ImageReference[];
+  keywordEvidence?: KeywordEvidenceItem[];
+  topicSelection?: TopicSelectionResult;
   generationConfig?: GenerationConfig;
 }
 
@@ -79,6 +107,7 @@ export interface KeywordPlan {
   searchIntent: "informational" | "commercial" | "transactional" | "navigational";
   audienceNeed: string;
   evidence?: string[];
+  evidenceItems?: KeywordEvidenceItem[];
 }
 
 export interface KeywordPlanner {
@@ -179,6 +208,8 @@ export interface QualityGate {
 
 export interface ContentPipelineArtifacts {
   keywords: KeywordPlan;
+  topicSelection?: TopicSelectionResult;
+  keywordEvidence?: KeywordEvidenceItem[];
   prompts: PromptBundle;
   draft: ArticleDraft;
   html: HtmlAssemblyResult;

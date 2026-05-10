@@ -6,6 +6,7 @@ import {
   estimateWordCount,
   generateArticle,
   runContentPipeline,
+  selectTopicCandidate,
   type NormalizedContentPipelineInput
 } from "../packages/content-engine/src";
 import { blogCampaignInputSchema } from "../packages/shared/src";
@@ -105,10 +106,17 @@ describe("content engine", () => {
       targetWordCount: 900,
       primaryKeyword: "clear phone case",
       generationConfig: {
+        topicDiscovery: { enabled: true, maxCandidates: 3, preferTrendSignals: true },
         hotNews: { enabled: true, query: "phone case trends", maxItems: 3 },
         internalLinks: { enabled: true, maxLinks: 2 },
-        imageGeneration: { enabled: true, promptStyle: "Apple-like clean editorial product photography" },
-        productImageReference: { enabled: true, imageUrls: ["https://cdn.example.com/case.png"] },
+        imageGeneration: {
+          enabled: true,
+          promptStyle: "Apple-like clean editorial product photography",
+          scenePrompt: "morning desk setup with two clear cases",
+          fusionMode: "multi_product_fusion",
+          referenceImageLimit: 6
+        },
+        productImageReference: { enabled: true, imageUrls: ["https://cdn.example.com/case.png"], maxImages: 6, maxImagesPerProduct: 2 },
         qualityGate: { enabled: true, minSeoScore: 70, minEditorialScore: 60 }
       }
     });
@@ -127,7 +135,9 @@ describe("content engine", () => {
         {
           title: "Slim phone accessories rise with new iPhone launch",
           source: "Google News",
-          url: "https://news.example.com/phone-accessories"
+          url: "https://news.example.com/phone-accessories",
+          traffic: "20K+",
+          relevanceScore: 4
         }
       ],
       internalLinks: [
@@ -141,10 +151,57 @@ describe("content engine", () => {
       generationConfig: parsed.generationConfig
     });
 
-    expect(result.artifacts.keywords.evidence).toContain("trend: Slim phone accessories rise with new iPhone launch");
+    expect(result.artifacts.keywords.evidence?.join(" ")).toContain("Slim phone accessories rise with new iPhone launch");
+    expect(result.artifacts.keywords.evidenceItems?.some((item) => item.type === "trend" && item.url?.includes("news.example.com"))).toBe(true);
+    expect(result.artifacts.keywordEvidence?.some((item) => item.metric?.includes("traffic 20K+"))).toBe(true);
     expect(result.article.bodyHtml).toContain("https://example.myshopify.com/collections/magsafe");
     expect(result.article.imagePrompt).toContain("Reference product image URLs");
+    expect(result.article.imagePrompt).toContain("Multi-image fusion");
+    expect(result.article.imagePrompt).toContain("morning desk setup");
     expect(result.article.imagePrompt).toContain("Apple-like clean editorial product photography");
+  });
+
+  it("selects a trend-backed topic candidate when automatic topic discovery is enabled", () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "zh-CN",
+      sourceType: "product",
+      topic: "Shopify blog topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      primaryKeyword: "透明手机壳",
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 3,
+          preferTrendSignals: true,
+          minEvidenceScore: 30
+        }
+      }
+    };
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/1",
+        title: "透明 MagSafe 手机壳",
+        productType: "手机壳",
+        vendor: "Caseease",
+        tags: ["透明", "magsafe"],
+        imageUrls: ["https://cdn.example.com/product-1.png", "https://cdn.example.com/product-2.png"]
+      },
+      trendSignals: [
+        {
+          title: "手机配件轻薄化趋势升温",
+          source: "Google Trends",
+          url: "https://trends.example.com/phone-case",
+          traffic: "50K+",
+          relevanceScore: 5
+        }
+      ],
+      generationConfig: input.generationConfig
+    });
+
+    expect(selection.selected.topic).toContain("手机配件轻薄化趋势升温");
+    expect(selection.selected.score).toBeGreaterThanOrEqual(80);
+    expect(selection.selected.evidence.some((item) => item.type === "trend" && item.metric?.includes("traffic 50K+"))).toBe(true);
   });
 
   it("flags repetitive template-like writing as an editorial quality risk", async () => {

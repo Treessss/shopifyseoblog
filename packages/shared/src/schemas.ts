@@ -19,6 +19,15 @@ export const aiProviderConfigSchema = z.object({
 });
 
 export const generationConfigSchema = z.object({
+  topicDiscovery: z
+    .object({
+      enabled: z.boolean().default(true),
+      strategy: z.enum(["trend_product_fit", "seo_opportunity", "product_education"]).default("trend_product_fit"),
+      maxCandidates: z.number().int().min(1).max(8).default(4),
+      preferTrendSignals: z.boolean().default(true),
+      minEvidenceScore: z.number().int().min(0).max(100).default(35)
+    })
+    .optional(),
   hotNews: z
     .object({
       enabled: z.boolean().default(false),
@@ -40,7 +49,10 @@ export const generationConfigSchema = z.object({
     .object({
       enabled: z.boolean().default(true),
       placement: z.enum(["featured", "inline", "both"]).default("inline"),
-      promptStyle: z.string().trim().min(1).max(240).optional()
+      promptStyle: z.string().trim().min(1).max(240).optional(),
+      scenePrompt: z.string().trim().min(1).max(500).optional(),
+      fusionMode: z.enum(["single_product", "multi_product_fusion", "lifestyle_scene"]).default("lifestyle_scene"),
+      referenceImageLimit: z.number().int().min(1).max(8).default(6)
     })
     .optional(),
   productImageReference: z
@@ -48,7 +60,9 @@ export const generationConfigSchema = z.object({
       enabled: z.boolean().default(true),
       source: z.enum(["source_product", "selected_products", "urls"]).default("source_product"),
       productIds: z.array(z.string().trim().min(1)).default([]),
-      imageUrls: z.array(z.string().url()).default([])
+      imageUrls: z.array(z.string().url()).default([]),
+      maxImages: z.number().int().min(1).max(12).default(6),
+      maxImagesPerProduct: z.number().int().min(1).max(6).default(2)
     })
     .optional(),
   qualityGate: z
@@ -72,6 +86,7 @@ export const blogCampaignInputSchema = z.object({
   publishPolicy: z.enum(PUBLISH_POLICIES).default("auto_when_qualified"),
   targetWordCount: z.number().int().min(600).max(3500).default(1400),
   primaryKeyword: z.string().optional(),
+  keywords: z.array(z.string().trim().min(1)).default([]).optional(),
   generationConfig: generationConfigSchema.optional()
 });
 

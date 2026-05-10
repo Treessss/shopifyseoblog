@@ -105,6 +105,8 @@ export class ContentPipelineRegistry {
 
     const artifacts: ContentPipelineArtifacts = {
       keywords,
+      topicSelection: context.topicSelection,
+      keywordEvidence: keywords.evidenceItems ?? context.keywordEvidence,
       prompts,
       draft,
       html,

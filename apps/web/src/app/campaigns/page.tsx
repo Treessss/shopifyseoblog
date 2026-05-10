@@ -9,7 +9,8 @@ import {
   ProgressBar,
   SelectField,
   StatusPill,
-  TableEmpty
+  TableEmpty,
+  TextAreaField
 } from "@/components/ui";
 import {
   formatCampaignStatus,
@@ -194,7 +195,18 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
               }
             />
             <Field label="任务标题" name="title" placeholder="春夏新品关键词集群" required />
+            <SelectField
+              label="选题模式"
+              name="topicDiscoveryEnabled"
+              value="true"
+              options={[
+                { label: "自动选题", value: "true" },
+                { label: "使用指定主题", value: "false" }
+              ]}
+            />
+            <Field label="指定主题" name="topic" placeholder="留空时自动按商品、热点和关键词选择" />
             <Field label="主关键词" name="primaryKeyword" placeholder="可持续收纳家具" />
+            <Field label="候选选题数量" name="topicDiscoveryMaxCandidates" type="number" value={4} min={1} max={8} step={1} />
             <SelectField
               label="来源类型"
               name="sourceType"
@@ -269,7 +281,32 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
                 { label: "不使用产品图参考", value: "false" }
               ]}
             />
-            <Field label="额外参考图 URL" name="referenceImageUrls" placeholder="多个 URL 用逗号分隔" />
+            <SelectField
+              label="参考图来源"
+              name="productImageReferenceSource"
+              value="source_product"
+              options={[
+                { label: "来源商品/集合", value: "source_product" },
+                { label: "指定商品", value: "selected_products" },
+                { label: "只用 URL", value: "urls" }
+              ]}
+            />
+            <Field label="参考商品 ID/Handle" name="referenceProductIds" placeholder="多个用逗号分隔" />
+            <Field label="参考图总数" name="maxReferenceImages" type="number" value={6} min={1} max={12} step={1} />
+            <Field label="单商品取图数" name="maxImagesPerProduct" type="number" value={2} min={1} max={6} step={1} />
+            <SelectField
+              label="图片融合"
+              name="imageFusionMode"
+              value="multi_product_fusion"
+              options={[
+                { label: "多图融合场景", value: "multi_product_fusion" },
+                { label: "生活方式场景", value: "lifestyle_scene" },
+                { label: "单品主视觉", value: "single_product" }
+              ]}
+            />
+            <Field label="模型参考图上限" name="referenceImageLimit" type="number" value={6} min={1} max={8} step={1} />
+            <TextAreaField label="额外参考图 URL" name="referenceImageUrls" rows={3} placeholder="多个 URL 用逗号或换行分隔" />
+            <TextAreaField label="图片场景要求" name="imageScenePrompt" rows={3} placeholder="厨房台面晨光、双商品同框、真实使用状态" />
             <Field label="图片风格补充" name="imagePromptStyle" placeholder="Apple 风格、真实生活方式场景、浅色背景" />
             <Field label="最低 SEO 分" name="minSeoScore" type="number" value={78} min={0} max={100} step={1} />
             <Field label="最低编辑质量分" name="minEditorialScore" type="number" value={72} min={0} max={100} step={1} />

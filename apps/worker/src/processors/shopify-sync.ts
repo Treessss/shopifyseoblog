@@ -422,7 +422,10 @@ async function upsertProductSnapshot(
     productType: product.productType ?? null,
     vendor: product.vendor ?? null,
     tags: product.tags ?? [],
-    imageUrls: product.featuredImage?.url ? [product.featuredImage.url] : [],
+    imageUrls: uniqueStrings([
+      product.featuredImage?.url,
+      ...(product.images?.nodes?.map((image) => image.url) ?? [])
+    ]),
     seoTitle: product.seo?.title ?? null,
     seoDescription: product.seo?.description ?? null,
     raw: toPrismaJson(product),
@@ -590,6 +593,10 @@ function extractShopifySearchId(value: string): string {
 function fallbackHandle(prefix: string, shopifyId: string): string {
   const id = extractShopifySearchId(shopifyId) || String(hashString(shopifyId));
   return `${prefix}-${id}`.toLowerCase();
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))));
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

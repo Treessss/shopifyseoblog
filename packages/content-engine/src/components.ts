@@ -5,6 +5,7 @@ import type {
   EditorialQualityResult,
   HtmlAssembler,
   HtmlAssemblyResult,
+  KeywordEvidenceItem,
   KeywordPlan,
   KeywordPlanner,
   NormalizedContentPipelineInput,
@@ -14,14 +15,17 @@ import type {
   QualityGateResult,
   SeoCheck,
   SeoScorer,
-  SeoScoreResult
+  SeoScoreResult,
+  TopicCandidate,
+  TopicSelectionResult
 } from "./types";
 
 export const defaultKeywordPlanner: KeywordPlanner = {
   plan(input, context) {
     const locale = normalizeLocale(input.locale);
     const topic = resolveTopic(input, context);
-    const primaryKeyword = cleanKeyword(input.primaryKeyword ?? context.seedKeywords?.[0] ?? topic);
+    const evidenceItems = buildKeywordEvidence(input, context);
+    const primaryKeyword = cleanKeyword(input.primaryKeyword ?? context.topicSelection?.selected.primaryKeyword ?? context.seedKeywords?.[0] ?? topic);
     const secondaryKeywords = unique([
       ...(context.seedKeywords ?? []),
       ...trendKeywordCandidates(context),
@@ -41,7 +45,8 @@ export const defaultKeywordPlanner: KeywordPlanner = {
       ]).slice(0, 8),
       searchIntent: input.sourceType === "manual_topic" ? "informational" : "commercial",
       audienceNeed: locale === "zh-CN" ? `理解 ${primaryKeyword} 的选择、使用和购买决策` : `Understand how to choose and use ${primaryKeyword}`,
-      evidence: keywordEvidence(context)
+      evidence: formatKeywordEvidence(evidenceItems),
+      evidenceItems
     };
   }
 };
@@ -415,16 +420,29 @@ function internalLinkInstruction(context: ContentSourceContext): string {
 
 function imagePromptInstruction(context: ContentSourceContext): string {
   if (context.generationConfig?.imageGeneration?.enabled === false) return "";
-  const references = context.imageReferences?.slice(0, 4) ?? [];
+  const imageConfig = context.generationConfig?.imageGeneration;
+  const limit = imageConfig?.referenceImageLimit ?? context.generationConfig?.productImageReference?.maxImages ?? 6;
+  const references = context.imageReferences?.slice(0, limit) ?? [];
   const referenceText = references.length
     ? `Use product image references as visual grounding: ${references.map((item) => item.url).join(", ")}.`
     : "If no product reference image is available, describe a realistic ecommerce editorial scene.";
+  const scene = imageConfig?.scenePrompt ? `Required scene: ${imageConfig.scenePrompt}.` : "";
+  const fusion =
+    imageConfig?.fusionMode === "multi_product_fusion"
+      ? "Fuse all referenced products into one coherent lifestyle scene; preserve product identity, proportions, colors, and visible details; do not create a collage."
+      : imageConfig?.fusionMode === "single_product"
+        ? "Prioritize one hero product with supporting context."
+        : "Create a realistic lifestyle scene that makes the product use case immediately clear.";
 
   return [
     "Create a detailed image prompt for the article.",
     referenceText,
+    scene,
+    fusion,
     "The prompt should name the product/category, scene, composition, lighting, background, aspect ratio, and what to avoid."
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function trendKeywordCandidates(context: ContentSourceContext): string[] {
@@ -445,14 +463,182 @@ function trendLongTailKeywords(primaryKeyword: string, context: ContentSourceCon
   return signals.map((signal) => `${primaryKeyword} and ${compactTitle(signal.title)} trend`);
 }
 
-function keywordEvidence(context: ContentSourceContext): string[] {
-  const evidence: string[] = [];
-  if (context.product?.title) evidence.push(`product: ${context.product.title}`);
-  if (context.collection?.title) evidence.push(`collection: ${context.collection.title}`);
-  for (const signal of context.trendSignals?.slice(0, 4) ?? []) {
-    evidence.push(`trend: ${signal.title}`);
+export function buildKeywordEvidence(
+  input: Pick<NormalizedContentPipelineInput, "primaryKeyword" | "topic">,
+  context: ContentSourceContext
+): KeywordEvidenceItem[] {
+  const evidence: KeywordEvidenceItem[] = [];
+
+  if (input.primaryKeyword) {
+    evidence.push({
+      type: "seed_keyword",
+      source: "campaign",
+      label: "Seed keyword",
+      value: input.primaryKeyword,
+      metric: "user supplied",
+      confidence: 95
+    });
   }
-  return evidence;
+
+  for (const keyword of context.seedKeywords ?? []) {
+    evidence.push({
+      type: "seed_keyword",
+      source: "campaign",
+      label: "Campaign keyword",
+      value: keyword,
+      metric: "campaign seed",
+      confidence: 86
+    });
+  }
+
+  if (context.product?.title) {
+    evidence.push({
+      type: "product",
+      source: "Shopify product snapshot",
+      label: context.product.productType ?? "Product",
+      value: context.product.title,
+      snippet: [context.product.vendor, context.product.tags.slice(0, 4).join(", ")].filter(Boolean).join(" · "),
+      metric: context.product.imageUrls.length ? `${context.product.imageUrls.length} product images` : undefined,
+      confidence: 82
+    });
+  }
+
+  if (context.collection?.title) {
+    evidence.push({
+      type: "collection",
+      source: "Shopify collection snapshot",
+      label: "Collection",
+      value: context.collection.title,
+      snippet: stripHtml(context.collection.description ?? "").slice(0, 160) || undefined,
+      metric: context.collection.imageUrls?.length ? `${context.collection.imageUrls.length} collection images` : undefined,
+      confidence: 78
+    });
+  }
+
+  for (const signal of context.trendSignals?.slice(0, 6) ?? []) {
+    evidence.push({
+      type: "trend",
+      source: signal.source || "trend feed",
+      label: "Trend/news signal",
+      value: signal.title,
+      url: signal.url,
+      snippet: signal.summary,
+      publishedAt: signal.publishedAt,
+      metric: [signal.traffic ? `traffic ${signal.traffic}` : "", `relevance ${signal.relevanceScore ?? 0}`].filter(Boolean).join(" · "),
+      relevanceScore: signal.relevanceScore,
+      confidence: clampScore(62 + (signal.relevanceScore ?? 0) * 6 + trafficBoost(signal.traffic))
+    });
+  }
+
+  for (const link of context.internalLinks?.slice(0, 4) ?? []) {
+    evidence.push({
+      type: "internal_link",
+      source: "store internal links",
+      label: link.type,
+      value: link.anchor ?? link.title,
+      url: link.url,
+      snippet: link.reason,
+      metric: "available internal link",
+      confidence: 70
+    });
+  }
+
+  return uniqueEvidence(evidence);
+}
+
+export function formatKeywordEvidence(items: KeywordEvidenceItem[]): string[] {
+  return items.slice(0, 10).map((item) => {
+    const parts = [
+      `${item.type}: ${item.value}`,
+      item.source ? `source ${item.source}` : "",
+      item.metric,
+      item.url
+    ].filter(Boolean);
+    return parts.join(" · ");
+  });
+}
+
+export function selectTopicCandidate(
+  input: NormalizedContentPipelineInput,
+  context: ContentSourceContext
+): TopicSelectionResult {
+  const evidence = buildKeywordEvidence(input, context);
+  const maxCandidates = context.generationConfig?.topicDiscovery?.maxCandidates ?? 4;
+  const locale = normalizeLocale(input.locale);
+  const keyword = cleanKeyword(
+    input.primaryKeyword ??
+      context.seedKeywords?.[0] ??
+      context.product?.productType ??
+      context.product?.title ??
+      context.collection?.title ??
+      input.topic
+  );
+  const category = cleanKeyword(context.product?.productType ?? context.collection?.title ?? keyword);
+  const candidates: TopicCandidate[] = [];
+
+  if (input.topic && context.generationConfig?.topicDiscovery?.enabled === false) {
+    candidates.push({
+      topic: input.topic,
+      primaryKeyword: keyword,
+      score: 92,
+      reasons: ["manual topic supplied"],
+      evidence: evidence.slice(0, 6)
+    });
+  }
+
+  for (const signal of context.trendSignals?.slice(0, maxCandidates) ?? []) {
+    const signalEvidence = evidence.filter((item) => item.type === "trend" && item.value === signal.title);
+    const topic =
+      locale === "zh-CN"
+        ? `${category}选题：${compactTitle(signal.title)}趋势下的选购与使用建议`
+        : `${category} angle: buying and usage ideas around ${compactTitle(signal.title)}`;
+    candidates.push({
+      topic,
+      primaryKeyword: keyword,
+      score: clampScore(68 + (signal.relevanceScore ?? 0) * 8 + trafficBoost(signal.traffic)),
+      reasons: ["trend matched to product/category", signal.traffic ? `trend traffic ${signal.traffic}` : "RSS trend signal"],
+      evidence: [...signalEvidence, ...evidence.filter((item) => item.type !== "trend").slice(0, 4)]
+    });
+  }
+
+  candidates.push({
+    topic:
+      locale === "zh-CN"
+        ? `${keyword}购买前怎么选：场景、材质与搭配指南`
+        : `How to choose ${keyword}: use cases, materials, and pairing ideas`,
+    primaryKeyword: keyword,
+    score: context.product || context.collection ? 74 : 62,
+    reasons: ["stable product/category evergreen topic", "built from Shopify catalog context"],
+    evidence: evidence.filter((item) => item.type !== "trend").slice(0, 6)
+  });
+
+  candidates.push({
+    topic:
+      locale === "zh-CN"
+        ? `${keyword}常见问题：从搜索意图到下单前检查`
+        : `${keyword} FAQs: from search intent to pre-purchase checks`,
+    primaryKeyword: keyword,
+    score: 69,
+    reasons: ["SEO informational angle", "supports long-tail keyword coverage"],
+    evidence: evidence.slice(0, 6)
+  });
+
+  const sorted = uniqueTopicCandidates(candidates)
+    .filter((candidate) => candidate.score >= (context.generationConfig?.topicDiscovery?.minEvidenceScore ?? 0))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxCandidates);
+  const selected = sorted[0] ?? {
+    topic: input.topic,
+    primaryKeyword: keyword,
+    score: 50,
+    reasons: ["fallback topic"],
+    evidence: evidence.slice(0, 6)
+  };
+
+  return {
+    selected,
+    candidates: sorted.length ? sorted : [selected]
+  };
 }
 
 function relatedLinksHtml(context: ContentSourceContext, locale: SupportedLocale): string {
@@ -480,8 +666,23 @@ function buildDetailedImagePrompt(
   const product = context.product;
   const collection = context.collection;
   const references = context.imageReferences?.map((item) => item.url) ?? [];
-  const style = context.generationConfig?.imageGeneration?.promptStyle;
+  const imageConfig = context.generationConfig?.imageGeneration;
+  const style = imageConfig?.promptStyle;
+  const scene = imageConfig?.scenePrompt;
+  const limit = imageConfig?.referenceImageLimit ?? context.generationConfig?.productImageReference?.maxImages ?? 6;
   const trend = context.trendSignals?.[0]?.title;
+  const fusion =
+    imageConfig?.fusionMode === "multi_product_fusion"
+      ? locale === "zh-CN"
+        ? "多图融合：把所有参考商品自然放入同一个真实场景，保留商品颜色、比例、材质和关键细节，不要拼贴图"
+        : "Multi-image fusion: combine all referenced products into one coherent real scene, preserving color, scale, material, and key details; no collage"
+      : imageConfig?.fusionMode === "single_product"
+        ? locale === "zh-CN"
+          ? "单品主视觉：突出一个核心商品，其他元素只做场景辅助"
+          : "Single-product hero: emphasize one core product, with other elements only supporting the scene"
+        : locale === "zh-CN"
+          ? "生活方式场景：让使用场景清晰、真实、可购买"
+          : "Lifestyle scene: make the use case clear, realistic, and shoppable";
 
   if (locale === "zh-CN") {
     return [
@@ -490,7 +691,9 @@ function buildDetailedImagePrompt(
       product ? `产品：${product.title}，品类：${product.productType ?? "未标注"}，品牌/供应商：${product.vendor ?? "未标注"}` : "",
       collection ? `系列：${collection.title}` : "",
       trend ? `可参考的内容角度：${trend}` : "",
-      references.length ? `参考产品图 URL：${references.slice(0, 4).join(", ")}` : "",
+      scene ? `指定场景：${scene}` : "",
+      references.length ? `参考产品图 URL：${references.slice(0, limit).join(", ")}` : "",
+      fusion,
       "画面：真实电商编辑场景，自然光，干净背景，产品清晰可见，适合 Shopify 博客首图或正文插图",
       "构图：横向 16:9，留出少量文字安全区，不要品牌水印、不要虚假包装文字、不要夸张效果",
       style ? `风格补充：${style}` : ""
@@ -505,7 +708,9 @@ function buildDetailedImagePrompt(
     product ? `Product: ${product.title}; type: ${product.productType ?? "unknown"}; vendor: ${product.vendor ?? "unknown"}` : "",
     collection ? `Collection: ${collection.title}` : "",
     trend ? `Grounded editorial angle: ${trend}` : "",
-    references.length ? `Reference product image URLs: ${references.slice(0, 4).join(", ")}` : "",
+    scene ? `Required scene: ${scene}` : "",
+    references.length ? `Reference product image URLs: ${references.slice(0, limit).join(", ")}` : "",
+    fusion,
     "Scene: realistic ecommerce editorial setup, natural light, clean background, product clearly visible, suitable for a Shopify blog feature or inline image",
     "Composition: 16:9 horizontal, small text-safe area, no watermarks, no fake packaging text, no exaggerated effects",
     style ? `Style note: ${style}` : ""
@@ -572,6 +777,44 @@ function unique(values: Array<string | undefined>): string[] {
     output.push(normalized);
   }
   return output;
+}
+
+function uniqueEvidence(items: KeywordEvidenceItem[]): KeywordEvidenceItem[] {
+  const seen = new Set<string>();
+  const output: KeywordEvidenceItem[] = [];
+  for (const item of items) {
+    const key = `${item.type}:${item.value}:${item.url ?? ""}`.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
+}
+
+function uniqueTopicCandidates(items: TopicCandidate[]): TopicCandidate[] {
+  const seen = new Set<string>();
+  const output: TopicCandidate[] = [];
+  for (const item of items) {
+    const key = item.topic.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
+}
+
+function trafficBoost(traffic?: string): number {
+  if (!traffic) return 0;
+  const match = traffic.replace(/,/g, "").match(/(\d+(?:\.\d+)?)/);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return 0;
+  const multiplier = /m/i.test(traffic) ? 1000000 : /k/i.test(traffic) ? 1000 : 1;
+  const normalized = value * multiplier;
+  if (normalized >= 1000000) return 14;
+  if (normalized >= 100000) return 10;
+  if (normalized >= 10000) return 6;
+  return 3;
 }
 
 function tokenizeSignal(value: string): string[] {

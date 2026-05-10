@@ -291,6 +291,15 @@ function apiVersionValue(value: unknown) {
 
 function parseGenerationConfig(body: Record<string, unknown>) {
   return {
+    topicDiscovery: {
+      enabled: booleanValue(body.topicDiscoveryEnabled, true),
+      strategy:
+        optionalEnum(body.topicDiscoveryStrategy, ["trend_product_fit", "seo_opportunity", "product_education"] as const, "topicDiscoveryStrategy") ??
+        "trend_product_fit",
+      maxCandidates: optionalInteger(body.topicDiscoveryMaxCandidates, "topicDiscoveryMaxCandidates", 1, 8) ?? 4,
+      preferTrendSignals: booleanValue(body.preferTrendSignals, true),
+      minEvidenceScore: optionalInteger(body.minEvidenceScore, "minEvidenceScore", 0, 100) ?? 35
+    },
     hotNews: {
       enabled: booleanValue(body.hotNewsEnabled, false),
       query: optionalString(body.hotNewsQuery),
@@ -307,7 +316,12 @@ function parseGenerationConfig(body: Record<string, unknown>) {
     imageGeneration: {
       enabled: booleanValue(body.imageGenerationEnabled, true),
       placement: optionalEnum(body.imagePlacement, ["featured", "inline", "both"] as const, "imagePlacement") ?? "inline",
-      promptStyle: optionalString(body.imagePromptStyle)
+      promptStyle: optionalString(body.imagePromptStyle),
+      scenePrompt: optionalString(body.imageScenePrompt),
+      fusionMode:
+        optionalEnum(body.imageFusionMode, ["single_product", "multi_product_fusion", "lifestyle_scene"] as const, "imageFusionMode") ??
+        "lifestyle_scene",
+      referenceImageLimit: optionalInteger(body.referenceImageLimit, "referenceImageLimit", 1, 8) ?? 6
     },
     productImageReference: {
       enabled: booleanValue(body.productImageReferenceEnabled, true),
@@ -318,7 +332,9 @@ function parseGenerationConfig(body: Record<string, unknown>) {
           "productImageReferenceSource"
         ) ?? "source_product",
       productIds: stringList(body.referenceProductIds),
-      imageUrls: stringList(body.referenceImageUrls)
+      imageUrls: stringList(body.referenceImageUrls),
+      maxImages: optionalInteger(body.maxReferenceImages, "maxReferenceImages", 1, 12) ?? 6,
+      maxImagesPerProduct: optionalInteger(body.maxImagesPerProduct, "maxImagesPerProduct", 1, 6) ?? 2
     },
     qualityGate: {
       enabled: booleanValue(body.qualityGateEnabled, true),

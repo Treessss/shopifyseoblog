@@ -9,6 +9,8 @@ import {
   type ContentSourceContext,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
+  selectTopicCandidate,
+  type TopicSelectionResult,
   type TrendSignal
 } from "@shopify-ai-blog/content-engine";
 import {
@@ -99,6 +101,7 @@ interface GenerationCampaignInput {
   sourceId: string | null;
   topic: string | null;
   title: string;
+  keywords: string[];
   publishPolicy: PublishPolicy;
   targetWordCount: number;
   primaryKeyword: string | null;
@@ -181,7 +184,7 @@ async function generateBlogArticle(
 
   try {
     const context = await loadGenerationContext(job.data);
-    const input = mergeGenerationInput(job.data, context.campaign);
+    const input = mergeGenerationInput(job.data, context.campaign, context.sourceContext.topic);
     const parsedInput = blogCampaignInputSchema.safeParse(input);
     if (!parsedInput.success) {
       throw domainError("BLOG_GENERATION_INPUT_INVALID", "Blog generation input is invalid.", {
@@ -221,6 +224,7 @@ async function generateBlogArticle(
     });
 
     await markCampaignRunning(context.campaign?.id);
+    await persistCampaignTopicSelection(context.campaign?.id, context.sourceContext.topicSelection);
     const pipelineResult = await runContentPipeline(generationInput, context.sourceContext);
     const aiProvider = resolveAiProvider(context.aiProvider);
     const aiResult = await generateArticleWithAi(aiProvider, generationInput, context.sourceContext, pipelineResult);
@@ -576,8 +580,12 @@ async function maybeGenerateArticleImage(
 ): Promise<ImageAssetDraft | undefined> {
   if (input.generationConfig?.imageGeneration?.enabled === false) return undefined;
 
-  const referenceImageUrls = context.imageReferences?.map((item) => item.url).slice(0, 4) ?? [];
-  const prompt = article.imagePrompt ?? buildFallbackImagePrompt(article, context);
+  const referenceLimit =
+    input.generationConfig?.imageGeneration?.referenceImageLimit ??
+    input.generationConfig?.productImageReference?.maxImages ??
+    6;
+  const referenceImageUrls = uniqueStrings(context.imageReferences?.map((item) => item.url) ?? []).slice(0, referenceLimit);
+  const prompt = composeImagePrompt(article.imagePrompt ?? buildFallbackImagePrompt(article, context), context, referenceImageUrls);
   const altText = article.imageAlt ?? article.title;
 
   if (!provider.imageModel) {
@@ -602,7 +610,12 @@ async function maybeGenerateArticleImage(
       size: "1536x864",
       responseFormat: "url",
       referenceImageUrls,
-      extraBody: referenceImageUrls.length ? { reference_images: referenceImageUrls } : undefined
+      extraBody: referenceImageUrls.length
+        ? {
+            reference_images: referenceImageUrls,
+            fusion_mode: input.generationConfig?.imageGeneration?.fusionMode
+          }
+        : undefined
     });
 
     return imageToAssetDraft(image, prompt, altText, referenceImageUrls);
@@ -683,10 +696,27 @@ function buildFallbackImagePrompt(article: GeneratedArticle, context: ContentSou
     `Original ecommerce blog image for ${article.primaryKeyword}`,
     context.product ? `Product: ${context.product.title}` : "",
     context.collection ? `Collection: ${context.collection.title}` : "",
+    context.generationConfig?.imageGeneration?.scenePrompt ? `Required scene: ${context.generationConfig.imageGeneration.scenePrompt}` : "",
     "realistic editorial ecommerce scene, natural light, clean background, 16:9 horizontal, no watermarks"
   ]
     .filter(Boolean)
     .join("; ");
+}
+
+function composeImagePrompt(basePrompt: string, context: ContentSourceContext, referenceImageUrls: string[]): string {
+  const imageConfig = context.generationConfig?.imageGeneration;
+  const additions = [
+    imageConfig?.scenePrompt ? `Scene requirement: ${imageConfig.scenePrompt}` : "",
+    imageConfig?.promptStyle ? `Style requirement: ${imageConfig.promptStyle}` : "",
+    imageConfig?.fusionMode === "multi_product_fusion"
+      ? "Use multi-image fusion: merge all referenced products into one coherent lifestyle scene, preserve product identity, color, scale, and material, no collage layout, no fake logos, no invented packaging text."
+      : imageConfig?.fusionMode === "single_product"
+        ? "Use one hero product as the main subject; keep other visual details secondary."
+        : "Use a realistic lifestyle scene grounded in the referenced product images.",
+    referenceImageUrls.length ? `Reference image URLs: ${referenceImageUrls.join(", ")}` : ""
+  ].filter(Boolean);
+
+  return uniqueStrings([basePrompt, ...additions]).join("; ");
 }
 
 async function persistGeneratedImageAsset(input: {
@@ -1153,17 +1183,24 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     loadBrandVoice(data.organizationId, data.storeId, locale, campaign?.brandVoice),
     loadSourceContext(data.storeId, sourceType, sourceId)
   ]);
-  const topic = campaign?.topic ?? article?.title ?? data.topic;
-  const seedKeywords = campaign?.keywords?.length ? campaign.keywords : undefined;
+  const initialTopic = campaign?.topic ?? article?.title ?? data.topic;
+  const seedKeywords = resolveSeedKeywords(data, campaign);
   const sourceContextBase = {
     ...baseSourceContext,
-    topic,
+    topic: initialTopic,
     seedKeywords,
     generationConfig
   } satisfies ContentSourceContext;
   const [trendSignals, internalLinks, imageReferences] = await Promise.all([
     discoverTrendSignals({
-      topic: topic ?? campaign?.title ?? baseSourceContext.product?.title ?? baseSourceContext.collection?.title ?? "Shopify blog topic",
+      topic:
+        initialTopic ??
+        data.primaryKeyword ??
+        seedKeywords?.[0] ??
+        campaign?.title ??
+        baseSourceContext.product?.title ??
+        baseSourceContext.collection?.title ??
+        "Shopify blog topic",
       locale,
       generationConfig,
       context: sourceContextBase
@@ -1171,6 +1208,28 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     loadInternalLinks(store.myshopifyDomain, data.storeId, sourceType, sourceId, generationConfig),
     loadImageReferences(data.storeId, sourceContextBase, generationConfig)
   ]);
+  const enrichedContextBase = {
+    ...sourceContextBase,
+    trendSignals,
+    internalLinks,
+    imageReferences
+  } satisfies ContentSourceContext;
+  const topicSelectionInput = {
+    organizationId: data.organizationId,
+    storeId: data.storeId,
+    locale,
+    sourceType,
+    sourceId: sourceId ?? undefined,
+    topic: initialTopic ?? campaign?.title ?? baseSourceContext.product?.title ?? baseSourceContext.collection?.title ?? "Shopify blog topic",
+    publishPolicy: campaign?.publishPolicy ?? data.publishPolicy,
+    targetWordCount: campaign?.targetWordCount ?? data.targetWordCount,
+    primaryKeyword: campaign?.primaryKeyword ?? data.primaryKeyword,
+    generationConfig
+  };
+  const shouldAutoSelect = shouldAutoDiscoverTopic(generationConfig, initialTopic);
+  const topicSelection = shouldAutoSelect ? selectTopicCandidate(topicSelectionInput, enrichedContextBase) : undefined;
+  const resolvedTopic = topicSelection?.selected.topic ?? initialTopic ?? topicSelectionInput.topic;
+  const keywordEvidence = topicSelection?.selected.evidence;
 
   return {
     store,
@@ -1188,29 +1247,75 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
             examples: brandVoice.examples ?? []
           }
         : undefined,
-      topic,
+      topic: resolvedTopic,
       seedKeywords,
       trendSignals,
       internalLinks,
       imageReferences,
+      keywordEvidence,
+      topicSelection,
       generationConfig
     } satisfies ContentSourceContext
   };
 }
 
-function mergeGenerationInput(data: BlogGenerationJobData, campaign: GenerationCampaignInput | null) {
+function mergeGenerationInput(
+  data: BlogGenerationJobData,
+  campaign: GenerationCampaignInput | null,
+  resolvedTopic?: string
+) {
   return {
     organizationId: data.organizationId,
     storeId: data.storeId,
     locale: campaign?.locale ?? data.locale,
     sourceType: campaign?.sourceType ?? data.sourceType,
     sourceId: campaign?.sourceId ?? data.sourceId,
-    topic: campaign?.topic ?? data.topic ?? campaign?.title,
+    topic: resolvedTopic ?? campaign?.topic ?? data.topic ?? campaign?.title,
     publishPolicy: campaign?.publishPolicy ?? data.publishPolicy,
     targetWordCount: campaign?.targetWordCount ?? data.targetWordCount,
     primaryKeyword: campaign?.primaryKeyword ?? data.primaryKeyword,
     generationConfig: resolveGenerationConfig(data.generationConfig, campaign?.metadata)
   };
+}
+
+function resolveSeedKeywords(data: BlogGenerationJobData, campaign: GenerationCampaignInput | null): string[] | undefined {
+  const keywords = [
+    ...(campaign?.keywords ?? []),
+    ...(Array.isArray(data.keywords) ? data.keywords : []),
+    data.primaryKeyword
+  ]
+    .map((keyword) => (typeof keyword === "string" ? keyword.trim() : ""))
+    .filter(Boolean);
+
+  return keywords.length ? Array.from(new Set(keywords)) : undefined;
+}
+
+function shouldAutoDiscoverTopic(generationConfig: GenerationConfig | undefined, explicitTopic: string | null | undefined): boolean {
+  const config = generationConfig?.topicDiscovery;
+  if (config?.enabled === false) return !explicitTopic;
+  return config?.enabled === true || !explicitTopic;
+}
+
+async function persistCampaignTopicSelection(campaignId: string | undefined, topicSelection: TopicSelectionResult | undefined) {
+  if (!campaignId || !topicSelection) return;
+
+  const campaign = await prisma.blogCampaign.findUnique({
+    where: { id: campaignId },
+    select: { topic: true, metadata: true }
+  });
+  if (!campaign) return;
+
+  const metadata = isRecord(campaign.metadata) ? campaign.metadata : {};
+  await prisma.blogCampaign.update({
+    where: { id: campaignId },
+    data: {
+      topic: campaign.topic ?? topicSelection.selected.topic,
+      metadata: toPrismaJson({
+        ...metadata,
+        topicSelection
+      })
+    }
+  });
 }
 
 async function loadBrandVoice(
@@ -1298,6 +1403,15 @@ function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown):
   if (!candidate) return undefined;
 
   return {
+    topicDiscovery: isRecord(candidate.topicDiscovery)
+      ? {
+          enabled: candidate.topicDiscovery.enabled !== false,
+          strategy: topicDiscoveryStrategy(candidate.topicDiscovery.strategy),
+          maxCandidates: numberValue(candidate.topicDiscovery.maxCandidates),
+          preferTrendSignals: candidate.topicDiscovery.preferTrendSignals !== false,
+          minEvidenceScore: numberValue(candidate.topicDiscovery.minEvidenceScore)
+        }
+      : undefined,
     hotNews: isRecord(candidate.hotNews)
       ? {
           enabled: candidate.hotNews.enabled === true,
@@ -1321,7 +1435,10 @@ function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown):
       ? {
           enabled: candidate.imageGeneration.enabled !== false,
           placement: imagePlacement(candidate.imageGeneration.placement),
-          promptStyle: stringValue(candidate.imageGeneration.promptStyle)
+          promptStyle: stringValue(candidate.imageGeneration.promptStyle),
+          scenePrompt: stringValue(candidate.imageGeneration.scenePrompt),
+          fusionMode: imageFusionMode(candidate.imageGeneration.fusionMode),
+          referenceImageLimit: numberValue(candidate.imageGeneration.referenceImageLimit)
         }
       : undefined,
     productImageReference: isRecord(candidate.productImageReference)
@@ -1329,7 +1446,9 @@ function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown):
           enabled: candidate.productImageReference.enabled !== false,
           source: productImageReferenceSource(candidate.productImageReference.source),
           productIds: stringArray(candidate.productImageReference.productIds),
-          imageUrls: stringArray(candidate.productImageReference.imageUrls)
+          imageUrls: stringArray(candidate.productImageReference.imageUrls),
+          maxImages: numberValue(candidate.productImageReference.maxImages),
+          maxImagesPerProduct: numberValue(candidate.productImageReference.maxImagesPerProduct)
         }
       : undefined,
     qualityGate: isRecord(candidate.qualityGate)
@@ -1420,6 +1539,8 @@ async function loadImageReferences(
 ): Promise<NonNullable<ContentSourceContext["imageReferences"]>> {
   const config = generationConfig?.productImageReference;
   if (!config?.enabled) return [];
+  const maxImages = config.maxImages ?? generationConfig?.imageGeneration?.referenceImageLimit ?? 6;
+  const maxImagesPerProduct = config.maxImagesPerProduct ?? 2;
 
   const manual = (config.imageUrls ?? []).map((url) => ({
     url,
@@ -1432,7 +1553,7 @@ async function loadImageReferences(
   ];
 
   if (config.source !== "selected_products" || !config.productIds?.length) {
-    return [...sourceImages, ...manual].slice(0, 6);
+    return dedupeImageReferences([...sourceImages, ...manual]).slice(0, maxImages);
   }
 
   const selected = await prisma.productSnapshot.findMany({
@@ -1440,12 +1561,12 @@ async function loadImageReferences(
       storeId,
       OR: config.productIds.flatMap((id) => [{ id }, { shopifyProductId: id }, { handle: id }])
     },
-    take: 6
+    take: maxImages
   });
 
-  return [
+  return dedupeImageReferences([
     ...selected.flatMap((product) =>
-      (product.imageUrls ?? []).slice(0, 2).map((url) => ({
+      (product.imageUrls ?? []).slice(0, maxImagesPerProduct).map((url) => ({
         url,
         source: "product" as const,
         title: product.title
@@ -1453,7 +1574,7 @@ async function loadImageReferences(
     ),
     ...sourceImages,
     ...manual
-  ].slice(0, 6);
+  ]).slice(0, maxImages);
 }
 
 async function upsertGeneratedArticle(input: {
@@ -1633,12 +1754,37 @@ function stringArray(value: unknown): string[] {
   return [];
 }
 
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function dedupeImageReferences(
+  references: NonNullable<ContentSourceContext["imageReferences"]>
+): NonNullable<ContentSourceContext["imageReferences"]> {
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["imageReferences"]> = [];
+  for (const reference of references) {
+    if (!reference.url || seen.has(reference.url)) continue;
+    seen.add(reference.url);
+    output.push(reference);
+  }
+  return output;
+}
+
 function linkStrategy(value: unknown): "auto" | "product" | "collection" | "article" | undefined {
   return value === "auto" || value === "product" || value === "collection" || value === "article" ? value : undefined;
 }
 
 function imagePlacement(value: unknown): "featured" | "inline" | "both" | undefined {
   return value === "featured" || value === "inline" || value === "both" ? value : undefined;
+}
+
+function topicDiscoveryStrategy(value: unknown): "trend_product_fit" | "seo_opportunity" | "product_education" | undefined {
+  return value === "trend_product_fit" || value === "seo_opportunity" || value === "product_education" ? value : undefined;
+}
+
+function imageFusionMode(value: unknown): "single_product" | "multi_product_fusion" | "lifestyle_scene" | undefined {
+  return value === "single_product" || value === "multi_product_fusion" || value === "lifestyle_scene" ? value : undefined;
 }
 
 function productImageReferenceSource(value: unknown): "source_product" | "selected_products" | "urls" | undefined {
