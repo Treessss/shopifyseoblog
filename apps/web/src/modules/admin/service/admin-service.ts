@@ -344,11 +344,13 @@ export async function queueStoreSync(input: AdminRequestContextInput, body: Queu
       products: result.productsSynced,
       collections: result.collectionsSynced,
       blogs: result.blogsSynced,
+      articles: result.blogArticlesSynced,
       blogMappingsUpdated: result.blogMappingsUpdated
     },
     capped: {
       products: result.productsCapped,
-      collections: result.collectionsCapped
+      collections: result.collectionsCapped,
+      articles: result.blogArticlesCapped
     }
   };
 }

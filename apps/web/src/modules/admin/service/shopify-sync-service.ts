@@ -2,9 +2,11 @@ import { maybeDecryptSecret } from "@shopify-ai-blog/db";
 import {
   createShopifyGraphQLClient,
   exchangeShopifyClientCredentials,
+  listBlogArticles,
   listBlogs,
   listCollections,
   listProducts,
+  type ShopifyBlogArticle,
   type ShopifyBlog,
   type ShopifyCollection,
   type ShopifyConnection,
@@ -57,6 +59,7 @@ export async function syncShopifyStoreResources(
     input.collections ? listAllCollections(client, maxItems, input.fullSync) : Promise.resolve(undefined),
     listBlogs(client, { first: 50 })
   ]);
+  const blogArticlesResult = await listAllBlogArticles(client, blogsResult.nodes, maxItems, input.fullSync);
 
   return repository.persistShopifyStoreSync(organizationId, {
     storeId: store.id,
@@ -66,6 +69,8 @@ export async function syncShopifyStoreResources(
     collections: collectionsResult?.connection.nodes,
     collectionsCapped: collectionsResult?.capped ?? false,
     blogs: blogsResult.nodes,
+    blogArticles: blogArticlesResult.articles,
+    blogArticlesCapped: blogArticlesResult.capped,
     fullSync: input.fullSync,
     limit: input.limit,
     syncedAt
@@ -202,6 +207,31 @@ async function listAllProducts(client: ShopifyGraphQLClient, maxItems: number, f
 
 async function listAllCollections(client: ShopifyGraphQLClient, maxItems: number, fullSync: boolean) {
   return listAllPages(maxItems, fullSync, (first, after) => listCollections(client, { first, after }));
+}
+
+async function listAllBlogArticles(
+  client: ShopifyGraphQLClient,
+  blogs: ShopifyBlog[],
+  maxItems: number,
+  fullSync: boolean
+) {
+  const articles: ShopifyBlogArticle[] = [];
+  let capped = false;
+
+  for (const blog of blogs) {
+    if (articles.length >= maxItems) {
+      capped = true;
+      break;
+    }
+
+    const result = await listAllPages(maxItems - articles.length, fullSync, (first, after) =>
+      listBlogArticles(client, blog.id, { first, after })
+    );
+    articles.push(...result.connection.nodes);
+    capped = capped || result.capped;
+  }
+
+  return { articles, capped };
 }
 
 async function listAllPages<TNode>(

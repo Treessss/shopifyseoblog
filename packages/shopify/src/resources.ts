@@ -73,6 +73,30 @@ export interface ShopifyBlog {
   } | null;
 }
 
+export interface ShopifyBlogArticle {
+  id: string;
+  title: string;
+  handle: string;
+  body?: string;
+  summary?: string;
+  tags: string[];
+  isPublished?: boolean;
+  publishedAt?: string | null;
+  updatedAt?: string;
+  author?: {
+    name?: string;
+  };
+  blog?: {
+    id: string;
+    title?: string;
+    handle?: string;
+  };
+  image?: {
+    altText?: string;
+    originalSrc?: string;
+  } | null;
+}
+
 const PAGE_INFO_FIELDS = /* GraphQL */ `
   pageInfo {
     hasNextPage
@@ -161,6 +185,42 @@ const BLOGS_QUERY = /* GraphQL */ `
   }
 `;
 
+const BLOG_ARTICLES_QUERY = /* GraphQL */ `
+  query ShopifyBlogArticles($blogId: ID!, $first: Int!, $after: String) {
+    blog(id: $blogId) {
+      articles(first: $first, after: $after) {
+        edges {
+          cursor
+          node {
+            id
+            title
+            handle
+            body
+            summary
+            tags
+            isPublished
+            publishedAt
+            updatedAt
+            author {
+              name
+            }
+            blog {
+              id
+              title
+              handle
+            }
+            image {
+              altText
+              originalSrc
+            }
+          }
+        }
+        ${PAGE_INFO_FIELDS}
+      }
+    }
+  }
+`;
+
 export async function listProducts(
   client: ShopifyGraphQLClient,
   options: ShopifyListOptions = {}
@@ -185,9 +245,27 @@ export async function listBlogs(client: ShopifyGraphQLClient, options: ShopifyLi
   return normalizeConnection(data.blogs);
 }
 
+export async function listBlogArticles(
+  client: ShopifyGraphQLClient,
+  blogId: string,
+  options: Omit<ShopifyListOptions, "query" | "reverse" | "sortKey"> = {}
+): Promise<ShopifyConnection<ShopifyBlogArticle>> {
+  const data = await client.request<{ blog?: { articles?: ShopifyConnectionPayload<ShopifyBlogArticle> } | null }>(
+    BLOG_ARTICLES_QUERY,
+    {
+      blogId,
+      first: options.first ?? 50,
+      after: options.after
+    }
+  );
+
+  return normalizeConnection(data.blog?.articles ?? { edges: [], pageInfo: undefined });
+}
+
 export const products = listProducts;
 export const collections = listCollections;
 export const blogs = listBlogs;
+export const blogArticles = listBlogArticles;
 
 interface ShopifyConnectionPayload<TNode> {
   edges?: Array<{

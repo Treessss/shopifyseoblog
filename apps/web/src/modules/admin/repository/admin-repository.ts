@@ -1,5 +1,5 @@
 import { encryptSecret, prisma, Prisma } from "@shopify-ai-blog/db";
-import type { ShopifyBlog, ShopifyCollection, ShopifyProduct } from "@shopify-ai-blog/shopify";
+import type { ShopifyBlog, ShopifyBlogArticle, ShopifyCollection, ShopifyProduct } from "@shopify-ai-blog/shopify";
 import type {
   AdminRequestContextInput,
   AuditLogCreateInput,
@@ -30,6 +30,8 @@ interface ShopifyStoreSyncPersistenceInput {
   collections?: ShopifyCollection[];
   collectionsCapped: boolean;
   blogs: ShopifyBlog[];
+  blogArticles: ShopifyBlogArticle[];
+  blogArticlesCapped: boolean;
   fullSync: boolean;
   limit?: number;
   syncedAt: Date;
@@ -409,6 +411,10 @@ export async function persistShopifyStoreSync(
       await upsertCollectionSnapshot(tx, organizationId, input.storeId, collection, input.syncedAt);
     }
 
+    for (const article of input.blogArticles) {
+      await upsertShopifyBlogArticle(tx, organizationId, store, article, input.blogs, input.syncedAt);
+    }
+
     let blogMappingsUpdated = 0;
     for (const localeConfig of store.localeConfigs) {
       if (!localeConfig.shopifyBlogHandle) continue;
@@ -442,8 +448,10 @@ export async function persistShopifyStoreSync(
             products: input.products?.length ?? 0,
             collections: input.collections?.length ?? 0,
             blogs: input.blogs.length,
+            blogArticles: input.blogArticles.length,
             productsCapped: input.productsCapped,
             collectionsCapped: input.collectionsCapped,
+            blogArticlesCapped: input.blogArticlesCapped,
             fullSync: input.fullSync,
             limit: input.limit
           }
@@ -463,9 +471,11 @@ export async function persistShopifyStoreSync(
           products: input.products?.length ?? 0,
           collections: input.collections?.length ?? 0,
           blogs: input.blogs.length,
+          blogArticles: input.blogArticles.length,
           blogMappingsUpdated,
           productsCapped: input.productsCapped,
-          collectionsCapped: input.collectionsCapped
+          collectionsCapped: input.collectionsCapped,
+          blogArticlesCapped: input.blogArticlesCapped
         })
       }
     });
@@ -486,6 +496,7 @@ export async function persistShopifyStoreSync(
           products: input.products?.length ?? 0,
           collections: input.collections?.length ?? 0,
           blogs: input.blogs.length,
+          blogArticles: input.blogArticles.length,
           blogMappingsUpdated
         })
       }
@@ -510,9 +521,11 @@ export async function persistShopifyStoreSync(
       productsSynced: input.products?.length ?? 0,
       collectionsSynced: input.collections?.length ?? 0,
       blogsSynced: input.blogs.length,
+      blogArticlesSynced: input.blogArticles.length,
       blogMappingsUpdated,
       productsCapped: input.productsCapped,
-      collectionsCapped: input.collectionsCapped
+      collectionsCapped: input.collectionsCapped,
+      blogArticlesCapped: input.blogArticlesCapped
     };
   });
 }
@@ -1350,6 +1363,113 @@ async function upsertCollectionSnapshot(
       data: snapshotData
     });
   }
+}
+
+async function upsertShopifyBlogArticle(
+  tx: AdminDbClient,
+  organizationId: string,
+  store: {
+    id: string;
+    myshopifyDomain: string;
+    primaryLocale: string;
+    localeConfigs: Array<{
+      locale: string;
+      shopifyBlogId: string | null;
+      shopifyBlogHandle: string | null;
+    }>;
+  },
+  article: ShopifyBlogArticle,
+  blogs: ShopifyBlog[],
+  syncedAt: Date
+) {
+  const blog = resolveArticleBlog(article, blogs);
+  const handle = article.handle || fallbackHandle("article", article.id);
+  const locale = resolveArticleLocale(store, blog);
+  const status = article.isPublished === false ? "draft" : "published";
+  const publishedAt = parseOptionalDate(article.publishedAt);
+  const snapshotData = {
+    locale,
+    sourceType: "manual_topic" as const,
+    sourceId: article.id,
+    status,
+    publishPolicy: "direct" as const,
+    title: article.title || handle,
+    handle,
+    summary: article.summary ?? null,
+    bodyHtml: article.body ?? null,
+    tags: article.tags ?? [],
+    qualityPassed: true,
+    shopifyBlogId: blog?.id ?? article.blog?.id ?? null,
+    shopifyArticleId: article.id,
+    canonicalUrl: blog?.handle ? `https://${store.myshopifyDomain}/blogs/${blog.handle}/${handle}` : null,
+    publishedAt: publishedAt ?? (status === "published" ? syncedAt : null),
+    lastGeneratedAt: null,
+    failureReason: null,
+    generationMetadata: toPrismaJson({
+      importedFromShopify: true,
+      source: "shopify_sync",
+      shopifyBlogHandle: blog?.handle ?? article.blog?.handle,
+      shopifyBlogTitle: blog?.title ?? article.blog?.title,
+      shopifyUpdatedAt: article.updatedAt,
+      syncedAt: syncedAt.toISOString()
+    })
+  };
+
+  const existing = await tx.blogArticle.findFirst({
+    where: {
+      storeId: store.id,
+      OR: [
+        { shopifyArticleId: article.id },
+        {
+          locale,
+          handle
+        }
+      ]
+    }
+  });
+
+  if (existing) {
+    await tx.blogArticle.update({
+      where: { id: existing.id },
+      data: snapshotData
+    });
+    return;
+  }
+
+  await tx.blogArticle.create({
+    data: {
+      organizationId,
+      storeId: store.id,
+      ...snapshotData
+    }
+  });
+}
+
+function resolveArticleBlog(article: ShopifyBlogArticle, blogs: ShopifyBlog[]) {
+  return blogs.find((blog) => blog.id === article.blog?.id) ?? blogs.find((blog) => blog.handle === article.blog?.handle);
+}
+
+function resolveArticleLocale(
+  store: {
+    primaryLocale: string;
+    localeConfigs: Array<{
+      locale: string;
+      shopifyBlogId: string | null;
+      shopifyBlogHandle: string | null;
+    }>;
+  },
+  blog: ShopifyBlog | undefined
+) {
+  const matchedLocale = store.localeConfigs.find(
+    (config) => (blog?.id && config.shopifyBlogId === blog.id) || (blog?.handle && config.shopifyBlogHandle === blog.handle)
+  );
+  return matchedLocale?.locale ?? store.primaryLocale;
+}
+
+function parseOptionalDate(value: string | null | undefined): Date | null {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function toPrismaJson(value: unknown): Prisma.InputJsonValue | undefined {
