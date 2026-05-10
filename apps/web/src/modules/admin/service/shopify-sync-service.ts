@@ -95,7 +95,8 @@ async function resolveFreshStoreAccessToken(organizationId: string, store: Store
   }
 
   const hasClientCredentials = Boolean(store.shopifyClientId && store.shopifyClientSecretEncrypted);
-  if (accessToken && (!hasClientCredentials || !shouldRefreshToken(store.adminAccessTokenExpiresAt))) {
+  const forceRefresh = store.status === "disconnected";
+  if (accessToken && (!hasClientCredentials || (!forceRefresh && !shouldRefreshToken(store.adminAccessTokenExpiresAt)))) {
     return accessToken;
   }
 

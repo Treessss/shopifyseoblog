@@ -1,6 +1,6 @@
 import { AdminApiError } from "./errors";
 
-const SYNCABLE_STORE_STATUSES = new Set(["active", "installing"]);
+const SYNCABLE_STORE_STATUSES = new Set(["active", "installing", "disconnected"]);
 
 interface TenantResource {
   organizationId: string;
@@ -9,6 +9,9 @@ interface TenantResource {
 interface StoreResource extends TenantResource {
   id: string;
   status: string;
+  adminAccessTokenEncrypted?: string | null;
+  shopifyClientId?: string | null;
+  shopifyClientSecretEncrypted?: string | null;
 }
 
 interface ArticleResource extends TenantResource {
@@ -39,11 +42,22 @@ export function assertStoreSyncAllowed(store: StoreResource, organizationId: str
   assertTenantResource(store, organizationId, "store");
 
   if (!SYNCABLE_STORE_STATUSES.has(store.status)) {
-    throw new AdminApiError(409, "STORE_SYNC_NOT_ALLOWED", "Store must be active or installing before sync can be queued.", {
+    throw new AdminApiError(409, "STORE_SYNC_NOT_ALLOWED", "Store must be active, installing, or reconnectable before sync can be queued.", {
       storeId: store.id,
       status: store.status
     });
   }
+
+  if (store.status === "disconnected" && !hasReconnectCredentials(store)) {
+    throw new AdminApiError(409, "STORE_SYNC_CREDENTIALS_REQUIRED", "Store credentials must be saved before reconnecting Shopify.", {
+      storeId: store.id,
+      status: store.status
+    });
+  }
+}
+
+function hasReconnectCredentials(store: StoreResource): boolean {
+  return Boolean(store.adminAccessTokenEncrypted || (store.shopifyClientId && store.shopifyClientSecretEncrypted));
 }
 
 export function assertArticlePublishAllowed(article: ArticleResource, organizationId: string) {

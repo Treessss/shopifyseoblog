@@ -463,7 +463,9 @@ function mapShopifySyncError(error: unknown): AdminApiError | unknown {
       return new AdminApiError(
         403,
         "SHOPIFY_SYNC_PERMISSION_DENIED",
-        "Shopify Admin API permissions are missing for this sync target.",
+        missingProductsScope(error.errors)
+          ? "Shopify Admin API is missing the read_products scope for this app installation."
+          : "Shopify Admin API permissions are missing for this sync target.",
         details
       );
     }
@@ -476,6 +478,11 @@ function mapShopifySyncError(error: unknown): AdminApiError | unknown {
 
 function shopifyErrorsInclude(errors: unknown, pattern: string): boolean {
   return JSON.stringify(errors).toLowerCase().includes(pattern.toLowerCase());
+}
+
+function missingProductsScope(errors: unknown): boolean {
+  const serialized = JSON.stringify(errors).toLowerCase();
+  return serialized.includes("products field") || serialized.includes("\"products\"");
 }
 
 function mapStore(store: StoreRow): AdminStoreOverview {
