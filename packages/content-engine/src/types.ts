@@ -1,6 +1,7 @@
 import type {
   BlogCampaignInput,
   BrandVoice,
+  GenerationConfig,
   GeneratedArticle,
   ProductContext,
   PublishPolicy,
@@ -11,6 +12,7 @@ import type {
 export type {
   BlogCampaignInput,
   BrandVoice,
+  GenerationConfig,
   GeneratedArticle,
   ProductContext,
   PublishPolicy,
@@ -25,6 +27,31 @@ export interface CollectionContext {
   imageUrls?: string[];
 }
 
+export interface TrendSignal {
+  title: string;
+  source: string;
+  url?: string;
+  summary?: string;
+  publishedAt?: string;
+  traffic?: string;
+  imageUrl?: string;
+  relevanceScore?: number;
+}
+
+export interface InternalLinkCandidate {
+  title: string;
+  url: string;
+  type: "product" | "collection" | "article";
+  anchor?: string;
+  reason?: string;
+}
+
+export interface ImageReference {
+  url: string;
+  source: "product" | "collection" | "manual";
+  title?: string;
+}
+
 export interface ContentSourceContext {
   product?: ProductContext;
   collection?: CollectionContext;
@@ -32,6 +59,10 @@ export interface ContentSourceContext {
   topic?: string;
   seedKeywords?: string[];
   competitorTitles?: string[];
+  trendSignals?: TrendSignal[];
+  internalLinks?: InternalLinkCandidate[];
+  imageReferences?: ImageReference[];
+  generationConfig?: GenerationConfig;
 }
 
 export interface ContentPipelineInput extends Omit<Partial<BlogCampaignInput>, "locale"> {
@@ -47,6 +78,7 @@ export interface KeywordPlan {
   longTailKeywords: string[];
   searchIntent: "informational" | "commercial" | "transactional" | "navigational";
   audienceNeed: string;
+  evidence?: string[];
 }
 
 export interface KeywordPlanner {
@@ -126,6 +158,14 @@ export interface QualityGateResult {
   wordCount: number;
   reasons: string[];
   warnings: string[];
+  editorial?: EditorialQualityResult;
+}
+
+export interface EditorialQualityResult {
+  score: number;
+  passed: boolean;
+  signals: string[];
+  recommendations: string[];
 }
 
 export interface QualityGate {
@@ -161,6 +201,7 @@ export interface NormalizedContentPipelineInput {
   publishPolicy: PublishPolicy;
   targetWordCount: number;
   primaryKeyword?: string;
+  generationConfig?: GenerationConfig;
 }
 
 export interface ContentPipelineRunOptions {

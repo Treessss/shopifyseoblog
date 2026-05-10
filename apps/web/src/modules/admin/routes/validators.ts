@@ -96,9 +96,10 @@ export async function parseCreateCampaignRequest(request: Request): Promise<Crea
     topic: optionalString(body.topic),
     brandVoiceId: optionalString(body.brandVoiceId),
     publishPolicy,
-    targetWordCount: integerValue(body.targetWordCount, "targetWordCount", 1400, 300, 5000),
+    targetWordCount: integerValue(body.targetWordCount, "targetWordCount", 1400, 300, 3500),
     primaryKeyword: optionalString(body.primaryKeyword),
     keywords: stringList(body.keywords),
+    generationConfig: parseGenerationConfig(body),
     scheduleAt,
     queueGeneration: booleanValue(body.queueGeneration, true)
   };
@@ -286,6 +287,54 @@ function apiVersionValue(value: unknown) {
     throw new AdminApiError(400, "API_VERSION_INVALID", "apiVersion must use YYYY-MM format.");
   }
   return version;
+}
+
+function parseGenerationConfig(body: Record<string, unknown>) {
+  return {
+    hotNews: {
+      enabled: booleanValue(body.hotNewsEnabled, false),
+      query: optionalString(body.hotNewsQuery),
+      geo: optionalString(body.hotNewsGeo) ?? "US",
+      lookbackDays: optionalInteger(body.hotNewsLookbackDays, "hotNewsLookbackDays", 1, 30) ?? 7,
+      maxItems: optionalInteger(body.hotNewsMaxItems, "hotNewsMaxItems", 1, 12) ?? 5,
+      sources: normalizeTrendSources(body.hotNewsSources)
+    },
+    internalLinks: {
+      enabled: booleanValue(body.internalLinksEnabled, true),
+      maxLinks: optionalInteger(body.internalLinksMaxLinks, "internalLinksMaxLinks", 1, 8) ?? 4,
+      strategy: optionalEnum(body.internalLinksStrategy, ["auto", "product", "collection", "article"] as const, "internalLinksStrategy") ?? "auto"
+    },
+    imageGeneration: {
+      enabled: booleanValue(body.imageGenerationEnabled, true),
+      placement: optionalEnum(body.imagePlacement, ["featured", "inline", "both"] as const, "imagePlacement") ?? "inline",
+      promptStyle: optionalString(body.imagePromptStyle)
+    },
+    productImageReference: {
+      enabled: booleanValue(body.productImageReferenceEnabled, true),
+      source:
+        optionalEnum(
+          body.productImageReferenceSource,
+          ["source_product", "selected_products", "urls"] as const,
+          "productImageReferenceSource"
+        ) ?? "source_product",
+      productIds: stringList(body.referenceProductIds),
+      imageUrls: stringList(body.referenceImageUrls)
+    },
+    qualityGate: {
+      enabled: booleanValue(body.qualityGateEnabled, true),
+      minSeoScore: optionalInteger(body.minSeoScore, "minSeoScore", 0, 100) ?? 78,
+      minEditorialScore: optionalInteger(body.minEditorialScore, "minEditorialScore", 0, 100) ?? 72,
+      requireTrendEvidence: booleanValue(body.requireTrendEvidence, false),
+      rejectTemplatePatterns: booleanValue(body.rejectTemplatePatterns, true)
+    }
+  };
+}
+
+function normalizeTrendSources(value: unknown): Array<"google_news" | "google_trends"> {
+  const values = stringList(value).filter((item): item is "google_news" | "google_trends" =>
+    ["google_news", "google_trends"].includes(item)
+  );
+  return values.length ? values : ["google_news", "google_trends"];
 }
 
 function optionalEnum<T extends readonly string[]>(value: unknown, allowed: T, key: string): T[number] | undefined {

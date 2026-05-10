@@ -26,6 +26,40 @@ export type AuditAction =
   | "generate"
   | "sync";
 
+export interface GenerationConfig {
+  hotNews?: {
+    enabled: boolean;
+    query?: string;
+    geo?: string;
+    lookbackDays?: number;
+    maxItems?: number;
+    sources?: Array<"google_news" | "google_trends">;
+  };
+  internalLinks?: {
+    enabled: boolean;
+    maxLinks?: number;
+    strategy?: "auto" | "product" | "collection" | "article";
+  };
+  imageGeneration?: {
+    enabled: boolean;
+    placement?: "featured" | "inline" | "both";
+    promptStyle?: string;
+  };
+  productImageReference?: {
+    enabled: boolean;
+    source?: "source_product" | "selected_products" | "urls";
+    productIds?: string[];
+    imageUrls?: string[];
+  };
+  qualityGate?: {
+    enabled: boolean;
+    minSeoScore?: number;
+    minEditorialScore?: number;
+    requireTrendEvidence?: boolean;
+    rejectTemplatePatterns?: boolean;
+  };
+}
+
 export interface AdminRequestContextInput {
   organizationSlug?: string;
   requestedByUserId?: string;
@@ -197,6 +231,7 @@ export interface CreateCampaignInput {
   targetWordCount: number;
   primaryKeyword?: string;
   keywords: string[];
+  generationConfig?: GenerationConfig;
   scheduleAt?: string;
   queueGeneration: boolean;
 }

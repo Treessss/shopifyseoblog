@@ -165,7 +165,8 @@ function normalizePipelineInput(input: ContentPipelineInput, context: ContentSou
     topic,
     publishPolicy: input.publishPolicy ?? "auto_when_qualified",
     targetWordCount: input.targetWordCount ?? 1400,
-    primaryKeyword: input.primaryKeyword
+    primaryKeyword: input.primaryKeyword,
+    generationConfig: input.generationConfig ?? context.generationConfig
   };
 }
 

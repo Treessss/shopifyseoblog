@@ -52,7 +52,10 @@ export async function POST(request: Request) {
       publishPolicy: input.publishPolicy,
       targetWordCount: input.targetWordCount,
       primaryKeyword: input.primaryKeyword,
-      keywords: input.primaryKeyword ? [input.primaryKeyword] : []
+      keywords: input.primaryKeyword ? [input.primaryKeyword] : [],
+      metadata: {
+        generationConfig: input.generationConfig
+      }
     }
   });
 
@@ -65,6 +68,7 @@ export async function POST(request: Request) {
       payload: {
         ...input,
         campaignId: campaign.id,
+        generationConfig: input.generationConfig,
         queue: "blog-generation",
         jobName: "blog.generate"
       }

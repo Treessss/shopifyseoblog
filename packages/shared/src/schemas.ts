@@ -18,6 +18,50 @@ export const aiProviderConfigSchema = z.object({
   temperature: z.number().min(0).max(2).default(0.8)
 });
 
+export const generationConfigSchema = z.object({
+  hotNews: z
+    .object({
+      enabled: z.boolean().default(false),
+      query: z.string().trim().min(1).optional(),
+      geo: z.string().trim().min(2).max(8).default("US"),
+      lookbackDays: z.number().int().min(1).max(30).default(7),
+      maxItems: z.number().int().min(1).max(12).default(5),
+      sources: z.array(z.enum(["google_trends", "google_news"])).default(["google_news", "google_trends"])
+    })
+    .optional(),
+  internalLinks: z
+    .object({
+      enabled: z.boolean().default(true),
+      maxLinks: z.number().int().min(1).max(8).default(4),
+      strategy: z.enum(["auto", "product", "collection", "article"]).default("auto")
+    })
+    .optional(),
+  imageGeneration: z
+    .object({
+      enabled: z.boolean().default(true),
+      placement: z.enum(["featured", "inline", "both"]).default("inline"),
+      promptStyle: z.string().trim().min(1).max(240).optional()
+    })
+    .optional(),
+  productImageReference: z
+    .object({
+      enabled: z.boolean().default(true),
+      source: z.enum(["source_product", "selected_products", "urls"]).default("source_product"),
+      productIds: z.array(z.string().trim().min(1)).default([]),
+      imageUrls: z.array(z.string().url()).default([])
+    })
+    .optional(),
+  qualityGate: z
+    .object({
+      enabled: z.boolean().default(true),
+      minSeoScore: z.number().int().min(0).max(100).default(78),
+      minEditorialScore: z.number().int().min(0).max(100).default(72),
+      requireTrendEvidence: z.boolean().default(false),
+      rejectTemplatePatterns: z.boolean().default(true)
+    })
+    .optional()
+});
+
 export const blogCampaignInputSchema = z.object({
   organizationId: z.string().min(1),
   storeId: z.string().min(1),
@@ -27,7 +71,8 @@ export const blogCampaignInputSchema = z.object({
   topic: z.string().min(2).optional(),
   publishPolicy: z.enum(PUBLISH_POLICIES).default("auto_when_qualified"),
   targetWordCount: z.number().int().min(600).max(3500).default(1400),
-  primaryKeyword: z.string().optional()
+  primaryKeyword: z.string().optional(),
+  generationConfig: generationConfigSchema.optional()
 });
 
 export const productContextSchema = z.object({

@@ -1,11 +1,21 @@
 import type { Job } from "bullmq";
-import { createOpenAICompatibleClient, type GenerateTextResult } from "@shopify-ai-blog/ai";
+import { createOpenAICompatibleClient, type GenerateImageResult, type GenerateTextResult } from "@shopify-ai-blog/ai";
 import { maybeDecryptSecret, prisma } from "@shopify-ai-blog/db";
-import { runContentPipeline, type ContentSourceContext } from "@shopify-ai-blog/content-engine";
+import {
+  defaultQualityGate,
+  defaultSeoScorer,
+  discoverTrendSignals,
+  runContentPipeline,
+  type ContentSourceContext,
+  type HtmlAssemblyResult,
+  type InternalLinkCandidate,
+  type TrendSignal
+} from "@shopify-ai-blog/content-engine";
 import {
   blogCampaignInputSchema,
   generatedArticleSchema,
   normalizeLocale,
+  type GenerationConfig,
   type GeneratedArticle,
   type PublishPolicy,
   type SourceType,
@@ -71,6 +81,7 @@ interface ResolvedAiProvider {
   baseUrl: string;
   apiKey: string;
   textModel: string;
+  imageModel: string | null;
   temperature: number;
   safeMetadata: {
     id: string;
@@ -91,6 +102,7 @@ interface GenerationCampaignInput {
   publishPolicy: PublishPolicy;
   targetWordCount: number;
   primaryKeyword: string | null;
+  metadata: unknown;
 }
 
 interface BrandVoiceContextRow {
@@ -119,6 +131,18 @@ interface ParsedGenerationInput {
   publishPolicy: PublishPolicy;
   targetWordCount: number;
   primaryKeyword?: string;
+  generationConfig?: GenerationConfig;
+}
+
+interface ImageAssetDraft {
+  prompt: string;
+  altText: string;
+  publicUrl?: string;
+  sourceUrl?: string;
+  providerModel?: string;
+  raw?: unknown;
+  error?: string;
+  referenceImageUrls: string[];
 }
 
 export async function processBlogGenerationJob(job: BlogGenerationJob): Promise<WorkerJobResult> {
@@ -211,13 +235,26 @@ async function generateBlogArticle(
       publishPolicy: generationInput.publishPolicy,
       generated,
       status,
-      qualityReport: pipelineResult.artifacts.quality,
+      qualityReport: aiResult.quality,
       generationMetadata: {
         generator: "openai-compatible",
         provider: aiProvider.safeMetadata,
         ai: aiResult.metadata,
+        imageAsset: aiResult.imageAsset
+          ? {
+              prompt: aiResult.imageAsset.prompt,
+              altText: aiResult.imageAsset.altText,
+              publicUrl: aiResult.imageAsset.publicUrl,
+              sourceUrl: aiResult.imageAsset.sourceUrl,
+              providerModel: aiResult.imageAsset.providerModel,
+              error: aiResult.imageAsset.error,
+              referenceImageUrls: aiResult.imageAsset.referenceImageUrls
+            }
+          : null,
         contentEngine: {
-          artifacts: pipelineResult.artifacts
+          artifacts: pipelineResult.artifacts,
+          finalQuality: aiResult.quality,
+          finalSeo: aiResult.seo
         },
         queue: {
           bullJobId: job.id,
@@ -226,6 +263,15 @@ async function generateBlogArticle(
       }
     });
     articleId = article.id;
+    if (aiResult.imageAsset) {
+      await persistGeneratedImageAsset({
+        organizationId: job.data.organizationId,
+        storeId: job.data.storeId,
+        articleId: article.id,
+        provider: context.aiProvider?.provider ?? null,
+        asset: aiResult.imageAsset
+      });
+    }
 
     await completePublishJob(publishJob.id, {
       articleId: article.id,
@@ -246,7 +292,7 @@ async function generateBlogArticle(
       payload: {
         status,
         seoScore: generated.seoScore,
-        quality: pipelineResult.artifacts.quality
+        quality: aiResult.quality
       }
     });
     await writeAuditLog({
@@ -373,6 +419,7 @@ function resolveAiProvider(provider: AiProviderRecord | null): ResolvedAiProvide
     baseUrl: provider.baseUrl,
     apiKey,
     textModel: provider.textModel,
+    imageModel: provider.imageModel,
     temperature: provider.temperature,
     safeMetadata: {
       id: provider.id,
@@ -392,6 +439,9 @@ async function generateArticleWithAi(
   pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
 ): Promise<{
   article: GeneratedArticle;
+  seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>;
+  quality: Awaited<ReturnType<typeof defaultQualityGate.evaluate>>;
+  imageAsset?: ImageAssetDraft;
   metadata: {
     id?: string;
     model?: string;
@@ -432,7 +482,10 @@ async function generateArticleWithAi(
         outlinePrompt: pipelineResult.artifacts.prompts.outlinePrompt,
         draftPrompt: pipelineResult.artifacts.prompts.draftPrompt,
         sourceContext: context
-      })
+      }),
+      "Required quality policy:",
+      JSON.stringify(input.generationConfig?.qualityGate ?? {}),
+      "Do not try to evade AI detectors. Instead, make the article specific, evidence-aware, varied in rhythm, useful to shoppers, and free of generic template phrases."
     ].join("\n\n"),
     maxTokens: Math.max(1800, Math.min(5000, input.targetWordCount * 3)),
     responseFormat: { type: "json_object" }
@@ -459,8 +512,36 @@ async function generateArticleWithAi(
     });
   }
 
+  let finalArticle = enforceInternalLinks(article.data, context);
+  const imageAsset = await maybeGenerateArticleImage(provider, finalArticle, input, context);
+  if (imageAsset?.publicUrl) {
+    finalArticle = {
+      ...finalArticle,
+      imagePrompt: imageAsset.prompt,
+      imageAlt: imageAsset.altText,
+      bodyHtml: injectImageFigure(finalArticle.bodyHtml, imageAsset.publicUrl, imageAsset.altText, input.generationConfig)
+    };
+  } else if (imageAsset?.prompt) {
+    finalArticle = {
+      ...finalArticle,
+      imagePrompt: imageAsset.prompt,
+      imageAlt: imageAsset.altText
+    };
+  }
+
+  const qualityInput = normalizeFinalQualityInput(input);
+  const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
+  const finalQuality = await defaultQualityGate.evaluate(toHtmlAssembly(finalArticle), finalSeo, qualityInput, context);
+
   return {
-    article: article.data,
+    article: {
+      ...finalArticle,
+      seoScore: finalSeo.score,
+      qualityPassed: finalQuality.passed
+    },
+    seo: finalSeo,
+    quality: finalQuality,
+    imageAsset,
     metadata: {
       id: result.id,
       model: result.model ?? provider.textModel,
@@ -468,6 +549,175 @@ async function generateArticleWithAi(
       usage: result.usage
     }
   };
+}
+
+function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
+  const links = context.internalLinks?.slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4) ?? [];
+  if (!context.generationConfig?.internalLinks?.enabled || links.length === 0) return article;
+  if (links.some((link) => article.bodyHtml.includes(link.url))) return article;
+
+  const list = links
+    .map((link) => `<li><a href="${escapeHtml(link.url)}">${escapeHtml(link.anchor ?? link.title)}</a></li>`)
+    .join("");
+  const heading = article.locale === "zh-CN" ? "相关商品与延伸阅读" : "Related products and reading";
+
+  return {
+    ...article,
+    bodyHtml: `${article.bodyHtml}<section><h2>${heading}</h2><ul>${list}</ul></section>`
+  };
+}
+
+async function maybeGenerateArticleImage(
+  provider: ResolvedAiProvider,
+  article: GeneratedArticle,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext
+): Promise<ImageAssetDraft | undefined> {
+  if (input.generationConfig?.imageGeneration?.enabled === false) return undefined;
+
+  const referenceImageUrls = context.imageReferences?.map((item) => item.url).slice(0, 4) ?? [];
+  const prompt = article.imagePrompt ?? buildFallbackImagePrompt(article, context);
+  const altText = article.imageAlt ?? article.title;
+
+  if (!provider.imageModel) {
+    return {
+      prompt,
+      altText,
+      error: "AI image model is not configured.",
+      referenceImageUrls
+    };
+  }
+
+  try {
+    const client = createOpenAICompatibleClient({
+      baseUrl: provider.baseUrl,
+      apiKey: provider.apiKey,
+      model: provider.imageModel,
+      timeoutMs: 120000
+    });
+    const image = await client.generateImage({
+      model: provider.imageModel,
+      prompt,
+      size: "1536x864",
+      responseFormat: "url",
+      referenceImageUrls,
+      extraBody: referenceImageUrls.length ? { reference_images: referenceImageUrls } : undefined
+    });
+
+    return imageToAssetDraft(image, prompt, altText, referenceImageUrls);
+  } catch (error) {
+    return {
+      prompt,
+      altText,
+      error: getErrorMessage(error),
+      referenceImageUrls
+    };
+  }
+}
+
+function imageToAssetDraft(
+  image: GenerateImageResult,
+  prompt: string,
+  altText: string,
+  referenceImageUrls: string[]
+): ImageAssetDraft {
+  const dataUrl = image.b64Json ? `data:image/png;base64,${image.b64Json}` : undefined;
+
+  return {
+    prompt: image.revisedPrompt ?? prompt,
+    altText,
+    publicUrl: image.url,
+    sourceUrl: image.url ?? dataUrl,
+    providerModel: image.model,
+    referenceImageUrls
+  };
+}
+
+function injectImageFigure(bodyHtml: string, imageUrl: string, altText: string, generationConfig?: GenerationConfig) {
+  if (!imageUrl || bodyHtml.includes(imageUrl)) return bodyHtml;
+  const figure = `<figure><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(altText)}" /></figure>`;
+  const placement = generationConfig?.imageGeneration?.placement ?? "inline";
+  if (placement === "featured") return `${figure}${bodyHtml}`;
+
+  const firstParagraphEnd = bodyHtml.indexOf("</p>");
+  if (firstParagraphEnd >= 0) {
+    return `${bodyHtml.slice(0, firstParagraphEnd + 4)}${figure}${bodyHtml.slice(firstParagraphEnd + 4)}`;
+  }
+
+  return `${bodyHtml}${figure}`;
+}
+
+function normalizeFinalQualityInput(input: ParsedGenerationInput) {
+  return {
+    ...input,
+    topic: input.topic ?? input.primaryKeyword ?? "Shopify blog topic"
+  };
+}
+
+async function scoreFinalArticle(article: GeneratedArticle, input: ReturnType<typeof normalizeFinalQualityInput>) {
+  return defaultSeoScorer.score(toHtmlAssembly(article), {
+    locale: article.locale,
+    primaryKeyword: article.primaryKeyword,
+    secondaryKeywords: article.secondaryKeywords,
+    longTailKeywords: [],
+    searchIntent: input.sourceType === "manual_topic" ? "informational" : "commercial",
+    audienceNeed: ""
+  }, input);
+}
+
+function toHtmlAssembly(article: GeneratedArticle): HtmlAssemblyResult {
+  return {
+    title: article.title,
+    handle: article.handle,
+    summary: article.summary,
+    bodyHtml: article.bodyHtml,
+    tags: article.tags,
+    imagePrompt: article.imagePrompt,
+    imageAlt: article.imageAlt
+  };
+}
+
+function buildFallbackImagePrompt(article: GeneratedArticle, context: ContentSourceContext): string {
+  return [
+    `Original ecommerce blog image for ${article.primaryKeyword}`,
+    context.product ? `Product: ${context.product.title}` : "",
+    context.collection ? `Collection: ${context.collection.title}` : "",
+    "realistic editorial ecommerce scene, natural light, clean background, 16:9 horizontal, no watermarks"
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
+async function persistGeneratedImageAsset(input: {
+  organizationId: string;
+  storeId: string;
+  articleId: string;
+  provider: string | null;
+  asset: ImageAssetDraft;
+}) {
+  await prisma.generatedAsset.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      articleId: input.articleId,
+      type: "inline_image",
+      status: input.asset.error ? "failed" : input.asset.publicUrl || input.asset.sourceUrl ? "generated" : "requested",
+      provider: isAiProvider(input.provider) ? input.provider : undefined,
+      prompt: input.asset.prompt,
+      altText: input.asset.altText,
+      sourceUrl: input.asset.sourceUrl,
+      publicUrl: input.asset.publicUrl,
+      metadata: toPrismaJson({
+        providerModel: input.asset.providerModel,
+        referenceImageUrls: input.asset.referenceImageUrls,
+        error: input.asset.error
+      })
+    }
+  });
+}
+
+function isAiProvider(value: string | null): value is "openai" | "compatible" | "custom" {
+  return value === "openai" || value === "compatible" || value === "custom";
 }
 
 async function publishArticle(
@@ -896,9 +1146,28 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
   const locale = normalizeLocale(campaign?.locale ?? article?.locale ?? data.locale);
   const sourceType = campaign?.sourceType ?? article?.sourceType ?? data.sourceType;
   const sourceId = campaign?.sourceId ?? article?.sourceId ?? data.sourceId;
-  const [brandVoice, sourceContext] = await Promise.all([
+  const generationConfig = resolveGenerationConfig(data.generationConfig, campaign?.metadata);
+  const [brandVoice, baseSourceContext] = await Promise.all([
     loadBrandVoice(data.organizationId, data.storeId, locale, campaign?.brandVoice),
     loadSourceContext(data.storeId, sourceType, sourceId)
+  ]);
+  const topic = campaign?.topic ?? article?.title ?? data.topic;
+  const seedKeywords = campaign?.keywords?.length ? campaign.keywords : undefined;
+  const sourceContextBase = {
+    ...baseSourceContext,
+    topic,
+    seedKeywords,
+    generationConfig
+  } satisfies ContentSourceContext;
+  const [trendSignals, internalLinks, imageReferences] = await Promise.all([
+    discoverTrendSignals({
+      topic: topic ?? campaign?.title ?? baseSourceContext.product?.title ?? baseSourceContext.collection?.title ?? "Shopify blog topic",
+      locale,
+      generationConfig,
+      context: sourceContextBase
+    }),
+    loadInternalLinks(store.myshopifyDomain, data.storeId, sourceType, sourceId, generationConfig),
+    loadImageReferences(data.storeId, sourceContextBase, generationConfig)
   ]);
 
   return {
@@ -907,7 +1176,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     article,
     aiProvider,
     sourceContext: {
-      ...sourceContext,
+      ...sourceContextBase,
       brandVoice: brandVoice
         ? {
             locale,
@@ -917,8 +1186,12 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
             examples: brandVoice.examples ?? []
           }
         : undefined,
-      topic: campaign?.topic ?? article?.title ?? data.topic,
-      seedKeywords: campaign?.keywords?.length ? campaign.keywords : undefined
+      topic,
+      seedKeywords,
+      trendSignals,
+      internalLinks,
+      imageReferences,
+      generationConfig
     } satisfies ContentSourceContext
   };
 }
@@ -933,7 +1206,8 @@ function mergeGenerationInput(data: BlogGenerationJobData, campaign: GenerationC
     topic: campaign?.topic ?? data.topic ?? campaign?.title,
     publishPolicy: campaign?.publishPolicy ?? data.publishPolicy,
     targetWordCount: campaign?.targetWordCount ?? data.targetWordCount,
-    primaryKeyword: campaign?.primaryKeyword ?? data.primaryKeyword
+    primaryKeyword: campaign?.primaryKeyword ?? data.primaryKeyword,
+    generationConfig: resolveGenerationConfig(data.generationConfig, campaign?.metadata)
   };
 }
 
@@ -1012,6 +1286,172 @@ async function loadSourceContext(
   }
 
   return {};
+}
+
+function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown): GenerationConfig | undefined {
+  const fromJob = isRecord(jobConfig) ? jobConfig : undefined;
+  const metadata = isRecord(campaignMetadata) ? campaignMetadata : {};
+  const fromMetadata = isRecord(metadata.generationConfig) ? metadata.generationConfig : undefined;
+  const candidate = fromJob ?? fromMetadata;
+  if (!candidate) return undefined;
+
+  return {
+    hotNews: isRecord(candidate.hotNews)
+      ? {
+          enabled: candidate.hotNews.enabled === true,
+          query: stringValue(candidate.hotNews.query),
+          geo: stringValue(candidate.hotNews.geo) ?? "US",
+          lookbackDays: numberValue(candidate.hotNews.lookbackDays),
+          maxItems: numberValue(candidate.hotNews.maxItems),
+          sources: stringArray(candidate.hotNews.sources).filter((source): source is "google_news" | "google_trends" =>
+            ["google_news", "google_trends"].includes(source)
+          )
+        }
+      : undefined,
+    internalLinks: isRecord(candidate.internalLinks)
+      ? {
+          enabled: candidate.internalLinks.enabled !== false,
+          maxLinks: numberValue(candidate.internalLinks.maxLinks),
+          strategy: linkStrategy(candidate.internalLinks.strategy)
+        }
+      : undefined,
+    imageGeneration: isRecord(candidate.imageGeneration)
+      ? {
+          enabled: candidate.imageGeneration.enabled !== false,
+          placement: imagePlacement(candidate.imageGeneration.placement),
+          promptStyle: stringValue(candidate.imageGeneration.promptStyle)
+        }
+      : undefined,
+    productImageReference: isRecord(candidate.productImageReference)
+      ? {
+          enabled: candidate.productImageReference.enabled !== false,
+          source: productImageReferenceSource(candidate.productImageReference.source),
+          productIds: stringArray(candidate.productImageReference.productIds),
+          imageUrls: stringArray(candidate.productImageReference.imageUrls)
+        }
+      : undefined,
+    qualityGate: isRecord(candidate.qualityGate)
+      ? {
+          enabled: candidate.qualityGate.enabled !== false,
+          minSeoScore: numberValue(candidate.qualityGate.minSeoScore),
+          minEditorialScore: numberValue(candidate.qualityGate.minEditorialScore),
+          requireTrendEvidence: candidate.qualityGate.requireTrendEvidence === true,
+          rejectTemplatePatterns: candidate.qualityGate.rejectTemplatePatterns !== false
+        }
+      : undefined
+  };
+}
+
+async function loadInternalLinks(
+  shopDomain: string,
+  storeId: string,
+  sourceType: string,
+  sourceId: string | null | undefined,
+  generationConfig: GenerationConfig | undefined
+): Promise<InternalLinkCandidate[]> {
+  const config = generationConfig?.internalLinks;
+  if (!config?.enabled) return [];
+
+  const limit = config.maxLinks ?? 4;
+  const strategy = config.strategy ?? "auto";
+  const [products, collections, articles] = await Promise.all([
+    strategy === "collection" || strategy === "article"
+      ? Promise.resolve([])
+      : prisma.productSnapshot.findMany({
+          where: {
+            storeId,
+            shopifyProductId: sourceType === "product" && sourceId ? { not: sourceId } : undefined
+          },
+          orderBy: { syncedAt: "desc" },
+          take: limit
+        }),
+    strategy === "product" || strategy === "article"
+      ? Promise.resolve([])
+      : prisma.collectionSnapshot.findMany({
+          where: {
+            storeId,
+            shopifyCollectionId: sourceType === "collection" && sourceId ? { not: sourceId } : undefined
+          },
+          orderBy: { syncedAt: "desc" },
+          take: limit
+        }),
+    strategy === "product" || strategy === "collection"
+      ? Promise.resolve([])
+      : prisma.blogArticle.findMany({
+          where: {
+            storeId,
+            status: "published",
+            handle: { not: null }
+          },
+          orderBy: { publishedAt: "desc" },
+          take: limit
+        })
+  ]);
+
+  return [
+    ...products.map((product) => ({
+      title: product.title,
+      url: `https://${shopDomain}/products/${product.handle}`,
+      type: "product" as const,
+      anchor: product.seoTitle ?? product.title,
+      reason: product.productType ?? undefined
+    })),
+    ...collections.map((collection) => ({
+      title: collection.title,
+      url: `https://${shopDomain}/collections/${collection.handle}`,
+      type: "collection" as const,
+      anchor: collection.title
+    })),
+    ...articles.map((article) => ({
+      title: article.title ?? "Related article",
+      url: article.canonicalUrl ?? `https://${shopDomain}/blogs/news/${article.handle}`,
+      type: "article" as const,
+      anchor: article.title ?? article.primaryKeyword ?? "Related article"
+    }))
+  ].slice(0, limit);
+}
+
+async function loadImageReferences(
+  storeId: string,
+  context: ContentSourceContext,
+  generationConfig: GenerationConfig | undefined
+): Promise<NonNullable<ContentSourceContext["imageReferences"]>> {
+  const config = generationConfig?.productImageReference;
+  if (!config?.enabled) return [];
+
+  const manual = (config.imageUrls ?? []).map((url) => ({
+    url,
+    source: "manual" as const,
+    title: "Manual reference image"
+  }));
+  const sourceImages = [
+    ...(context.product?.imageUrls ?? []).map((url) => ({ url, source: "product" as const, title: context.product?.title })),
+    ...(context.collection?.imageUrls ?? []).map((url) => ({ url, source: "collection" as const, title: context.collection?.title }))
+  ];
+
+  if (config.source !== "selected_products" || !config.productIds?.length) {
+    return [...sourceImages, ...manual].slice(0, 6);
+  }
+
+  const selected = await prisma.productSnapshot.findMany({
+    where: {
+      storeId,
+      OR: config.productIds.flatMap((id) => [{ id }, { shopifyProductId: id }, { handle: id }])
+    },
+    take: 6
+  });
+
+  return [
+    ...selected.flatMap((product) =>
+      (product.imageUrls ?? []).slice(0, 2).map((url) => ({
+        url,
+        source: "product" as const,
+        title: product.title
+      }))
+    ),
+    ...sourceImages,
+    ...manual
+  ].slice(0, 6);
 }
 
 async function upsertGeneratedArticle(input: {
@@ -1163,4 +1603,51 @@ async function failPublishGracefully(
     },
     articleId
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => stringValue(item)).filter((item): item is string => Boolean(item));
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value
+      .split(/\r?\n|,/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function linkStrategy(value: unknown): "auto" | "product" | "collection" | "article" | undefined {
+  return value === "auto" || value === "product" || value === "collection" || value === "article" ? value : undefined;
+}
+
+function imagePlacement(value: unknown): "featured" | "inline" | "both" | undefined {
+  return value === "featured" || value === "inline" || value === "both" ? value : undefined;
+}
+
+function productImageReferenceSource(value: unknown): "source_product" | "selected_products" | "urls" | undefined {
+  return value === "source_product" || value === "selected_products" || value === "urls" ? value : undefined;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }

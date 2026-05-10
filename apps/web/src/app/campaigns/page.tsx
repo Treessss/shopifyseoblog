@@ -215,8 +215,82 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
                 { label: "直接发布", value: "direct" }
               ]}
             />
-            <Field label="目标字数" name="targetWordCount" type="number" value={1400} min={600} max={4000} step={100} />
+            <Field label="目标字数" name="targetWordCount" type="number" value={1400} min={600} max={3500} step={100} />
             <Field label="来源 ID 或 Handle" name="sourceId" placeholder="product-handle / collection-handle" />
+            <SelectField
+              label="热点新闻"
+              name="hotNewsEnabled"
+              value="true"
+              options={[
+                { label: "自动搜索相关热点", value: "true" },
+                { label: "不使用热点", value: "false" }
+              ]}
+            />
+            <Field label="热点查询词" name="hotNewsQuery" placeholder="留空时自动使用品类、商品和主关键词" />
+            <Field label="热点地区" name="hotNewsGeo" value="US" placeholder="US / CN / JP" />
+            <Field label="热点数量" name="hotNewsMaxItems" type="number" value={5} min={1} max={12} step={1} />
+            <SelectField
+              label="内链策略"
+              name="internalLinksStrategy"
+              value="auto"
+              options={[
+                { label: "自动选择商品/系列/文章", value: "auto" },
+                { label: "优先商品", value: "product" },
+                { label: "优先系列", value: "collection" },
+                { label: "优先文章", value: "article" }
+              ]}
+            />
+            <Field label="内链数量" name="internalLinksMaxLinks" type="number" value={4} min={1} max={8} step={1} />
+            <SelectField
+              label="自动配图"
+              name="imageGenerationEnabled"
+              value="true"
+              options={[
+                { label: "生成图片并插入文章", value: "true" },
+                { label: "只生成文字", value: "false" }
+              ]}
+            />
+            <SelectField
+              label="图片位置"
+              name="imagePlacement"
+              value="inline"
+              options={[
+                { label: "正文插图", value: "inline" },
+                { label: "首图", value: "featured" },
+                { label: "首图 + 正文", value: "both" }
+              ]}
+            />
+            <SelectField
+              label="产品图参考"
+              name="productImageReferenceEnabled"
+              value="true"
+              options={[
+                { label: "自动读取来源商品图", value: "true" },
+                { label: "不使用产品图参考", value: "false" }
+              ]}
+            />
+            <Field label="额外参考图 URL" name="referenceImageUrls" placeholder="多个 URL 用逗号分隔" />
+            <Field label="图片风格补充" name="imagePromptStyle" placeholder="Apple 风格、真实生活方式场景、浅色背景" />
+            <Field label="最低 SEO 分" name="minSeoScore" type="number" value={78} min={0} max={100} step={1} />
+            <Field label="最低编辑质量分" name="minEditorialScore" type="number" value={72} min={0} max={100} step={1} />
+            <SelectField
+              label="模板化检测"
+              name="rejectTemplatePatterns"
+              value="true"
+              options={[
+                { label: "启用：拦截模板化表达", value: "true" },
+                { label: "关闭", value: "false" }
+              ]}
+            />
+            <SelectField
+              label="热点依据要求"
+              name="requireTrendEvidence"
+              value="false"
+              options={[
+                { label: "不强制", value: "false" },
+                { label: "必须找到热点依据", value: "true" }
+              ]}
+            />
             <div className="span-2 form-actions">
               <button className="button button--primary" type="submit" disabled={stores.length === 0}>
                 <Megaphone size={16} aria-hidden="true" />

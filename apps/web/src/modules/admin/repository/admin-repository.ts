@@ -824,6 +824,9 @@ export async function createCampaignWithOptionalJob(
         targetWordCount: input.targetWordCount,
         primaryKeyword: input.primaryKeyword,
         keywords: input.keywords,
+        metadata: compactJsonObject({
+          generationConfig: input.generationConfig
+        }),
         scheduleAt: input.scheduleAt ? new Date(input.scheduleAt) : null
       },
       include: {
@@ -862,6 +865,7 @@ export async function createCampaignWithOptionalJob(
               targetWordCount: input.targetWordCount,
               primaryKeyword: input.primaryKeyword,
               keywords: input.keywords,
+              generationConfig: input.generationConfig,
               queue: "blog-generation",
               jobName: "blog.generate"
             })
@@ -899,7 +903,8 @@ export async function createCampaignWithOptionalJob(
         metadata: compactJsonObject({
           queueGeneration: input.queueGeneration,
           jobId: job?.id,
-          sourceType: input.sourceType
+          sourceType: input.sourceType,
+          generationConfig: input.generationConfig
         })
       }
     });

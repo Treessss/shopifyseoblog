@@ -49,6 +49,26 @@ export interface GenerateTextResult {
   raw: unknown;
 }
 
+export interface GenerateImageOptions {
+  prompt: string;
+  model?: string;
+  size?: string;
+  quality?: string;
+  n?: number;
+  responseFormat?: "url" | "b64_json";
+  referenceImageUrls?: string[];
+  extraBody?: Record<string, unknown>;
+  signal?: AbortSignal;
+}
+
+export interface GenerateImageResult {
+  url?: string;
+  b64Json?: string;
+  revisedPrompt?: string;
+  model?: string;
+  raw: unknown;
+}
+
 export class AIClientError extends Error {
   constructor(
     message: string,
@@ -149,6 +169,49 @@ export class OpenAICompatibleClient {
       throw new AIClientError("OpenAI-compatible response was not valid JSON.", { error, content: result.content });
     }
   }
+
+  async generateImage(options: GenerateImageOptions): Promise<GenerateImageResult> {
+    const model = options.model ?? this.model;
+    if (!model) {
+      throw new AIClientError("OpenAI-compatible image model is required.");
+    }
+
+    if (!this.apiKey) {
+      throw new AIClientError("OpenAI-compatible apiKey is required.");
+    }
+
+    const controller = createAbortController(options.signal, this.timeoutMs);
+    const body = removeUndefined({
+      model,
+      prompt: options.prompt,
+      size: options.size,
+      quality: options.quality,
+      n: options.n ?? 1,
+      response_format: options.responseFormat,
+      reference_image_urls: options.referenceImageUrls?.length ? options.referenceImageUrls : undefined,
+      ...options.extraBody
+    });
+
+    const response = await this.fetchImpl(joinUrl(this.baseUrl, "images/generations"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.apiKey}`,
+        ...this.defaultHeaders
+      },
+      body: JSON.stringify(body),
+      signal: controller?.signal ?? options.signal
+    });
+
+    controller?.clear();
+
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new AIClientError(`OpenAI-compatible image request failed with HTTP ${response.status}.`, payload, response.status);
+    }
+
+    return parseImageGeneration(payload, model);
+  }
 }
 
 export function createOpenAICompatibleClient(config: OpenAICompatibleClientConfig): OpenAICompatibleClient {
@@ -205,6 +268,32 @@ function parseChatCompletion(payload: unknown): GenerateTextResult {
     content,
     finishReason: typeof firstChoice.finish_reason === "string" ? firstChoice.finish_reason : undefined,
     usage,
+    raw: payload
+  };
+}
+
+function parseImageGeneration(payload: unknown, model: string): GenerateImageResult {
+  if (!isRecord(payload)) {
+    throw new AIClientError("OpenAI-compatible image response was not an object.", payload);
+  }
+
+  const error = payload.error;
+  if (error) {
+    const message = isRecord(error) && typeof error.message === "string" ? error.message : "OpenAI-compatible image response returned an error.";
+    throw new AIClientError(message, payload);
+  }
+
+  const data = Array.isArray(payload.data) ? payload.data : [];
+  const first = data.find(isRecord);
+  if (!first) {
+    throw new AIClientError("OpenAI-compatible image response did not include data.", payload);
+  }
+
+  return {
+    url: typeof first.url === "string" ? first.url : undefined,
+    b64Json: typeof first.b64_json === "string" ? first.b64_json : undefined,
+    revisedPrompt: typeof first.revised_prompt === "string" ? first.revised_prompt : undefined,
+    model: typeof payload.model === "string" ? payload.model : model,
     raw: payload
   };
 }

@@ -2,6 +2,7 @@ import { DEFAULT_LOCALE, normalizeLocale, type SupportedLocale } from "./locales
 import type {
   ArticleDraft,
   ContentSourceContext,
+  EditorialQualityResult,
   HtmlAssembler,
   HtmlAssemblyResult,
   KeywordPlan,
@@ -23,6 +24,7 @@ export const defaultKeywordPlanner: KeywordPlanner = {
     const primaryKeyword = cleanKeyword(input.primaryKeyword ?? context.seedKeywords?.[0] ?? topic);
     const secondaryKeywords = unique([
       ...(context.seedKeywords ?? []),
+      ...trendKeywordCandidates(context),
       ...localizedKeywordVariants(primaryKeyword, locale),
       context.product?.productType,
       context.product?.vendor,
@@ -33,9 +35,13 @@ export const defaultKeywordPlanner: KeywordPlanner = {
       locale,
       primaryKeyword,
       secondaryKeywords: secondaryKeywords.slice(0, 8),
-      longTailKeywords: localizedLongTailKeywords(primaryKeyword, topic, locale),
+      longTailKeywords: unique([
+        ...localizedLongTailKeywords(primaryKeyword, topic, locale),
+        ...trendLongTailKeywords(primaryKeyword, context, locale)
+      ]).slice(0, 8),
       searchIntent: input.sourceType === "manual_topic" ? "informational" : "commercial",
-      audienceNeed: locale === "zh-CN" ? `理解 ${primaryKeyword} 的选择、使用和购买决策` : `Understand how to choose and use ${primaryKeyword}`
+      audienceNeed: locale === "zh-CN" ? `理解 ${primaryKeyword} 的选择、使用和购买决策` : `Understand how to choose and use ${primaryKeyword}`,
+      evidence: keywordEvidence(context)
     };
   }
 };
@@ -48,10 +54,14 @@ export const defaultPromptBuilder: PromptBuilder = {
     const bannedWords = context.brandVoice?.bannedWords?.length
       ? `Avoid these words: ${context.brandVoice.bannedWords.join(", ")}.`
       : "Avoid unsupported claims and exaggerated guarantees.";
+    const trendContext = trendContextLine(context);
+    const internalLinks = internalLinkInstruction(context);
+    const imageBrief = imagePromptInstruction(context);
 
     const system = [
       `Write in ${language}.`,
       "You are an ecommerce SEO editor for a Shopify store.",
+      "Use evidence carefully: trend and news signals are angle inputs, not permission to fabricate facts.",
       voice,
       audience,
       bannedWords
@@ -63,14 +73,21 @@ export const defaultPromptBuilder: PromptBuilder = {
         `Create an SEO outline for topic: ${input.topic}.`,
         `Primary keyword: ${keywords.primaryKeyword}.`,
         `Secondary keywords: ${keywords.secondaryKeywords.join(", ")}.`,
+        keywords.evidence?.length ? `Keyword evidence: ${keywords.evidence.join(" | ")}.` : "",
         `Target length: ${input.targetWordCount} words.`,
         "Return title, summary, H2 sections, shopper intent, FAQs, and image alt text."
-      ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n"),
       draftPrompt: [
         `Draft the article in ${language} using the approved outline.`,
         `Primary keyword must appear naturally in title, opening paragraph, at least one H2, and conclusion: ${keywords.primaryKeyword}.`,
         "Use concise HTML-ready paragraphs, no markdown fences, no fabricated discounts or medical claims.",
-        productContextLine(context)
+        "Vary paragraph rhythm and examples. Avoid generic filler, repetitive sentence starts, and obvious template phrasing.",
+        productContextLine(context),
+        trendContext,
+        internalLinks,
+        imageBrief
       ]
         .filter(Boolean)
         .join("\n")
@@ -94,6 +111,7 @@ export const defaultHtmlAssembler: HtmlAssembler = {
       context.product?.imageUrls?.[0]
         ? `<figure><img src="${escapeHtml(context.product.imageUrls[0])}" alt="${escapeHtml(draft.imageAlt ?? draft.title)}" /></figure>`
         : "",
+      relatedLinksHtml(context, input.locale),
       `<p>${escapeHtml(draft.conclusion)}</p>`
     ].join("");
 
@@ -142,20 +160,34 @@ export const defaultSeoScorer: SeoScorer = {
 
 export const defaultQualityGate: QualityGate = {
   evaluate(article, seo, input, context) {
-    const minSeoScore = 72;
+    const qualityConfig = context.generationConfig?.qualityGate;
+    const minSeoScore = qualityConfig?.minSeoScore ?? 72;
     const wordCount = estimateWordCount(stripHtml(article.bodyHtml), input.locale);
     const minWords = Math.max(120, Math.floor(input.targetWordCount * 0.25));
     const body = stripHtml(article.bodyHtml).toLowerCase();
     const bannedWords = context.brandVoice?.bannedWords ?? [];
     const blockedWords = bannedWords.filter((word) => word && body.includes(word.toLowerCase()));
+    const editorial = evaluateEditorialQuality(article, input.locale);
     const reasons: string[] = [];
     const warnings: string[] = [];
 
     if (seo.score < minSeoScore) reasons.push(`SEO score ${seo.score} is below ${minSeoScore}.`);
     if (wordCount < minWords) reasons.push(`Estimated word count ${wordCount} is below ${minWords}.`);
     if (blockedWords.length > 0) reasons.push(`Banned words found: ${blockedWords.join(", ")}.`);
+    if (qualityConfig?.enabled !== false && editorial.score < (qualityConfig?.minEditorialScore ?? 0)) {
+      reasons.push(`Editorial quality score ${editorial.score} is below ${qualityConfig?.minEditorialScore ?? 0}.`);
+    }
+    if (qualityConfig?.requireTrendEvidence && !context.trendSignals?.length) {
+      reasons.push("Trend evidence was required but no relevant trend/news signals were found.");
+    }
+    if (qualityConfig?.rejectTemplatePatterns !== false && editorial.signals.some((signal) => signal.includes("template"))) {
+      reasons.push("Template-like writing patterns were detected.");
+    }
     if (!article.summary) warnings.push("Missing article summary.");
     if (!article.imageAlt) warnings.push("Missing image alt text.");
+    if (context.generationConfig?.internalLinks?.enabled && !article.bodyHtml.includes("<a ")) {
+      warnings.push("Internal links were requested but no anchor tag was found.");
+    }
 
     return {
       passed: reasons.length === 0,
@@ -163,7 +195,8 @@ export const defaultQualityGate: QualityGate = {
       seoScore: seo.score,
       wordCount,
       reasons,
-      warnings
+      warnings,
+      editorial
     };
   }
 };
@@ -237,11 +270,52 @@ export function buildDefaultDraft(
         ? `围绕${keywords.primaryKeyword}写作时，最重要的是让搜索意图、商品价值和真实使用场景保持一致。这样文章既能服务 SEO，也能帮助读者更有信心地进入下一步。`
         : `When writing about ${keywords.primaryKeyword}, align search intent, product value, and real usage context. That makes the article useful for SEO and more helpful for shoppers.`,
     tags: [keywords.primaryKeyword, ...keywords.secondaryKeywords.slice(0, 4)],
-    imagePrompt:
-      locale === "zh-CN"
-        ? `电商博客配图，主题是${keywords.primaryKeyword}，真实产品场景，干净背景，自然光`
-        : `Ecommerce blog image for ${keywords.primaryKeyword}, realistic product context, clean background, natural light`,
+    imagePrompt: buildDetailedImagePrompt(input, context, keywords),
     imageAlt: locale === "zh-CN" ? `${keywords.primaryKeyword}使用场景图` : `${keywords.primaryKeyword} usage context`
+  };
+}
+
+export function evaluateEditorialQuality(article: HtmlAssemblyResult, locale: SupportedLocale = DEFAULT_LOCALE): EditorialQualityResult {
+  const text = stripHtml(article.bodyHtml);
+  const sentences = splitSentences(text);
+  const signals: string[] = [];
+  const recommendations: string[] = [];
+  let score = 100;
+
+  const repeatedStarts = repeatedSentenceStarts(sentences);
+  if (repeatedStarts.length > 0) {
+    score -= Math.min(24, repeatedStarts.length * 8);
+    signals.push(`repeated sentence starts: ${repeatedStarts.join(", ")}`);
+    recommendations.push("Vary sentence openings and paragraph rhythm.");
+  }
+
+  const templateHits = templatePhrases(text, locale);
+  if (templateHits.length > 0) {
+    score -= Math.min(28, templateHits.length * 7);
+    signals.push(`template phrases: ${templateHits.join(", ")}`);
+    recommendations.push("Replace generic AI-like phrases with concrete product or shopper examples.");
+  }
+
+  const paragraphCount = countMatches(article.bodyHtml, /<p\b/gi);
+  if (paragraphCount < 3) {
+    score -= 10;
+    signals.push("thin paragraph structure");
+    recommendations.push("Add varied paragraphs with examples, caveats, and practical details.");
+  }
+
+  const sentenceLengths = sentences.map((sentence) => estimateWordCount(sentence, locale)).filter((count) => count > 0);
+  const uniqueLengths = new Set(sentenceLengths.slice(0, 12)).size;
+  if (sentenceLengths.length >= 6 && uniqueLengths <= 3) {
+    score -= 12;
+    signals.push("low sentence-length variation");
+    recommendations.push("Mix short and longer explanatory sentences.");
+  }
+
+  return {
+    score: clampScore(score),
+    passed: score >= 72,
+    signals,
+    recommendations
   };
 }
 
@@ -315,6 +389,131 @@ function productContextLine(context: ContentSourceContext): string {
   return `Product context: ${context.product.title}; vendor ${context.product.vendor ?? "unknown"}; type ${context.product.productType ?? "unknown"}.`;
 }
 
+function trendContextLine(context: ContentSourceContext): string {
+  const signals = context.trendSignals?.slice(0, 5) ?? [];
+  if (signals.length === 0) return "";
+
+  return [
+    "Relevant trend/news signals to use as grounded angles:",
+    ...signals.map((signal, index) =>
+      `${index + 1}. ${signal.title}${signal.source ? ` (${signal.source})` : ""}${signal.url ? ` ${signal.url}` : ""}`
+    ),
+    "Mention a trend only when it directly supports the product or category angle; avoid claiming facts beyond the supplied signal."
+  ].join("\n");
+}
+
+function internalLinkInstruction(context: ContentSourceContext): string {
+  if (context.generationConfig?.internalLinks?.enabled === false) return "";
+  const links = context.internalLinks?.slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4) ?? [];
+  if (links.length === 0) return "";
+
+  return [
+    "Insert these internal links naturally where they help the reader:",
+    ...links.map((link) => `- ${link.anchor ?? link.title}: ${link.url} (${link.type})`)
+  ].join("\n");
+}
+
+function imagePromptInstruction(context: ContentSourceContext): string {
+  if (context.generationConfig?.imageGeneration?.enabled === false) return "";
+  const references = context.imageReferences?.slice(0, 4) ?? [];
+  const referenceText = references.length
+    ? `Use product image references as visual grounding: ${references.map((item) => item.url).join(", ")}.`
+    : "If no product reference image is available, describe a realistic ecommerce editorial scene.";
+
+  return [
+    "Create a detailed image prompt for the article.",
+    referenceText,
+    "The prompt should name the product/category, scene, composition, lighting, background, aspect ratio, and what to avoid."
+  ].join(" ");
+}
+
+function trendKeywordCandidates(context: ContentSourceContext): string[] {
+  return (context.trendSignals ?? [])
+    .flatMap((signal) => tokenizeSignal(signal.title))
+    .filter((token) => token.length >= 3)
+    .slice(0, 12);
+}
+
+function trendLongTailKeywords(primaryKeyword: string, context: ContentSourceContext, locale: SupportedLocale): string[] {
+  const signals = context.trendSignals?.slice(0, 3) ?? [];
+  if (signals.length === 0) return [];
+
+  if (locale === "zh-CN") {
+    return signals.map((signal) => `${primaryKeyword}与${compactTitle(signal.title)}趋势`);
+  }
+
+  return signals.map((signal) => `${primaryKeyword} and ${compactTitle(signal.title)} trend`);
+}
+
+function keywordEvidence(context: ContentSourceContext): string[] {
+  const evidence: string[] = [];
+  if (context.product?.title) evidence.push(`product: ${context.product.title}`);
+  if (context.collection?.title) evidence.push(`collection: ${context.collection.title}`);
+  for (const signal of context.trendSignals?.slice(0, 4) ?? []) {
+    evidence.push(`trend: ${signal.title}`);
+  }
+  return evidence;
+}
+
+function relatedLinksHtml(context: ContentSourceContext, locale: SupportedLocale): string {
+  const links = context.internalLinks?.slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4) ?? [];
+  if (!context.generationConfig?.internalLinks?.enabled || links.length === 0) return "";
+
+  const heading = locale === "zh-CN" ? "继续了解" : "Keep exploring";
+  const items = links
+    .map((link) => {
+      const anchor = escapeHtml(link.anchor ?? link.title);
+      return `<li><a href="${escapeHtml(link.url)}">${anchor}</a>${link.reason ? ` <span>${escapeHtml(link.reason)}</span>` : ""}</li>`;
+    })
+    .join("");
+
+  return `<section><h2>${heading}</h2><ul>${items}</ul></section>`;
+}
+
+function buildDetailedImagePrompt(
+  input: NormalizedContentPipelineInput,
+  context: ContentSourceContext,
+  keywords: KeywordPlan
+): string {
+  const locale = normalizeLocale(input.locale);
+  const topic = resolveTopic(input, context);
+  const product = context.product;
+  const collection = context.collection;
+  const references = context.imageReferences?.map((item) => item.url) ?? [];
+  const style = context.generationConfig?.imageGeneration?.promptStyle;
+  const trend = context.trendSignals?.[0]?.title;
+
+  if (locale === "zh-CN") {
+    return [
+      `电商博客原创配图，主题：${keywords.primaryKeyword}`,
+      `文章话题：${topic}`,
+      product ? `产品：${product.title}，品类：${product.productType ?? "未标注"}，品牌/供应商：${product.vendor ?? "未标注"}` : "",
+      collection ? `系列：${collection.title}` : "",
+      trend ? `可参考的内容角度：${trend}` : "",
+      references.length ? `参考产品图 URL：${references.slice(0, 4).join(", ")}` : "",
+      "画面：真实电商编辑场景，自然光，干净背景，产品清晰可见，适合 Shopify 博客首图或正文插图",
+      "构图：横向 16:9，留出少量文字安全区，不要品牌水印、不要虚假包装文字、不要夸张效果",
+      style ? `风格补充：${style}` : ""
+    ]
+      .filter(Boolean)
+      .join("；");
+  }
+
+  return [
+    `Original ecommerce blog image for ${keywords.primaryKeyword}`,
+    `Article topic: ${topic}`,
+    product ? `Product: ${product.title}; type: ${product.productType ?? "unknown"}; vendor: ${product.vendor ?? "unknown"}` : "",
+    collection ? `Collection: ${collection.title}` : "",
+    trend ? `Grounded editorial angle: ${trend}` : "",
+    references.length ? `Reference product image URLs: ${references.slice(0, 4).join(", ")}` : "",
+    "Scene: realistic ecommerce editorial setup, natural light, clean background, product clearly visible, suitable for a Shopify blog feature or inline image",
+    "Composition: 16:9 horizontal, small text-safe area, no watermarks, no fake packaging text, no exaggerated effects",
+    style ? `Style note: ${style}` : ""
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
 function section(heading: string, intent: string, bulletPoints: string[]) {
   return {
     heading,
@@ -373,6 +572,65 @@ function unique(values: Array<string | undefined>): string[] {
     output.push(normalized);
   }
   return output;
+}
+
+function tokenizeSignal(value: string): string[] {
+  return value
+    .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter(Boolean);
+}
+
+function compactTitle(value: string): string {
+  return tokenizeSignal(value).slice(0, 5).join(" ");
+}
+
+function splitSentences(value: string): string[] {
+  return value
+    .split(/(?<=[。！？.!?])\s+/u)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+}
+
+function repeatedSentenceStarts(sentences: string[]): string[] {
+  const starts = new Map<string, number>();
+  for (const sentence of sentences) {
+    const start = sentence
+      .replace(/[^\p{L}\p{N}\s]/gu, "")
+      .split(/\s+/)
+      .slice(0, 3)
+      .join(" ")
+      .toLowerCase();
+    if (start.length < 4) continue;
+    starts.set(start, (starts.get(start) ?? 0) + 1);
+  }
+
+  return Array.from(starts.entries())
+    .filter(([, count]) => count >= 3)
+    .map(([start]) => start)
+    .slice(0, 5);
+}
+
+function templatePhrases(text: string, locale: SupportedLocale): string[] {
+  const lower = text.toLowerCase();
+  const phrases =
+    locale === "zh-CN"
+      ? ["在当今", "不言而喻", "总的来说", "值得注意的是", "越来越多的人", "本文将深入探讨"]
+      : [
+          "in today's fast-paced world",
+          "it is important to note",
+          "delve into",
+          "game changer",
+          "look no further",
+          "in conclusion"
+        ];
+
+  return phrases.filter((phrase) => lower.includes(phrase.toLowerCase()));
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function hashString(value: string): number {
