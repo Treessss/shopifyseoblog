@@ -217,6 +217,52 @@ export function findArticleById(organizationId: string, articleId: string, db: A
   });
 }
 
+export function findArticleForReview(organizationId: string, articleId: string) {
+  return prisma.blogArticle.findFirst({
+    where: { id: articleId, organizationId },
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      campaign: {
+        select: {
+          id: true,
+          title: true
+        }
+      },
+      assets: {
+        orderBy: { createdAt: "desc" },
+        take: 12,
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          publicUrl: true,
+          sourceUrl: true,
+          altText: true,
+          prompt: true,
+          createdAt: true
+        }
+      },
+      publishLogs: {
+        orderBy: { createdAt: "desc" },
+        take: 12,
+        include: {
+          job: {
+            select: {
+              type: true,
+              status: true
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
 export async function getDashboardStats(organizationId: string) {
   const now = new Date();
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);

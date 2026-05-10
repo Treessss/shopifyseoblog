@@ -59,13 +59,52 @@ export interface AdminArticleView {
   id: string;
   title: string;
   store: string;
+  storeId?: string;
+  campaign?: string | null;
   locale: string;
   status: ArticleStatus | string;
   statusTone: BadgeTone;
   seoScore: number | null;
+  qualityPassed?: boolean;
   updatedAt: string;
+  updatedAtIso?: string;
   publishPolicy?: string;
+  publishPolicyCode?: string;
+  primaryKeyword?: string | null;
   failureReason?: string;
+  canonicalUrl?: string | null;
+}
+
+export interface AdminArticleAssetView {
+  id: string;
+  type: string;
+  status: string;
+  publicUrl: string | null;
+  sourceUrl: string | null;
+  altText: string | null;
+  prompt: string | null;
+  createdAt: string;
+}
+
+export interface AdminArticleReviewView extends AdminArticleView {
+  summary: string | null;
+  bodyHtml: string;
+  handle: string | null;
+  sourceType: string;
+  sourceId: string | null;
+  secondaryKeywords: string[];
+  tags: string[];
+  seoTitle: string | null;
+  seoDescription: string | null;
+  publishedAt: string | null;
+  scheduledAt: string | null;
+  lastGeneratedAt: string | null;
+  shopifyBlogId: string | null;
+  shopifyArticleId: string | null;
+  qualityReport: unknown;
+  generationMetadata: unknown;
+  assets: AdminArticleAssetView[];
+  logs: AdminLogView[];
 }
 
 export interface AdminLogView {
@@ -236,6 +275,17 @@ export async function getCampaignsView(): Promise<AdminPageView<AdminCampaignVie
 export async function getArticlesView(): Promise<AdminPageView<AdminArticleView[]>> {
   const result = await adminFetch<unknown>("/api/admin/articles");
   return { data: normalizeArticles(unwrapCollection(result.data, ["articles", "items", "data"])), error: result.error };
+}
+
+export async function getArticleReviewView(articleId: string): Promise<AdminPageView<AdminArticleReviewView | null>> {
+  const result = await adminFetch<unknown>(`/api/admin/articles/${encodeURIComponent(articleId)}`);
+  const record = asRecord(result.data);
+  const article = pickRecord(record, ["article", "item", "data"]);
+
+  return {
+    data: Object.keys(article).length > 0 ? normalizeArticleReview(article) : null,
+    error: result.error
+  };
 }
 
 export async function getLogsView(): Promise<AdminPageView<AdminLogView[]>> {
@@ -446,13 +496,63 @@ function normalizeArticles(input: unknown[]): AdminArticleView[] {
       id: pickString(record, ["id", "articleId"], `article-${index}`),
       title: pickString(record, ["title", "seoTitle"], "未命名文章"),
       store: pickString(record, ["storeName", "store"], pickString(store, ["name", "myshopifyDomain"], "未绑定店铺")),
+      storeId: pickString(record, ["storeId"], ""),
+      campaign: pickString(record, ["campaign"], "") || null,
       locale: pickString(record, ["locale"], "zh-CN"),
       status,
       statusTone: articleTone(status),
       seoScore: normalizeNullableNumber(record, ["seoScore", "qualityScore"]),
+      qualityPassed: pickBoolean(record, ["qualityPassed"], false),
       updatedAt: formatDate(pickString(record, ["updatedAt", "lastGeneratedAt", "createdAt"], "")),
+      updatedAtIso: pickString(record, ["updatedAtIso", "updatedAt"], ""),
       publishPolicy: formatPublishPolicy(pickString(record, ["publishPolicy"], "")),
-      failureReason: pickString(record, ["failureReason", "errorMessage"], "")
+      publishPolicyCode: pickString(record, ["publishPolicy"], ""),
+      primaryKeyword: pickString(record, ["primaryKeyword"], "") || null,
+      failureReason: pickString(record, ["failureReason", "errorMessage"], ""),
+      canonicalUrl: pickString(record, ["canonicalUrl"], "") || null
+    };
+  });
+}
+
+function normalizeArticleReview(record: Record<string, unknown>): AdminArticleReviewView {
+  const base = normalizeArticles([record])[0];
+
+  return {
+    ...base,
+    handle: pickString(record, ["handle"], "") || null,
+    summary: pickString(record, ["summary"], "") || null,
+    bodyHtml: pickString(record, ["bodyHtml"], ""),
+    sourceType: pickString(record, ["sourceType"], "manual_topic"),
+    sourceId: pickString(record, ["sourceId"], "") || null,
+    secondaryKeywords: pickStringArray(record, ["secondaryKeywords"]),
+    tags: pickStringArray(record, ["tags"]),
+    seoTitle: pickString(record, ["seoTitle"], "") || null,
+    seoDescription: pickString(record, ["seoDescription"], "") || null,
+    publishedAt: pickString(record, ["publishedAt"], "") || null,
+    scheduledAt: pickString(record, ["scheduledAt"], "") || null,
+    lastGeneratedAt: pickString(record, ["lastGeneratedAt"], "") || null,
+    shopifyBlogId: pickString(record, ["shopifyBlogId"], "") || null,
+    shopifyArticleId: pickString(record, ["shopifyArticleId"], "") || null,
+    qualityReport: record.qualityReport ?? null,
+    generationMetadata: record.generationMetadata ?? null,
+    assets: normalizeArticleAssets(unwrapCollection(record.assets, ["assets", "items", "data"])),
+    logs: normalizeLogs(unwrapCollection(record.logs, ["logs", "items", "data"]))
+  };
+}
+
+function normalizeArticleAssets(input: unknown[]): AdminArticleAssetView[] {
+  return input.map((item, index) => {
+    const record = asRecord(item);
+
+    return {
+      id: pickString(record, ["id"], `asset-${index}`),
+      type: pickString(record, ["type"], "image"),
+      status: pickString(record, ["status"], "unknown"),
+      publicUrl: pickString(record, ["publicUrl"], "") || null,
+      sourceUrl: pickString(record, ["sourceUrl"], "") || null,
+      altText: pickString(record, ["altText"], "") || null,
+      prompt: pickString(record, ["prompt"], "") || null,
+      createdAt: pickString(record, ["createdAt"], "")
     };
   });
 }

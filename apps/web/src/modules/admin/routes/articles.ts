@@ -1,9 +1,13 @@
-import { getArticles, queueArticlePublish } from "../service/admin-service";
+import { getArticle, getArticles, queueArticlePublish } from "../service/admin-service";
 import { getAdminRequestContext, handleAdminRoute } from "./http";
 import { parseQueueArticlePublishRequest } from "./validators";
 
 export function getArticlesRoute(request: Request) {
   return handleAdminRoute(() => getArticles(getAdminRequestContext(request)));
+}
+
+export function getArticleRoute(request: Request, articleId: string) {
+  return handleAdminRoute(() => getArticle(getAdminRequestContext(request), articleId));
 }
 
 export function queueArticlePublishRoute(request: Request) {

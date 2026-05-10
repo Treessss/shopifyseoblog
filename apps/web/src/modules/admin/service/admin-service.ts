@@ -12,6 +12,8 @@ import { enqueuePublishJobForWorker } from "./worker-queue";
 import type {
   AdminAiProviderOverview,
   AdminArticleOverview,
+  AdminArticleReviewOverview,
+  AdminArticleAssetOverview,
   AdminBrandVoiceProfile,
   AdminCampaignOverview,
   AdminLanguageOverview,
@@ -37,6 +39,7 @@ import type {
 type StoreRow = Awaited<ReturnType<typeof repository.findStores>>[number];
 type CampaignRow = Awaited<ReturnType<typeof repository.findCampaigns>>[number];
 type ArticleRow = Awaited<ReturnType<typeof repository.findArticles>>[number];
+type ArticleReviewRow = NonNullable<Awaited<ReturnType<typeof repository.findArticleForReview>>>;
 type AiProviderRow = Awaited<ReturnType<typeof repository.findAiProviderConfigs>>[number];
 type BrandVoiceRow = Awaited<ReturnType<typeof repository.findBrandVoices>>[number];
 type LocaleConfigRow = Awaited<ReturnType<typeof repository.findLocaleConfigs>>[number];
@@ -279,6 +282,20 @@ export async function getArticles(input: AdminRequestContextInput) {
   };
 }
 
+export async function getArticle(input: AdminRequestContextInput, articleId: string) {
+  const context = await resolveAdminContext(input);
+  const article = await repository.findArticleForReview(context.organizationId, articleId);
+
+  if (!article) {
+    throw new AdminApiError(404, "ARTICLE_NOT_FOUND", "Article was not found.");
+  }
+
+  return {
+    organization: context.organization,
+    article: mapArticleReview(article, context.organization.timezone)
+  };
+}
+
 export async function getLogs(input: AdminRequestContextInput) {
   const context = await resolveAdminContext(input);
   const logs = await repository.findRecentLogs(context.organizationId);
@@ -510,6 +527,14 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function shopifyErrorsInclude(errors: unknown, pattern: string): boolean {
   return JSON.stringify(errors).toLowerCase().includes(pattern.toLowerCase());
 }
@@ -590,6 +615,78 @@ function mapArticle(article: ArticleRow): AdminArticleOverview {
     canonicalUrl: article.canonicalUrl,
     primaryKeyword: article.primaryKeyword,
     failureReason: article.failureReason
+  };
+}
+
+function mapArticleReview(article: ArticleReviewRow, timezone: string): AdminArticleReviewOverview {
+  return {
+    ...mapArticle(article),
+    summary: article.summary,
+    bodyHtml: article.bodyHtml,
+    secondaryKeywords: article.secondaryKeywords,
+    tags: article.tags,
+    seoTitle: article.seoTitle,
+    seoDescription: article.seoDescription,
+    shopifyBlogId: article.shopifyBlogId,
+    shopifyArticleId: article.shopifyArticleId,
+    scheduledAt: toIso(article.scheduledAt),
+    lastGeneratedAt: toIso(article.lastGeneratedAt),
+    qualityReport: article.qualityReport,
+    generationMetadata: summarizeGenerationMetadata(article.generationMetadata),
+    assets: article.assets.map(mapArticleAsset),
+    logs: article.publishLogs.map((log) => mapPublishLog(log, timezone))
+  };
+}
+
+function summarizeGenerationMetadata(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const record = metadata as Record<string, unknown>;
+  const provider = asRecord(record.provider);
+  const ai = asRecord(record.ai);
+  const contentEngine = asRecord(record.contentEngine);
+  const finalQuality = asRecord(contentEngine.finalQuality);
+  const finalSeo = asRecord(contentEngine.finalSeo);
+  const imageAsset = asRecord(record.imageAsset);
+
+  return {
+    generator: stringValue(record.generator),
+    provider: {
+      name: stringValue(provider.provider),
+      baseUrl: stringValue(provider.baseUrl),
+      textModel: stringValue(provider.textModel),
+      imageModel: stringValue(provider.imageModel)
+    },
+    ai: {
+      model: stringValue(ai.model),
+      finishReason: stringValue(ai.finishReason),
+      usage: ai.usage ?? null
+    },
+    image: Object.keys(imageAsset).length
+      ? {
+          publicUrl: stringValue(imageAsset.publicUrl),
+          sourceUrl: stringValue(imageAsset.sourceUrl),
+          altText: stringValue(imageAsset.altText),
+          error: stringValue(imageAsset.error)
+        }
+      : null,
+    quality: {
+      passed: typeof finalQuality.passed === "boolean" ? finalQuality.passed : null,
+      seoScore: typeof finalSeo.score === "number" ? finalSeo.score : null,
+      wordCount: typeof finalQuality.wordCount === "number" ? finalQuality.wordCount : null
+    }
+  };
+}
+
+function mapArticleAsset(asset: ArticleReviewRow["assets"][number]): AdminArticleAssetOverview {
+  return {
+    id: asset.id,
+    type: asset.type,
+    status: asset.status,
+    publicUrl: asset.publicUrl,
+    sourceUrl: asset.sourceUrl,
+    altText: asset.altText,
+    prompt: asset.prompt,
+    createdAt: asset.createdAt.toISOString()
   };
 }
 

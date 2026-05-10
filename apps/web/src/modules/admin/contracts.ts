@@ -156,6 +156,34 @@ export interface AdminArticleOverview {
   failureReason: string | null;
 }
 
+export interface AdminArticleAssetOverview {
+  id: string;
+  type: string;
+  status: string;
+  publicUrl: string | null;
+  sourceUrl: string | null;
+  altText: string | null;
+  prompt: string | null;
+  createdAt: string;
+}
+
+export interface AdminArticleReviewOverview extends AdminArticleOverview {
+  summary: string | null;
+  bodyHtml: string | null;
+  secondaryKeywords: string[];
+  tags: string[];
+  seoTitle: string | null;
+  seoDescription: string | null;
+  shopifyBlogId: string | null;
+  shopifyArticleId: string | null;
+  scheduledAt: string | null;
+  lastGeneratedAt: string | null;
+  qualityReport: unknown;
+  generationMetadata: unknown;
+  assets: AdminArticleAssetOverview[];
+  logs: AdminLogEntry[];
+}
+
 export interface AdminLogEntry {
   id: string;
   time: string;

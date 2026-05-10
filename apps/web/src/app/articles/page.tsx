@@ -1,4 +1,4 @@
-import { CheckCircle2, FileText, Gauge, ListFilter, Megaphone, RefreshCw, Search, Send } from "lucide-react";
+import { CheckCircle2, Eye, FileText, Gauge, ListFilter, Megaphone, RefreshCw, Search, Send } from "lucide-react";
 import Link from "next/link";
 import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { formatArticleStatus, getArticlesView } from "@/lib/admin-client";
@@ -161,12 +161,18 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
                         <Badge tone={article.statusTone}>{formatArticleStatus(article.status)}</Badge>
                       </td>
                       <td>
-                        <form action={`/api/admin/articles/${article.id}/publish`} method="post">
-                          <button className="button button--small" type="submit" disabled={article.status !== "ready_to_publish"}>
-                            <Send size={14} aria-hidden="true" />
-                            发布
-                          </button>
-                        </form>
+                        <div className="row-actions">
+                          <Link className="button button--small" href={`/articles/${article.id}`}>
+                            <Eye size={14} aria-hidden="true" />
+                            审核
+                          </Link>
+                          <form action={`/api/admin/articles/${article.id}/publish`} method="post">
+                            <button className="button button--small" type="submit" disabled={article.status !== "ready_to_publish"}>
+                              <Send size={14} aria-hidden="true" />
+                              发布
+                            </button>
+                          </form>
+                        </div>
                       </td>
                     </tr>
                   ))

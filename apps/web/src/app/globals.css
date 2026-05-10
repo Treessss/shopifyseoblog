@@ -1036,6 +1036,232 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+.review-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(310px, 0.34fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.review-sidebar {
+  position: sticky;
+  top: 92px;
+  display: grid;
+  gap: 16px;
+}
+
+.article-preview {
+  padding: 28px;
+  background: rgba(255, 255, 255, 0.64);
+}
+
+.article-preview__summary {
+  margin: 0 0 22px;
+  padding: 16px 18px;
+  border-left: 3px solid var(--primary);
+  border-radius: 8px;
+  background: rgba(232, 242, 255, 0.72);
+  color: var(--muted-strong);
+  line-height: 1.7;
+}
+
+.article-prose {
+  max-width: 780px;
+  margin: 0 auto;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.82;
+}
+
+.article-prose h1,
+.article-prose h2,
+.article-prose h3,
+.article-prose h4 {
+  margin: 1.45em 0 0.55em;
+  color: var(--text);
+  line-height: 1.22;
+}
+
+.article-prose h1 {
+  font-size: 30px;
+}
+
+.article-prose h2 {
+  font-size: 24px;
+}
+
+.article-prose h3 {
+  font-size: 19px;
+}
+
+.article-prose p,
+.article-prose ul,
+.article-prose ol,
+.article-prose figure {
+  margin: 0 0 1.08em;
+}
+
+.article-prose ul,
+.article-prose ol {
+  padding-left: 1.35em;
+}
+
+.article-prose a {
+  color: var(--primary);
+  font-weight: 750;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.article-prose img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow-soft);
+}
+
+.article-prose figure {
+  display: grid;
+  gap: 8px;
+}
+
+.article-prose figcaption {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.detail-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 6px 18px 14px;
+}
+
+.detail-list div {
+  display: grid;
+  gap: 5px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-list div:last-child {
+  border-bottom: 0;
+}
+
+.detail-list dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+.keyword-stack {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 18px;
+}
+
+.keyword-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.keyword-chip--primary {
+  border-color: rgba(0, 113, 227, 0.24);
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.keyword-chip--muted {
+  background: var(--soft);
+}
+
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--primary);
+  font-weight: 800;
+}
+
+.json-block {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 16px 18px;
+  border-top: 1px solid var(--line);
+  background: rgba(16, 24, 40, 0.04);
+  color: var(--muted-strong);
+  font-family: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  padding: 18px;
+}
+
+.asset-card {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.asset-card img,
+.asset-card__empty {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+}
+
+.asset-card img {
+  object-fit: cover;
+}
+
+.asset-card__empty {
+  display: grid;
+  place-items: center;
+  background: var(--soft);
+  color: var(--muted);
+}
+
+.asset-card strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.asset-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 .code {
   font-family: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
@@ -1268,8 +1494,13 @@ tr:last-child td {
   }
 
   .grid--two,
-  .grid--three {
+  .grid--three,
+  .review-layout {
     grid-template-columns: 1fr;
+  }
+
+  .review-sidebar {
+    position: static;
   }
 }
 
