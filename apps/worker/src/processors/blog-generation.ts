@@ -191,6 +191,7 @@ async function generateBlogArticle(
     const generationInput = parsedInput.data;
 
     publishJob = await startPublishJob({
+      jobId: job.data.publishJobId,
       organizationId: job.data.organizationId,
       storeId: job.data.storeId,
       type: "generate_article",
@@ -732,6 +733,7 @@ async function publishArticle(
   try {
     const store = await loadStoreForJob(job.data.organizationId, job.data.storeId);
     publishJob = await startPublishJob({
+      jobId: job.data.publishJobId,
       organizationId: job.data.organizationId,
       storeId: store.id,
       type: "publish_article",

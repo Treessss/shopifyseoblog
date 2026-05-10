@@ -19,6 +19,7 @@ export function externalJobId(
 }
 
 export async function startPublishJob(input: {
+  jobId?: string;
   organizationId: string;
   storeId: string;
   type: "generate_article" | "publish_article" | "sync_product" | "sync_collection";
@@ -36,6 +37,19 @@ export async function startPublishJob(input: {
     payload: input.payload ? toPrismaJson(input.payload) : undefined,
     errorMessage: null
   };
+
+  if (input.jobId) {
+    return prisma.publishJob.update({
+      where: { id: input.jobId },
+      data: {
+        ...baseData,
+        externalJobId: input.externalJobId,
+        attempts: {
+          increment: 1
+        }
+      }
+    });
+  }
 
   if (!input.externalJobId) {
     return prisma.publishJob.create({

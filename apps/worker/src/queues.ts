@@ -28,6 +28,7 @@ export type WorkerJobName = ShopifySyncJobName | BlogGenerationJobName;
 export interface WorkerJobMeta {
   organizationId: string;
   storeId: string;
+  publishJobId?: string;
   correlationId?: string;
   requestedByUserId?: string;
 }
@@ -49,6 +50,7 @@ export interface CollectionSyncJobData extends WorkerJobMeta {
 export interface BlogGenerationJobData extends BlogCampaignInput {
   campaignId?: string;
   articleId?: string;
+  publishJobId?: string;
   correlationId?: string;
   requestedByUserId?: string;
 }

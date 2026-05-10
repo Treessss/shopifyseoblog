@@ -1,6 +1,7 @@
 import { blogCampaignInputSchema } from "@shopify-ai-blog/shared";
 import { prisma } from "@shopify-ai-blog/db";
 import { fail, ok, readJson } from "@/lib/api";
+import { enqueuePublishJobForWorker } from "@/modules/admin/service/worker-queue";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -105,8 +106,43 @@ export async function POST(request: Request) {
     }
   });
 
+  try {
+    const workerJob = await enqueuePublishJobForWorker(
+      {
+        id: job.id,
+        organizationId: job.organizationId,
+        storeId: job.storeId,
+        type: "generate_article",
+        runAt: job.runAt,
+        payload: job.payload
+      },
+      {}
+    );
+    await prisma.publishJob.update({
+      where: { id: job.id },
+      data: {
+        externalJobId: workerJob.externalJobId,
+        errorMessage: null
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await prisma.publishJob.update({
+      where: { id: job.id },
+      data: {
+        status: "failed",
+        errorMessage: message
+      }
+    });
+    return fail(503, {
+      code: "WORKER_QUEUE_UNAVAILABLE",
+      message: "任务已保存，但后台执行队列无法连接。请确认 Redis 和 worker 已启动。",
+      details: { jobId: job.id, cause: message }
+    });
+  }
+
   return ok({
-    mode: "database-queued",
+    mode: "bullmq-queued",
     job: {
       id: job.id,
       status: job.status,

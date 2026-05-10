@@ -913,6 +913,28 @@ export async function createCampaignWithOptionalJob(
   });
 }
 
+export async function markPublishJobEnqueued(jobId: string, externalJobId: string) {
+  return prisma.publishJob.update({
+    where: { id: jobId },
+    data: {
+      externalJobId,
+      status: "queued",
+      errorMessage: null
+    }
+  });
+}
+
+export async function markPublishJobQueueFailed(jobId: string, errorMessage: string) {
+  return prisma.publishJob.update({
+    where: { id: jobId },
+    data: {
+      status: "failed",
+      lockedAt: null,
+      errorMessage
+    }
+  });
+}
+
 export async function createArticlePublishJob(
   organizationId: string,
   input: QueueArticlePublishInput,

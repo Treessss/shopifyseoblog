@@ -8,6 +8,7 @@ import { exchangeShopifyClientCredentials, ShopifyGraphQLError } from "@shopify-
 import { AdminApiError } from "../policies/errors";
 import * as repository from "../repository/admin-repository";
 import { syncShopifyStoreResources } from "./shopify-sync-service";
+import { enqueuePublishJobForWorker } from "./worker-queue";
 import type {
   AdminAiProviderOverview,
   AdminArticleOverview,
@@ -378,15 +379,16 @@ export async function createCampaign(input: AdminRequestContextInput, body: Crea
   assertStoreLocaleEnabled(localeConfigs, store.id, body.locale);
 
   const result = await repository.createCampaignWithOptionalJob(context.organizationId, body, context);
+  const workerJob = result.job ? await enqueueWorkerJobOrThrow(result.job, context) : null;
 
   return {
     organization: context.organization,
     campaign: mapCampaign(result.campaign),
     queued: Boolean(result.job),
-    queueMode: result.job ? "database_job_row" : "none",
-    workerQueue: result.job ? "not_enqueued" : null,
+    queueMode: workerJob ? "bullmq" : "none",
+    workerQueue: workerJob ? "enqueued" : null,
     message: result.job
-      ? "Campaign was created and generation was persisted as a queued PublishJob row."
+      ? "Campaign was created and generation was enqueued for worker execution."
       : "Campaign was created as a draft without a generation job.",
     job: result.job ? mapQueuedJob(result.job, "Campaign generation queued.") : null
   };
@@ -406,16 +408,42 @@ export async function queueArticlePublish(input: AdminRequestContextInput, body:
   if (!result) {
     throw new AdminApiError(404, "ARTICLE_NOT_FOUND", "Article was not found.");
   }
+  await enqueueWorkerJobOrThrow(result.job, context);
 
   return {
     organization: context.organization,
     queued: true,
-    queueMode: "database_job_row",
-    workerQueue: "not_enqueued",
-    message: "Publish was persisted as a queued PublishJob row. BullMQ enqueue requires adding @shopify-ai-blog/worker to the web app.",
+    queueMode: "bullmq",
+    workerQueue: "enqueued",
+    message: "Publish was enqueued for worker execution.",
     article: mapArticle(result.updatedArticle),
     job: mapQueuedJob(result.job, "Article publish queued.")
   };
+}
+
+async function enqueueWorkerJobOrThrow(
+  job: Parameters<typeof enqueuePublishJobForWorker>[0],
+  context: ResolvedAdminContext
+) {
+  try {
+    const workerJob = await enqueuePublishJobForWorker(job, {
+      requestedByUserId: context.requestedByUserId
+    });
+    await repository.markPublishJobEnqueued(job.id, workerJob.externalJobId);
+    return workerJob;
+  } catch (error) {
+    const message = getErrorMessage(error);
+    await repository.markPublishJobQueueFailed(job.id, message);
+    throw new AdminApiError(
+      503,
+      "WORKER_QUEUE_UNAVAILABLE",
+      "The task was saved, but the worker queue could not be reached. Please confirm Redis and the worker process are running.",
+      {
+        jobId: job.id,
+        cause: message
+      }
+    );
+  }
 }
 
 function mapMetrics(stats: DashboardStats): AdminMetric[] {
@@ -476,6 +504,10 @@ function mapShopifySyncError(error: unknown): AdminApiError | unknown {
   }
 
   return error;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function shopifyErrorsInclude(errors: unknown, pattern: string): boolean {
