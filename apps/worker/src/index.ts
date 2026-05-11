@@ -27,6 +27,7 @@ export interface StartWorkerOptions {
 type RunningWorker = Worker<WorkerJobData, WorkerJobResult, WorkerJobName>;
 
 const runningWorkers: RunningWorker[] = [];
+let keepAliveTimer: NodeJS.Timeout | undefined;
 
 export function startWorkers(options: StartWorkerOptions = {}): RunningWorker[] {
   if (runningWorkers.length > 0) return runningWorkers;
@@ -64,6 +65,7 @@ export function startWorkers(options: StartWorkerOptions = {}): RunningWorker[] 
 }
 
 export async function stopWorkers(): Promise<void> {
+  stopKeepAlive();
   const workers = runningWorkers.splice(0, runningWorkers.length);
   await Promise.all(workers.map((worker) => worker.close()));
   await closeQueues();
@@ -107,6 +109,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
 
 if (isDirectRun()) {
   startWorkers();
+  keepProcessAlive();
   console.info(
     `[worker] listening queues=${QUEUE_NAMES.shopifySync}:${Object.values(SHOPIFY_SYNC_JOB_NAMES).join(
       ","
@@ -130,6 +133,16 @@ if (isDirectRun()) {
         process.exit(1);
       });
   });
+}
+
+function keepProcessAlive(): void {
+  keepAliveTimer ??= setInterval(() => undefined, 60_000);
+}
+
+function stopKeepAlive(): void {
+  if (!keepAliveTimer) return;
+  clearInterval(keepAliveTimer);
+  keepAliveTimer = undefined;
 }
 
 export * from "./queues";

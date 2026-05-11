@@ -1,4 +1,7 @@
+import { loadWorkspaceEnv } from "./env";
 import { PrismaClient } from "@prisma/client";
+
+loadWorkspaceEnv();
 
 export * from "@prisma/client";
 export {

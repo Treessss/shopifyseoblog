@@ -251,6 +251,37 @@ describe("content engine", () => {
     expect(selection.selected.evidence.some((item) => item.type === "trend" && item.metric?.includes("traffic 50K+"))).toBe(true);
   });
 
+  it("skips blank catalog fields when selecting automatic topics", () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 3,
+          preferTrendSignals: true
+        }
+      }
+    };
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/2",
+        title: "Cross and Heart iPhone Phone Case",
+        productType: "",
+        vendor: "Caseease",
+        tags: ["iphone", "heart"],
+        imageUrls: []
+      },
+      generationConfig: input.generationConfig
+    });
+
+    expect(selection.selected.primaryKeyword).toBe("Cross and Heart iPhone Phone Case");
+    expect(selection.selected.topic).toContain("Cross and Heart iPhone Phone Case");
+    expect(selection.selected.topic).not.toContain("How to choose :");
+  });
+
   it("flags repetitive template-like writing as an editorial quality risk", async () => {
     const input: NormalizedContentPipelineInput = {
       locale: "en-US",

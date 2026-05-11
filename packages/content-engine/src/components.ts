@@ -37,7 +37,17 @@ export const defaultKeywordPlanner: KeywordPlanner = {
     const locale = normalizeLocale(input.locale);
     const topic = resolveTopic(input, context);
     const evidenceItems = buildKeywordEvidence(input, context);
-    const primaryKeyword = cleanKeyword(input.primaryKeyword ?? context.topicSelection?.selected.primaryKeyword ?? context.seedKeywords?.[0] ?? topic);
+    const primaryKeyword = cleanKeyword(
+      firstNonBlank(
+        input.primaryKeyword,
+        context.topicSelection?.selected.primaryKeyword,
+        context.seedKeywords?.[0],
+        context.product?.productType,
+        context.product?.title,
+        context.collection?.title,
+        topic
+      ) ?? topic
+    );
     const secondaryKeywords = unique([
       ...(context.seedKeywords ?? []),
       ...trendKeywordCandidates(context),
@@ -345,9 +355,9 @@ function resolveDraftAngle(
   const topic = context.topicSelection?.selected.topic ?? resolveTopic(input, context);
   const productTitle = context.product?.title;
   const collectionTitle = context.collection?.title;
-  const category = context.product?.productType ?? collectionTitle ?? keywords.primaryKeyword;
+  const category = firstNonBlank(context.product?.productType, collectionTitle, keywords.primaryKeyword) ?? keywords.primaryKeyword;
   const trendTitle = context.trendSignals?.[0]?.title;
-  const anchorLabel = productTitle ?? collectionTitle ?? category;
+  const anchorLabel = firstNonBlank(productTitle, collectionTitle, category) ?? category;
   const themes: DraftAngle["theme"][] = trendTitle
     ? ["trend", "product_fit", "comparison", "care"]
     : context.product
@@ -463,11 +473,15 @@ function firstSectionHeading(angle: DraftAngle): string {
 }
 
 function resolveTopic(input: NormalizedContentPipelineInput, context: ContentSourceContext): string {
-  return input.topic || context.topic || context.product?.title || context.collection?.title || "Shopify blog topic";
+  return firstNonBlank(input.topic, context.topic, context.product?.title, context.collection?.title) ?? "Shopify blog topic";
 }
 
-function cleanKeyword(keyword: string): string {
-  return keyword.trim().replace(/\s+/g, " ");
+function cleanKeyword(keyword: string | null | undefined): string {
+  return keyword?.trim().replace(/\s+/g, " ") ?? "";
+}
+
+function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
+  return values.find((value) => Boolean(value?.trim()))?.trim();
 }
 
 function localeInstruction(locale: SupportedLocale): string {
@@ -660,14 +674,17 @@ export function selectTopicCandidate(
   const maxCandidates = context.generationConfig?.topicDiscovery?.maxCandidates ?? 4;
   const locale = normalizeLocale(input.locale);
   const keyword = cleanKeyword(
-    input.primaryKeyword ??
-      context.seedKeywords?.[0] ??
-      context.product?.productType ??
-      context.product?.title ??
-      context.collection?.title ??
+    firstNonBlank(
+      input.primaryKeyword,
+      context.seedKeywords?.[0],
+      context.product?.productType,
+      context.product?.title,
+      context.collection?.title,
+      context.topic,
       input.topic
+    ) ?? "Shopify blog topic"
   );
-  const category = cleanKeyword(context.product?.productType ?? context.collection?.title ?? keyword);
+  const category = cleanKeyword(firstNonBlank(context.product?.productType, context.collection?.title, keyword) ?? keyword);
   const candidates: TopicCandidate[] = [];
 
   if (input.topic && context.generationConfig?.topicDiscovery?.enabled === false) {
