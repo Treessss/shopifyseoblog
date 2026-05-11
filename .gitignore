@@ -9,6 +9,7 @@ out
 dist
 coverage
 .turbo
+.run
 *.tsbuildinfo
 generated
 .codex-pets

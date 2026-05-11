@@ -15,14 +15,22 @@
 ## 快速开始
 
 ```bash
-cp .env.example .env
 npm install
-npm run db:generate
-npm run db:migrate
-npm run dev
+npm run start:local
 ```
 
-或使用 Docker：
+统一运行脚本会自动创建 `.env.local`（如果不存在）、启动 Docker 里的 Postgres/Redis/MinIO、同步 Prisma schema，并在同一个终端里启动 Web 与 Worker。
+
+常用参数：
+
+```bash
+npm run start:local -- --port 3001      # 改 Web 端口
+npm run start:local -- --no-infra       # 不启动 Docker 基础设施
+npm run start:local -- --seed           # 同步数据库后执行 seed
+npm run start:local -- --worker-only    # 只启动 worker
+```
+
+或使用完整 Docker：
 
 ```bash
 npm run docker:up
