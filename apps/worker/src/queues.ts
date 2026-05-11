@@ -2,7 +2,7 @@ import { Queue, type JobsOptions, type QueueOptions } from "bullmq";
 import IORedis, { type RedisOptions } from "ioredis";
 import type { BlogCampaignInput, PublishPolicy, SupportedLocale } from "@shopify-ai-blog/shared";
 
-export const WORKER_QUEUE_PREFIX = process.env.BULLMQ_PREFIX ?? "shopify-ai-blog";
+export const WORKER_QUEUE_PREFIX = process.env.BULLMQ_PREFIX ?? "shopify-ai-blog-local";
 
 export const QUEUE_NAMES = {
   shopifySync: "shopify-sync",
@@ -197,7 +197,7 @@ function getRedisConnectionOptions(): RedisOptions {
 }
 
 function getRedisUrl(): string {
-  return process.env.REDIS_URL ?? "redis://localhost:6379";
+  return process.env.REDIS_URL ?? "redis://localhost:6381";
 }
 
 function getRedisDb(): number | undefined {

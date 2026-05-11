@@ -25,10 +25,13 @@ npm run start:local
 
 ```bash
 npm run start:local -- --port 3001      # 改 Web 端口
+npm run start:local -- --redis-port 6382 # 改本项目专用 Redis 端口
 npm run start:local -- --no-infra       # 不启动 Docker 基础设施
 npm run start:local -- --seed           # 同步数据库后执行 seed
 npm run start:local -- --worker-only    # 只启动 worker
 ```
+
+默认 Redis 使用 `redis://localhost:6381` 和 `BULLMQ_PREFIX=shopify-ai-blog-local`，避免和其他项目共用 `6379` 或混用 BullMQ 队列。
 
 或使用完整 Docker：
 

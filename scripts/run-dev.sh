@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/infra/docker/docker-compose.yml"
 LOG_DIR="${LOG_DIR:-$ROOT_DIR/.run/logs}"
 PORT="${PORT:-3000}"
+REDIS_PORT="${SHOPIFY_BLOG_REDIS_PORT:-6381}"
 
 START_INFRA=1
 SYNC_DB=1
@@ -26,6 +27,7 @@ Usage:
 
 Options:
   --port <port>       Web port. Default: 3000
+  --redis-port <port> Dedicated Redis host port. Default: 6381
   --no-infra          Do not start Docker Postgres/Redis/MinIO
   --no-db-sync        Skip Prisma generate + db push
   --seed              Run database seed after db sync
@@ -61,6 +63,11 @@ parse_args() {
       --port)
         [ "${2:-}" ] || die "--port requires a value."
         PORT="$2"
+        shift 2
+        ;;
+      --redis-port)
+        [ "${2:-}" ] || die "--redis-port requires a value."
+        REDIS_PORT="$2"
         shift 2
         ;;
       --no-infra)
@@ -116,16 +123,56 @@ docker_compose() {
     return
   fi
 
-  return 127
+  die "Docker Compose is not available. Install Docker Desktop or run with --no-infra."
 }
 
 ensure_env_file() {
   if [ -f "$ROOT_DIR/.env.local" ] || [ -f "$ROOT_DIR/.env" ]; then
+    ensure_project_redis_env
     return
   fi
 
   cp "$ROOT_DIR/.env.example" "$ROOT_DIR/.env.local"
   warn "Created .env.local from .env.example. Fill Shopify/AI secrets before using real integrations."
+  ensure_project_redis_env
+}
+
+ensure_project_redis_env() {
+  local env_file="$ROOT_DIR/.env.local"
+  if [ ! -f "$env_file" ]; then
+    env_file="$ROOT_DIR/.env"
+  fi
+  if [ ! -f "$env_file" ]; then
+    return
+  fi
+
+  node - "$env_file" "$REDIS_PORT" <<'NODE'
+const fs = require("node:fs");
+const [file, redisPort] = process.argv.slice(2);
+const desiredRedisUrl = `redis://localhost:${redisPort}`;
+const desiredPrefix = "shopify-ai-blog-local";
+let content = fs.readFileSync(file, "utf8");
+let changed = false;
+
+if (/^REDIS_URL=/m.test(content)) {
+  content = content.replace(/^REDIS_URL=(redis:\/\/(?:localhost|127\.0\.0\.1):6379)\s*$/m, () => {
+    changed = true;
+    return `REDIS_URL=${desiredRedisUrl}`;
+  });
+} else {
+  content = `${content.replace(/\s*$/, "\n")}REDIS_URL=${desiredRedisUrl}\n`;
+  changed = true;
+}
+
+if (!/^BULLMQ_PREFIX=/m.test(content)) {
+  content = `${content.replace(/\s*$/, "\n")}BULLMQ_PREFIX=${desiredPrefix}\n`;
+  changed = true;
+}
+
+if (changed) {
+  fs.writeFileSync(file, content);
+}
+NODE
 }
 
 ensure_dependencies() {
@@ -146,9 +193,10 @@ start_infra() {
 
   need_command docker
   info "Starting Docker infra: postgres, redis, minio..."
+  export SHOPIFY_BLOG_REDIS_PORT="$REDIS_PORT"
   docker_compose up -d postgres redis minio
   wait_for_port "127.0.0.1" "5432" "Postgres" 60
-  wait_for_port "127.0.0.1" "6379" "Redis" 60
+  wait_for_port "127.0.0.1" "$REDIS_PORT" "Redis" 60
 }
 
 sync_database() {

@@ -9,7 +9,7 @@ import {
   type SupportedLocale
 } from "@shopify-ai-blog/shared";
 
-const WORKER_QUEUE_PREFIX = process.env.BULLMQ_PREFIX ?? "shopify-ai-blog";
+const WORKER_QUEUE_PREFIX = process.env.BULLMQ_PREFIX ?? "shopify-ai-blog-local";
 const BLOG_GENERATION_QUEUE = "blog-generation";
 const BLOG_GENERATION_JOB = "blog.generate";
 const ARTICLE_PUBLISH_JOB = "article.publish";
@@ -202,7 +202,7 @@ function getRedisConnectionOptions(): RedisOptions {
 }
 
 function getRedisUrl() {
-  return process.env.REDIS_URL ?? "redis://localhost:6379";
+  return process.env.REDIS_URL ?? "redis://localhost:6381";
 }
 
 function getRedisDb(): number | undefined {
