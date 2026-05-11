@@ -126,6 +126,14 @@ docker_compose() {
   die "Docker Compose is not available. Install Docker Desktop or run with --no-infra."
 }
 
+has_docker_compose() {
+  docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1
+}
+
+docker_daemon_available() {
+  docker info >/dev/null 2>&1
+}
+
 ensure_env_file() {
   if [ -f "$ROOT_DIR/.env.local" ] || [ -f "$ROOT_DIR/.env" ]; then
     ensure_project_redis_env
@@ -155,7 +163,8 @@ let content = fs.readFileSync(file, "utf8");
 let changed = false;
 
 if (/^REDIS_URL=/m.test(content)) {
-  content = content.replace(/^REDIS_URL=(redis:\/\/(?:localhost|127\.0\.0\.1):6379)\s*$/m, () => {
+  content = content.replace(/^REDIS_URL=(redis:\/\/(?:localhost|127\.0\.0\.1):\d+)\s*$/m, (_line, currentUrl) => {
+    if (currentUrl === desiredRedisUrl) return `REDIS_URL=${currentUrl}`;
     changed = true;
     return `REDIS_URL=${desiredRedisUrl}`;
   });
@@ -164,7 +173,10 @@ if (/^REDIS_URL=/m.test(content)) {
   changed = true;
 }
 
-if (!/^BULLMQ_PREFIX=/m.test(content)) {
+if (/^BULLMQ_PREFIX=shopify-ai-blog\s*$/m.test(content)) {
+  content = content.replace(/^BULLMQ_PREFIX=shopify-ai-blog\s*$/m, `BULLMQ_PREFIX=${desiredPrefix}`);
+  changed = true;
+} else if (!/^BULLMQ_PREFIX=/m.test(content)) {
   content = `${content.replace(/\s*$/, "\n")}BULLMQ_PREFIX=${desiredPrefix}\n`;
   changed = true;
 }
@@ -173,6 +185,25 @@ if (changed) {
   fs.writeFileSync(file, content);
 }
 NODE
+}
+
+load_env_file() {
+  local env_file=""
+  if [ -f "$ROOT_DIR/.env.local" ]; then
+    env_file="$ROOT_DIR/.env.local"
+  elif [ -f "$ROOT_DIR/.env" ]; then
+    env_file="$ROOT_DIR/.env"
+  fi
+
+  if [ -z "$env_file" ]; then
+    return
+  fi
+
+  set -a
+  # shellcheck disable=SC1090
+  . "$env_file"
+  set +a
+  export SHOPIFY_BLOG_REDIS_PORT="$REDIS_PORT"
 }
 
 ensure_dependencies() {
@@ -194,9 +225,113 @@ start_infra() {
   need_command docker
   info "Starting Docker infra: postgres, redis, minio..."
   export SHOPIFY_BLOG_REDIS_PORT="$REDIS_PORT"
-  docker_compose up -d postgres redis minio
+  if has_docker_compose; then
+    docker_compose up -d postgres redis minio
+  elif docker_daemon_available; then
+    warn "Docker Compose is not available; using standalone Docker containers for local infra."
+    start_standalone_infra
+  else
+    warn "Docker daemon is not running; falling back to local services where available."
+    start_local_infra
+  fi
   wait_for_port "127.0.0.1" "5432" "Postgres" 60
   wait_for_port "127.0.0.1" "$REDIS_PORT" "Redis" 60
+}
+
+start_local_infra() {
+  if port_is_open "127.0.0.1" "5432"; then
+    warn "Postgres port 5432 is already open; reusing the existing database service."
+  else
+    die "Postgres is not reachable on 5432 and Docker is not running. Start Postgres or Docker Desktop."
+  fi
+
+  if port_is_open "127.0.0.1" "$REDIS_PORT"; then
+    warn "Redis port $REDIS_PORT is already open; reusing the existing Redis service."
+  else
+    start_local_redis
+  fi
+
+  if ! port_is_open "127.0.0.1" "9000"; then
+    warn "MinIO is not running on 9000. Generated image storage may fail until MinIO or another S3-compatible service is configured."
+  fi
+}
+
+start_local_redis() {
+  command -v redis-server >/dev/null 2>&1 || die "Redis is not reachable on $REDIS_PORT and redis-server is not installed."
+
+  mkdir -p "$ROOT_DIR/.run/redis" "$LOG_DIR"
+  info "Starting local dedicated Redis on port $REDIS_PORT..."
+  redis-server \
+    --bind 127.0.0.1 \
+    --port "$REDIS_PORT" \
+    --dir "$ROOT_DIR/.run/redis" \
+    --dbfilename "redis-$REDIS_PORT.rdb" \
+    --logfile "$LOG_DIR/redis-$REDIS_PORT.log" \
+    --pidfile "$ROOT_DIR/.run/redis-$REDIS_PORT.pid" \
+    --daemonize yes
+}
+
+start_standalone_infra() {
+  if port_is_open "127.0.0.1" "5432"; then
+    warn "Postgres port 5432 is already open; reusing the existing database service."
+  else
+    ensure_container \
+      shopify-ai-blog-postgres \
+      -e POSTGRES_USER=shopify_blog \
+      -e POSTGRES_PASSWORD=shopify_blog \
+      -e POSTGRES_DB=shopify_blog \
+      -p 5432:5432 \
+      -v shopify-ai-blog-postgres-data:/var/lib/postgresql/data \
+      postgres:16-alpine
+  fi
+
+  if port_is_open "127.0.0.1" "$REDIS_PORT"; then
+    warn "Redis port $REDIS_PORT is already open; reusing the existing Redis service."
+  else
+    ensure_container \
+      shopify-ai-blog-redis \
+      -p "$REDIS_PORT:6379" \
+      -v shopify-ai-blog-redis-data:/data \
+      redis:7-alpine
+  fi
+
+  if port_is_open "127.0.0.1" "9000"; then
+    warn "MinIO port 9000 is already open; reusing the existing object storage service."
+  else
+    ensure_container \
+      shopify-ai-blog-minio \
+      -e MINIO_ROOT_USER=minioadmin \
+      -e MINIO_ROOT_PASSWORD=minioadmin \
+      -p 9000:9000 \
+      -p 9001:9001 \
+      -v shopify-ai-blog-minio-data:/data \
+      minio/minio:latest \
+      server /data --console-address ":9001"
+  fi
+}
+
+ensure_container() {
+  local name="$1"
+  shift
+
+  if docker ps --filter "name=^/${name}$" --format "{{.Names}}" | grep -qx "$name"; then
+    info "Container $name is already running."
+    return
+  fi
+
+  if docker ps -a --filter "name=^/${name}$" --format "{{.Names}}" | grep -qx "$name"; then
+    info "Starting existing container $name..."
+    docker start "$name" >/dev/null
+    return
+  fi
+
+  info "Creating container $name..."
+  docker run -d --name "$name" "$@" >/dev/null
+}
+
+check_required_services() {
+  wait_for_env_url_port "DATABASE_URL" "Postgres" 10
+  wait_for_env_url_port "REDIS_URL" "Redis" 10
 }
 
 sync_database() {
@@ -241,6 +376,52 @@ function check() {
     socket.destroy();
     if (Date.now() - startedAt >= timeoutMs) {
       console.error(`${label} did not become available on ${host}:${port}.`);
+      process.exit(1);
+    }
+    setTimeout(check, 1000);
+  });
+}
+
+check();
+NODE
+}
+
+wait_for_env_url_port() {
+  local env_name="$1"
+  local label="$2"
+  local timeout="$3"
+  local raw_url="${!env_name:-}"
+
+  if [ -z "$raw_url" ]; then
+    die "$env_name is missing. Add it to .env.local."
+  fi
+
+  node - "$raw_url" "$label" "$timeout" <<'NODE'
+const net = require("node:net");
+const [rawUrl, label, timeoutValue] = process.argv.slice(2);
+let url;
+try {
+  url = new URL(rawUrl);
+} catch {
+  console.error(`${label} URL is invalid.`);
+  process.exit(1);
+}
+
+const host = url.hostname || "127.0.0.1";
+const port = Number(url.port || (url.protocol.startsWith("postgres") ? 5432 : 6379));
+const timeoutMs = Number(timeoutValue) * 1000;
+const startedAt = Date.now();
+
+function check() {
+  const socket = net.createConnection({ host, port });
+  socket.once("connect", () => {
+    socket.destroy();
+    process.exit(0);
+  });
+  socket.once("error", () => {
+    socket.destroy();
+    if (Date.now() - startedAt >= timeoutMs) {
+      console.error(`${label} is not reachable at ${host}:${port}.`);
       process.exit(1);
     }
     setTimeout(check, 1000);
@@ -347,8 +528,10 @@ main() {
   cd "$ROOT_DIR"
 
   ensure_env_file
+  load_env_file
   ensure_dependencies
   start_infra
+  check_required_services
   sync_database
   start_apps
   monitor_processes
