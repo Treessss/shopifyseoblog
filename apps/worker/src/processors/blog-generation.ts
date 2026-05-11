@@ -1182,11 +1182,15 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
   const sourceType = campaign?.sourceType ?? article?.sourceType ?? data.sourceType;
   const sourceId = campaign?.sourceId ?? article?.sourceId ?? data.sourceId;
   const generationConfig = resolveGenerationConfig(data.generationConfig, campaign?.metadata);
-  const [brandVoice, baseSourceContext] = await Promise.all([
+  const initialTopic = campaign?.topic ?? article?.title ?? data.topic;
+  const [brandVoice, requestedSourceContext] = await Promise.all([
     loadBrandVoice(data.organizationId, data.storeId, locale, campaign?.brandVoice),
     loadSourceContext(data.storeId, sourceType, sourceId)
   ]);
-  const initialTopic = campaign?.topic ?? article?.title ?? data.topic;
+  const baseSourceContext =
+    shouldAutoDiscoverTopic(generationConfig, initialTopic) && !hasCatalogContext(requestedSourceContext)
+      ? await loadFallbackCatalogContext(data.storeId)
+      : requestedSourceContext;
   const seedKeywords = resolveSeedKeywords(data, campaign);
   const sourceContextBase = {
     ...baseSourceContext,
@@ -1389,6 +1393,54 @@ async function loadSourceContext(
 
     if (!collection) return {};
 
+    return {
+      collection: {
+        id: collection.shopifyCollectionId,
+        title: collection.title,
+        handle: collection.handle,
+        description: collection.descriptionHtml ?? undefined,
+        imageUrls: collection.imageUrl ? [collection.imageUrl] : []
+      }
+    };
+  }
+
+  return {};
+}
+
+function hasCatalogContext(context: ContentSourceContext): boolean {
+  return Boolean(context.product || context.collection);
+}
+
+async function loadFallbackCatalogContext(storeId: string): Promise<ContentSourceContext> {
+  const [product, collection] = await Promise.all([
+    prisma.productSnapshot.findFirst({
+      where: { storeId },
+      orderBy: { syncedAt: "desc" }
+    }),
+    prisma.collectionSnapshot.findFirst({
+      where: { storeId },
+      orderBy: { syncedAt: "desc" }
+    })
+  ]);
+
+  if (product) {
+    return {
+      product: {
+        id: product.shopifyProductId,
+        title: product.title,
+        handle: product.handle,
+        description: product.descriptionHtml ?? undefined,
+        productType: product.productType ?? undefined,
+        vendor: product.vendor ?? undefined,
+        tags: product.tags ?? [],
+        imageUrls: product.imageUrls ?? [],
+        seoTitle: product.seoTitle ?? undefined,
+        seoDescription: product.seoDescription ?? undefined
+      }
+    };
+  }
+
+  if (collection) {
     return {
       collection: {
         id: collection.shopifyCollectionId,

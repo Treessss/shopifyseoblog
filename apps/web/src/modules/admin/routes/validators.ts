@@ -95,10 +95,6 @@ export async function parseCreateCampaignRequest(request: Request): Promise<Crea
   if (!topicDiscoveryEnabled && !topic) {
     throw new AdminApiError(400, "TOPIC_REQUIRED", "topic is required when automatic topic discovery is disabled.");
   }
-  if (topicDiscoveryEnabled && !topic && !primaryKeyword && keywords.length === 0 && !sourceId) {
-    throw new AdminApiError(400, "TOPIC_SEED_REQUIRED", "Provide a topic, primaryKeyword, keywords, or sourceId for automatic topic discovery.");
-  }
-
   return {
     storeId: requiredString(body, "storeId"),
     title: optionalString(body.title) ?? buildCampaignTitle(body, sourceType),
