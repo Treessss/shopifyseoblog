@@ -161,6 +161,53 @@ describe("content engine", () => {
     expect(result.article.imagePrompt).toContain("Apple-like clean editorial product photography");
   });
 
+  it("does not fall back to generic guide title formulas for different product contexts", async () => {
+    const first = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Style",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        primaryKeyword: "phone case"
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/1",
+          title: "Clear MagSafe Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear"],
+          imageUrls: []
+        }
+      }
+    );
+    const second = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Style",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        primaryKeyword: "phone case"
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/2",
+          title: "Shockproof Silicone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["shockproof"],
+          imageUrls: []
+        }
+      }
+    );
+
+    expect(first.article.title).not.toMatch(/Guide: Choosing, Using, and Optimizing|How to Choose, Use, and Style|phone case Guide/i);
+    expect(second.article.title).not.toMatch(/Guide: Choosing, Using, and Optimizing|How to Choose, Use, and Style|phone case Guide/i);
+    expect(first.article.title).not.toBe(second.article.title);
+  });
+
   it("selects a trend-backed topic candidate when automatic topic discovery is enabled", () => {
     const input: NormalizedContentPipelineInput = {
       locale: "zh-CN",

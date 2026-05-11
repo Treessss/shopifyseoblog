@@ -194,7 +194,6 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
                   : [{ label: "zh-CN", value: "zh-CN" }]
               }
             />
-            <Field label="任务标题" name="title" placeholder="春夏新品关键词集群" required />
             <SelectField
               label="选题模式"
               name="topicDiscoveryEnabled"

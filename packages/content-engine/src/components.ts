@@ -20,6 +20,18 @@ import type {
   TopicSelectionResult
 } from "./types";
 
+interface DraftAngle {
+  locale: SupportedLocale;
+  topic: string;
+  primaryKeyword: string;
+  anchorLabel: string;
+  category: string;
+  trendTitle?: string;
+  productTitle?: string;
+  collectionTitle?: string;
+  theme: "trend" | "product_fit" | "comparison" | "care" | "faq";
+}
+
 export const defaultKeywordPlanner: KeywordPlanner = {
   plan(input, context) {
     const locale = normalizeLocale(input.locale);
@@ -212,54 +224,10 @@ export function buildDefaultDraft(
   keywords: KeywordPlan
 ): ArticleDraft {
   const locale = normalizeLocale(input.locale);
-  const topic = resolveTopic(input, context);
-  const title =
-    locale === "zh-CN"
-      ? `${keywords.primaryKeyword}指南：${topic}的选择、使用与优化`
-      : `${keywords.primaryKeyword} Guide: Choosing, Using, and Optimizing ${topic}`;
-  const summary =
-    locale === "zh-CN"
-      ? `围绕${keywords.primaryKeyword}，整理适合 Shopify 店铺博客的选购要点、使用建议和常见问题，帮助用户更快做出判断。`
-      : `A practical Shopify blog guide to ${keywords.primaryKeyword}, covering selection criteria, usage tips, and common shopper questions.`;
-
-  const sections =
-    locale === "zh-CN"
-      ? [
-          section(`为什么关注${keywords.primaryKeyword}`, "match-intent", [
-            `${keywords.primaryKeyword}不仅影响搜索流量，也会影响用户进入商品页前的信任感。`,
-            `先说明适用场景，再连接到${topic}的真实需求。`
-          ]),
-          section(`如何判断${keywords.primaryKeyword}是否适合你`, "comparison", [
-            "比较材质、功能、预算和维护成本，避免只按单一卖点做决定。",
-            "把商品描述、评价和使用场景放在同一个判断框架里。"
-          ]),
-          section(`${keywords.primaryKeyword}的使用与搭配建议`, "usage", [
-            "用清晰步骤说明上手方法，并提醒用户关注尺寸、兼容性或护理方式。",
-            "自然引入相关商品、系列或博客内容，形成内部链接机会。"
-          ]),
-          section(`${keywords.primaryKeyword}常见问题`, "faq", [
-            "回答购买前最常见的疑问，包括适用人群、保养方式和下单前检查点。",
-            "保持答案具体、克制，避免无法验证的绝对化承诺。"
-          ])
-        ]
-      : [
-          section(`Why ${keywords.primaryKeyword} matters`, "match-intent", [
-            `${keywords.primaryKeyword} shapes both organic discovery and buyer confidence before shoppers reach a product page.`,
-            `Start with the use case, then connect it to the practical needs behind ${topic}.`
-          ]),
-          section(`How to choose the right ${keywords.primaryKeyword}`, "comparison", [
-            "Compare materials, functions, budget, and maintenance instead of relying on one selling point.",
-            "Use product descriptions, reviews, and use cases in one decision framework."
-          ]),
-          section(`${keywords.primaryKeyword} usage and pairing ideas`, "usage", [
-            "Explain setup steps clearly and call out sizing, compatibility, or care requirements.",
-            "Introduce related products, collections, or blog content as natural internal-link opportunities."
-          ]),
-          section(`${keywords.primaryKeyword} FAQs`, "faq", [
-            "Answer pre-purchase questions about fit, care, and checks before ordering.",
-            "Keep answers concrete and avoid claims that cannot be verified."
-          ])
-        ];
+  const angle = resolveDraftAngle(input, context, keywords);
+  const title = buildEditorialTitle(locale, angle);
+  const summary = buildEditorialSummary(locale, angle);
+  const sections = buildEditorialSections(locale, angle);
 
   return {
     title,
@@ -267,13 +235,13 @@ export function buildDefaultDraft(
     summary,
     intro:
       locale === "zh-CN"
-        ? `${keywords.primaryKeyword}是一篇 Shopify 店铺博客可以持续获取自然流量的主题。本文从用户意图、选择标准、使用场景和常见问题出发，帮助读者把${topic}和实际购买决策连接起来。`
-        : `${keywords.primaryKeyword} is a durable topic for Shopify blog traffic. This guide connects ${topic} with shopper intent, selection criteria, usage context, and common questions.`,
+        ? `${angle.primaryKeyword}这篇文章需要从真实商品和搜索意图出发。本文会围绕${angle.anchorLabel}，把${angle.topic}拆成可判断的购买场景、细节检查和搭配思路。`
+        : `${angle.primaryKeyword} deserves a specific angle, not another generic buying guide. This article uses ${angle.anchorLabel} to connect ${angle.topic} with shopper intent, product context, and practical checks.`,
     sections,
     conclusion:
       locale === "zh-CN"
-        ? `围绕${keywords.primaryKeyword}写作时，最重要的是让搜索意图、商品价值和真实使用场景保持一致。这样文章既能服务 SEO，也能帮助读者更有信心地进入下一步。`
-        : `When writing about ${keywords.primaryKeyword}, align search intent, product value, and real usage context. That makes the article useful for SEO and more helpful for shoppers.`,
+        ? `写好${angle.primaryKeyword}，关键是把证据、商品差异和用户场景放在一起。标题、内链和配图都应服务同一个具体角度，而不是套用固定导购模板。`
+        : `Strong ${angle.primaryKeyword} content should keep evidence, product differences, and shopper context in the same lane. The title, internal links, and imagery all need to support that specific angle.`,
     tags: [keywords.primaryKeyword, ...keywords.secondaryKeywords.slice(0, 4)],
     imagePrompt: buildDetailedImagePrompt(input, context, keywords),
     imageAlt: locale === "zh-CN" ? `${keywords.primaryKeyword}使用场景图` : `${keywords.primaryKeyword} usage context`
@@ -366,6 +334,132 @@ function localizedLongTailKeywords(primaryKeyword: string, topic: string, locale
   }
 
   return [`how to choose ${primaryKeyword}`, `${topic} buying guide`, `who should use ${primaryKeyword}`];
+}
+
+function resolveDraftAngle(
+  input: NormalizedContentPipelineInput,
+  context: ContentSourceContext,
+  keywords: KeywordPlan
+): DraftAngle {
+  const locale = normalizeLocale(input.locale);
+  const topic = context.topicSelection?.selected.topic ?? resolveTopic(input, context);
+  const productTitle = context.product?.title;
+  const collectionTitle = context.collection?.title;
+  const category = context.product?.productType ?? collectionTitle ?? keywords.primaryKeyword;
+  const trendTitle = context.trendSignals?.[0]?.title;
+  const anchorLabel = productTitle ?? collectionTitle ?? category;
+  const themes: DraftAngle["theme"][] = trendTitle
+    ? ["trend", "product_fit", "comparison", "care"]
+    : context.product
+      ? ["product_fit", "comparison", "care", "faq"]
+      : ["comparison", "care", "faq", "product_fit"];
+  const theme = themes[Math.abs(hashString(`${topic}:${keywords.primaryKeyword}:${anchorLabel}`)) % themes.length];
+
+  return {
+    locale,
+    topic,
+    primaryKeyword: keywords.primaryKeyword,
+    anchorLabel,
+    category,
+    trendTitle,
+    productTitle,
+    collectionTitle,
+    theme
+  };
+}
+
+function buildEditorialTitle(locale: SupportedLocale, angle: DraftAngle): string {
+  if (locale === "zh-CN") {
+    const titles: Record<DraftAngle["theme"], string> = {
+      trend: `${compactTitle(angle.trendTitle ?? angle.topic)}之后，${angle.primaryKeyword}该怎么选？`,
+      product_fit: `${angle.primaryKeyword}适合谁：从${angle.anchorLabel}看真实使用场景`,
+      comparison: `${angle.primaryKeyword}别只看外观：${angle.category}购买前检查清单`,
+      care: `${angle.primaryKeyword}怎么搭配更耐用：场景、细节和维护建议`,
+      faq: `${angle.primaryKeyword}购买前最容易忽略的几个问题`
+    };
+    return titles[angle.theme];
+  }
+
+  const titles: Record<DraftAngle["theme"], string> = {
+    trend: `What ${compactTitle(angle.trendTitle ?? angle.topic)} Means for ${angle.primaryKeyword}`,
+    product_fit: `${angle.primaryKeyword}: Who ${angle.anchorLabel} Is Really For`,
+    comparison: `Before You Buy ${angle.primaryKeyword}, Check These Details`,
+    care: `${angle.primaryKeyword} in Daily Use: Pairing, Care, and Fit`,
+    faq: `${angle.primaryKeyword} Questions Shoppers Should Ask First`
+  };
+  return titles[angle.theme];
+}
+
+function buildEditorialSummary(locale: SupportedLocale, angle: DraftAngle): string {
+  if (locale === "zh-CN") {
+    return [
+      `围绕${angle.primaryKeyword}，这篇文章把${angle.anchorLabel}、${angle.category}和真实购买场景放在一起判断。`,
+      angle.trendTitle ? `选题参考了「${angle.trendTitle}」这类热点信号，但只把它作为内容角度，不夸大事实。` : "",
+      "读者可以快速看清适用场景、细节风险和下单前检查点。"
+    ]
+      .filter(Boolean)
+      .join("");
+  }
+
+  return [
+    `This article looks at ${angle.primaryKeyword} through ${angle.anchorLabel}, ${angle.category}, and real shopper use cases. `,
+    angle.trendTitle ? `It uses “${angle.trendTitle}” as an editorial signal without overstating the facts. ` : "",
+    "Readers get practical fit checks, tradeoffs, and pre-purchase questions instead of a generic buying template."
+  ]
+    .filter(Boolean)
+    .join("");
+}
+
+function buildEditorialSections(locale: SupportedLocale, angle: DraftAngle) {
+  if (locale === "zh-CN") {
+    return [
+      section(firstSectionHeading(angle), "evidence-angle", [
+        angle.trendTitle ? `先说明「${angle.trendTitle}」和${angle.category}需求之间的关系。` : `先说明${angle.anchorLabel}解决的具体问题。`,
+        `把${angle.primaryKeyword}放进真实购物语境，而不是只重复商品卖点。`
+      ]),
+      section(`${angle.primaryKeyword}真正要看的细节`, "decision-detail", [
+        `比较材质、尺寸、兼容性、手感或维护成本这些会影响长期使用的因素。`,
+        `用${angle.anchorLabel}作为例子，把抽象卖点翻译成读者能检查的条件。`
+      ]),
+      section(`哪些场景适合${angle.anchorLabel}`, "usage-fit", [
+        "区分日常、通勤、礼物、自用或搭配场景，让读者知道自己是否匹配。",
+        "自然插入相关商品、系列或文章内链，而不是硬塞链接。"
+      ]),
+      section(`下单前的反向检查`, "purchase-check", [
+        "提醒读者哪些情况可能不适合，减少不必要的退换和误解。",
+        "用简短清单收束，让搜索用户能快速做决定。"
+      ])
+    ];
+  }
+
+  return [
+    section(firstSectionHeading(angle), "evidence-angle", [
+      angle.trendTitle
+        ? `Explain how “${angle.trendTitle}” connects to actual ${angle.category} demand.`
+        : `Start with the concrete problem ${angle.anchorLabel} is meant to solve.`,
+      `Keep ${angle.primaryKeyword} grounded in a shopper scenario rather than repeating product claims.`
+    ]),
+    section(`The ${angle.primaryKeyword} details that change the decision`, "decision-detail", [
+      "Compare material, size, compatibility, feel, care, or long-term use cost where relevant.",
+      `Use ${angle.anchorLabel} as the working example so abstract benefits become checkable details.`
+    ]),
+    section(`Where ${angle.anchorLabel} fits best`, "usage-fit", [
+      "Separate daily use, commuting, gifting, styling, or replacement scenarios so readers can self-qualify.",
+      "Add related products, collections, or articles only where they help the decision."
+    ]),
+    section(`A quick no-regret check before buying`, "purchase-check", [
+      "Name the edge cases where this product or category may not be the right fit.",
+      "Close with a compact checklist that helps search visitors move forward confidently."
+    ])
+  ];
+}
+
+function firstSectionHeading(angle: DraftAngle): string {
+  if (angle.locale === "zh-CN") {
+    return angle.trendTitle ? `这个趋势为什么会影响${angle.primaryKeyword}` : `${angle.anchorLabel}先解决什么问题`;
+  }
+
+  return angle.trendTitle ? `Why this trend matters for ${angle.primaryKeyword}` : `What ${angle.anchorLabel} solves first`;
 }
 
 function resolveTopic(input: NormalizedContentPipelineInput, context: ContentSourceContext): string {
@@ -730,14 +824,22 @@ function section(heading: string, intent: string, bulletPoints: string[]) {
 
 function sectionParagraph(heading: string, intent: string, keywords: KeywordPlan, locale: SupportedLocale): string {
   if (locale === "zh-CN") {
-    return escapeHtml(
-      `${heading}需要同时覆盖搜索意图和购买场景。围绕${keywords.primaryKeyword}展开时，可以把${intent}、商品信息和用户疑问串起来，让内容更具体，也更容易转化为下一步行动。`
-    );
+    const paragraphs: Record<string, string> = {
+      "evidence-angle": `${heading}不是简单追热点，而是先判断这个信号和${keywords.primaryKeyword}的真实需求是否匹配。写作时要把来源、商品语境和读者问题放在同一段逻辑里。`,
+      "decision-detail": `读者真正需要的是可检查的细节。围绕${keywords.primaryKeyword}展开时，材质、尺寸、兼容性、维护成本和使用频率都比空泛卖点更有帮助。`,
+      "usage-fit": `${heading}要回答“我会不会真的用到”。可以把日常场景、人群、搭配方式和内链商品自然放在一起，让读者更快定位自己。`,
+      "purchase-check": `最后一段应该帮助读者排除不适合的情况。用${keywords.primaryKeyword}做下单前检查时，语气要具体克制，避免绝对化承诺。`
+    };
+    return escapeHtml(paragraphs[intent] ?? `${heading}需要把${keywords.primaryKeyword}和具体购买场景连接起来，让内容更像编辑判断，而不是固定模板。`);
   }
 
-  return escapeHtml(
-    `${heading} should cover both search intent and buying context. When discussing ${keywords.primaryKeyword}, connect ${intent}, product information, and shopper questions so the content becomes specific and action-oriented.`
-  );
+  const paragraphs: Record<string, string> = {
+    "evidence-angle": `${heading} should treat the signal as an editorial lead, then test whether it actually matters for ${keywords.primaryKeyword}. The useful move is connecting source context, product reality, and shopper questions.`,
+    "decision-detail": `Readers need details they can check. For ${keywords.primaryKeyword}, material, size, compatibility, upkeep, and frequency of use usually say more than broad benefit claims.`,
+    "usage-fit": `${heading} should answer whether the reader will actually use it. Daily routines, recipient type, styling choices, and related links can make the recommendation feel specific.`,
+    "purchase-check": `The closing check should rule out poor fits as clearly as it supports good ones. Keep ${keywords.primaryKeyword} advice concrete and avoid absolute promises.`
+  };
+  return escapeHtml(paragraphs[intent] ?? `${heading} should connect ${keywords.primaryKeyword} with a concrete shopper situation instead of repeating a fixed article template.`);
 }
 
 function check(id: string, label: string, passed: boolean, maxPoints: number): SeoCheck {

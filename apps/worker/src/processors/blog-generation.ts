@@ -480,7 +480,7 @@ async function generateArticleWithAi(
         imagePrompt: "optional string",
         imageAlt: "optional string"
       }),
-      "Use this content-engine draft as the approved strategy and structure:",
+      "Use this content-engine draft as source strategy, not as a title or wording template:",
       JSON.stringify(pipelineResult.article),
       "Use these prompts and source context:",
       JSON.stringify({
@@ -490,6 +490,9 @@ async function generateArticleWithAi(
       }),
       "Required quality policy:",
       JSON.stringify(input.generationConfig?.qualityGate ?? {}),
+      "Create a fresh editorial title and section flow from the selected topic, product context, trend evidence, and keyword evidence.",
+      "Never use these title formulas: 'Guide: Choosing, Using, and Optimizing ...', 'How to Choose, Use, and Style ...', or '[keyword] Guide'.",
+      "Do not use the internal campaign/task name as article topic or title.",
       "Do not try to evade AI detectors. Instead, make the article specific, evidence-aware, varied in rhythm, useful to shoppers, and free of generic template phrases."
     ].join("\n\n"),
     maxTokens: Math.max(1800, Math.min(5000, input.targetWordCount * 3)),
@@ -1197,7 +1200,6 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
         initialTopic ??
         data.primaryKeyword ??
         seedKeywords?.[0] ??
-        campaign?.title ??
         baseSourceContext.product?.title ??
         baseSourceContext.collection?.title ??
         "Shopify blog topic",
@@ -1220,7 +1222,13 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     locale,
     sourceType,
     sourceId: sourceId ?? undefined,
-    topic: initialTopic ?? campaign?.title ?? baseSourceContext.product?.title ?? baseSourceContext.collection?.title ?? "Shopify blog topic",
+    topic:
+      initialTopic ??
+      data.primaryKeyword ??
+      seedKeywords?.[0] ??
+      baseSourceContext.product?.title ??
+      baseSourceContext.collection?.title ??
+      "Shopify blog topic",
     publishPolicy: campaign?.publishPolicy ?? data.publishPolicy,
     targetWordCount: campaign?.targetWordCount ?? data.targetWordCount,
     primaryKeyword: campaign?.primaryKeyword ?? data.primaryKeyword,
@@ -1270,7 +1278,7 @@ function mergeGenerationInput(
     locale: campaign?.locale ?? data.locale,
     sourceType: campaign?.sourceType ?? data.sourceType,
     sourceId: campaign?.sourceId ?? data.sourceId,
-    topic: resolvedTopic ?? campaign?.topic ?? data.topic ?? campaign?.title,
+    topic: resolvedTopic ?? campaign?.topic ?? data.topic ?? data.primaryKeyword,
     publishPolicy: campaign?.publishPolicy ?? data.publishPolicy,
     targetWordCount: campaign?.targetWordCount ?? data.targetWordCount,
     primaryKeyword: campaign?.primaryKeyword ?? data.primaryKeyword,

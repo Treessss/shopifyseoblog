@@ -86,23 +86,48 @@ export async function parseCreateCampaignRequest(request: Request): Promise<Crea
   const publishPolicy =
     optionalEnum(body.publishPolicy, PUBLISH_POLICIES, "publishPolicy") ?? "auto_when_qualified";
   const scheduleAt = optionalDateString(body.scheduleAt, "scheduleAt");
+  const topic = optionalString(body.topic);
+  const primaryKeyword = optionalString(body.primaryKeyword);
+  const keywords = stringList(body.keywords);
+  const sourceId = optionalString(body.sourceId);
+  const topicDiscoveryEnabled = booleanValue(body.topicDiscoveryEnabled, true);
+
+  if (!topicDiscoveryEnabled && !topic) {
+    throw new AdminApiError(400, "TOPIC_REQUIRED", "topic is required when automatic topic discovery is disabled.");
+  }
+  if (topicDiscoveryEnabled && !topic && !primaryKeyword && keywords.length === 0 && !sourceId) {
+    throw new AdminApiError(400, "TOPIC_SEED_REQUIRED", "Provide a topic, primaryKeyword, keywords, or sourceId for automatic topic discovery.");
+  }
 
   return {
     storeId: requiredString(body, "storeId"),
-    title: requiredString(body, "title"),
+    title: optionalString(body.title) ?? buildCampaignTitle(body, sourceType),
     locale: requiredString(body, "locale"),
     sourceType,
-    sourceId: optionalString(body.sourceId),
-    topic: optionalString(body.topic),
+    sourceId,
+    topic,
     brandVoiceId: optionalString(body.brandVoiceId),
     publishPolicy,
     targetWordCount: integerValue(body.targetWordCount, "targetWordCount", 1400, 300, 3500),
-    primaryKeyword: optionalString(body.primaryKeyword),
-    keywords: stringList(body.keywords),
+    primaryKeyword,
+    keywords,
     generationConfig: parseGenerationConfig(body),
     scheduleAt,
     queueGeneration: booleanValue(body.queueGeneration, true)
   };
+}
+
+function buildCampaignTitle(body: Record<string, unknown>, sourceType: (typeof SOURCE_TYPES)[number]) {
+  const topic = optionalString(body.topic);
+  const keyword = optionalString(body.primaryKeyword);
+  const sourceId = optionalString(body.sourceId);
+  const basis = topic ?? keyword ?? sourceId;
+  const prefix = booleanValue(body.topicDiscoveryEnabled, true) ? "自动选题" : "内容任务";
+  const sourceLabel =
+    sourceType === "product" ? "商品" : sourceType === "collection" ? "集合" : "主题";
+  const date = new Date().toISOString().slice(0, 10);
+
+  return basis ? `${prefix} · ${basis}` : `${prefix} · ${sourceLabel} · ${date}`;
 }
 
 export async function parseQueueArticlePublishRequest(request: Request): Promise<QueueArticlePublishInput> {
