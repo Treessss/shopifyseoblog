@@ -34,6 +34,11 @@ export default async function ArticleReviewPage({ params }: PageProps) {
   const generationQuality = asRecord(generationMetadata.quality);
   const provider = asRecord(generationMetadata.provider);
   const ai = asRecord(generationMetadata.ai);
+  const aiSearchReview = asRecord(qualityReport.aiSearchReview ?? generationMetadata.aiSearchReview);
+  const aiSearchInitial = asRecord(aiSearchReview.initial);
+  const aiSearchFinal = asRecord(aiSearchReview.final);
+  const aiSearchScore = numberValue(aiSearchFinal.score);
+  const aiSearchRevisions = recordArray(aiSearchReview.revisions);
   const topicSelection = generationMetadata.topicSelection;
   const keywordEvidence = generationMetadata.keywordEvidence;
   const evidenceSummary =
@@ -87,9 +92,9 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                 icon={<FileText size={18} aria-hidden="true" />}
               />
               <StatusPill
-                label="SEO 分"
-                value={article.seoScore ?? "暂无"}
-                tone={(article.seoScore ?? 0) >= 78 ? "good" : "warn"}
+                label={aiSearchScore !== null ? "AI 搜索分" : "SEO 分"}
+                value={aiSearchScore ?? article.seoScore ?? "暂无"}
+                tone={(aiSearchScore ?? article.seoScore ?? 0) >= 82 ? "good" : "warn"}
                 icon={<Gauge size={18} aria-hidden="true" />}
               />
               <StatusPill
@@ -229,6 +234,47 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                   </dl>
                 </Panel>
 
+                <Panel title="AI 搜索流量评审" compact>
+                  {Object.keys(aiSearchReview).length > 0 ? (
+                    <div className="stack">
+                      <dl className="detail-list">
+                        <div>
+                          <dt>最终搜索分</dt>
+                          <dd>{aiSearchScore ?? "暂无"}</dd>
+                        </div>
+                        <div>
+                          <dt>初评分</dt>
+                          <dd>{numberValue(aiSearchInitial.score) ?? "暂无"}</dd>
+                        </div>
+                        <div>
+                          <dt>最低要求</dt>
+                          <dd>{numberValue(aiSearchReview.minTrafficScore) ?? 82}</dd>
+                        </div>
+                        <div>
+                          <dt>自动改稿</dt>
+                          <dd>{aiSearchRevisions.length} 次</dd>
+                        </div>
+                      </dl>
+                      <ScoreGrid review={aiSearchFinal} />
+                      <TextList title="AI 判断" items={[stringValue(aiSearchFinal.summary)].filter(Boolean) as string[]} />
+                      <TextList title="提升建议" items={stringArray(aiSearchFinal.recommendations)} />
+                      <TextList title="改稿指令" items={stringArray(aiSearchFinal.revisionBrief)} />
+                      {aiSearchRevisions.length > 0 ? (
+                        <div className="json-block">
+                          {aiSearchRevisions.map((revision, index) => (
+                            <div key={index}>
+                              第 {numberValue(revision.pass) ?? index + 1} 次：{numberValue(revision.beforeScore) ?? "-"} →{" "}
+                              {numberValue(revision.afterScore) ?? "-"}
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <EmptyState title="暂无 AI 搜索评审" description="开启 AI 搜索评分后，生成完成会显示评分、建议和改稿记录。" />
+                  )}
+                </Panel>
+
                 <Panel title="质检报告" compact>
                   <JsonBlock value={qualityReport} empty="暂无质检报告" />
                 </Panel>
@@ -270,6 +316,49 @@ function JsonBlock(props: { value: unknown; empty: string }) {
   return <pre className="json-block">{JSON.stringify(props.value, null, 2)}</pre>;
 }
 
+function ScoreGrid({ review }: { review: Record<string, unknown> }) {
+  const scores = [
+    ["搜索意图", review.searchIntentScore],
+    ["标题点击", review.titleCtrScore],
+    ["内容深度", review.contentDepthScore],
+    ["关键词匹配", review.keywordFitScore],
+    ["主题权威", review.topicalAuthorityScore],
+    ["转化支持", review.conversionSupportScore]
+  ]
+    .map(([label, value]) => ({ label: String(label), value: numberValue(value) }))
+    .filter((item) => item.value !== null);
+
+  if (scores.length === 0) return null;
+
+  return (
+    <dl className="detail-list">
+      {scores.map((item) => (
+        <div key={item.label}>
+          <dt>{item.label}</dt>
+          <dd>{item.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function TextList({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div>
+      <strong>{title}</strong>
+      <div className="json-block">
+        {items.map((item) => (
+          <div key={item}>
+            {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -280,4 +369,12 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function recordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.map(asRecord).filter((item) => Object.keys(item).length > 0) : [];
 }

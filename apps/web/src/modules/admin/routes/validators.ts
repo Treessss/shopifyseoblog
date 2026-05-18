@@ -363,6 +363,11 @@ function parseGenerationConfig(body: Record<string, unknown>) {
       minEditorialScore: optionalInteger(body.minEditorialScore, "minEditorialScore", 0, 100) ?? 72,
       requireTrendEvidence: booleanValue(body.requireTrendEvidence, false),
       rejectTemplatePatterns: booleanValue(body.rejectTemplatePatterns, true)
+    },
+    aiSearchReview: {
+      enabled: booleanValue(body.aiSearchReviewEnabled, true),
+      minTrafficScore: optionalInteger(body.minTrafficScore, "minTrafficScore", 0, 100) ?? 82,
+      maxRevisionPasses: optionalInteger(body.maxRevisionPasses, "maxRevisionPasses", 0, 2) ?? 1
     }
   };
 }

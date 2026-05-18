@@ -73,6 +73,13 @@ export const generationConfigSchema = z.object({
       requireTrendEvidence: z.boolean().default(false),
       rejectTemplatePatterns: z.boolean().default(true)
     })
+    .optional(),
+  aiSearchReview: z
+    .object({
+      enabled: z.boolean().default(true),
+      minTrafficScore: z.number().int().min(0).max(100).default(82),
+      maxRevisionPasses: z.number().int().min(0).max(2).default(1)
+    })
     .optional()
 });
 

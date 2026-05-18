@@ -9,6 +9,7 @@ import {
   type ContentSourceContext,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
+  type QualityGateResult,
   selectTopicCandidate,
   type TopicHistoryItem,
   type TopicSelectionResult,
@@ -149,6 +150,38 @@ interface ImageAssetDraft {
   referenceImageUrls: string[];
 }
 
+interface AiSearchReviewResult {
+  score: number;
+  passed: boolean;
+  searchIntentScore: number;
+  titleCtrScore: number;
+  contentDepthScore: number;
+  keywordFitScore: number;
+  topicalAuthorityScore: number;
+  conversionSupportScore: number;
+  summary: string;
+  strengths: string[];
+  recommendations: string[];
+  revisionBrief: string[];
+}
+
+interface AiSearchRevisionPass {
+  pass: number;
+  beforeScore: number;
+  afterScore: number;
+  recommendations: string[];
+  changes: string[];
+}
+
+interface AiSearchReviewWorkflow {
+  enabled: boolean;
+  minTrafficScore: number;
+  maxRevisionPasses: number;
+  initial: AiSearchReviewResult;
+  final: AiSearchReviewResult;
+  revisions: AiSearchRevisionPass[];
+}
+
 interface ResolvedCatalogSource {
   sourceType: Extract<SourceType, "product" | "collection">;
   sourceId: string;
@@ -276,6 +309,7 @@ async function generateBlogArticle(
         generator: "openai-compatible",
         provider: aiProvider.safeMetadata,
         ai: aiResult.metadata,
+        aiSearchReview: aiResult.aiSearchReview,
         imageAsset: aiResult.imageAsset
           ? {
               prompt: aiResult.imageAsset.prompt,
@@ -290,7 +324,8 @@ async function generateBlogArticle(
         contentEngine: {
           artifacts: pipelineResult.artifacts,
           finalQuality: aiResult.quality,
-          finalSeo: aiResult.seo
+          finalSeo: aiResult.seo,
+          aiSearchReview: aiResult.aiSearchReview
         },
         queue: {
           bullJobId: job.id,
@@ -480,8 +515,9 @@ async function generateArticleWithAi(
 ): Promise<{
   article: GeneratedArticle;
   seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>;
-  quality: Awaited<ReturnType<typeof defaultQualityGate.evaluate>>;
+  quality: QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow };
   imageAsset?: ImageAssetDraft;
+  aiSearchReview?: AiSearchReviewWorkflow;
   metadata: {
     id?: string;
     model?: string;
@@ -563,6 +599,10 @@ async function generateArticleWithAi(
   }
 
   let finalArticle = enforceInternalLinks(article.data, context);
+  let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, finalArticle, input, context, pipelineResult);
+  if (aiSearchReview.revisedArticle) {
+    finalArticle = enforceInternalLinks(aiSearchReview.revisedArticle, context);
+  }
   const imageAsset = await maybeGenerateArticleImage(provider, finalArticle, input, context);
   if (imageAsset?.publicUrl) {
     finalArticle = {
@@ -578,10 +618,12 @@ async function generateArticleWithAi(
       imageAlt: imageAsset.altText
     };
   }
+  aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult);
 
   const qualityInput = normalizeFinalQualityInput(input);
   const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
-  const finalQuality = await defaultQualityGate.evaluate(toHtmlAssembly(finalArticle), finalSeo, qualityInput, context);
+  const localQuality = await defaultQualityGate.evaluate(toHtmlAssembly(finalArticle), finalSeo, qualityInput, context);
+  const finalQuality = applyAiSearchReviewGate(localQuality, aiSearchReview.workflow);
 
   return {
     article: {
@@ -592,6 +634,7 @@ async function generateArticleWithAi(
     seo: finalSeo,
     quality: finalQuality,
     imageAsset,
+    aiSearchReview: aiSearchReview.workflow,
     metadata: {
       id: result.id,
       model: result.model ?? provider.textModel,
@@ -599,6 +642,339 @@ async function generateArticleWithAi(
       usage: result.usage
     }
   };
+}
+
+async function runAiSearchReviewWorkflow(
+  client: ReturnType<typeof createOpenAICompatibleClient>,
+  provider: ResolvedAiProvider,
+  article: GeneratedArticle,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext,
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
+): Promise<{ workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle }> {
+  const config = resolveAiSearchReviewConfig(input.generationConfig);
+  if (!config.enabled) return {};
+
+  const initial = await reviewArticleForSearchTraffic(client, provider, article, input, context, pipelineResult, "initial");
+  let currentArticle = article;
+  let currentReview = initial;
+  const revisions: AiSearchRevisionPass[] = [];
+
+  for (let pass = 1; pass <= config.maxRevisionPasses; pass += 1) {
+    if (currentReview.score >= config.minTrafficScore) break;
+
+    const revisedArticle = await reviseArticleForSearchTraffic(
+      client,
+      provider,
+      currentArticle,
+      currentReview,
+      input,
+      context,
+      pipelineResult,
+      pass
+    );
+    const revisedReview = await reviewArticleForSearchTraffic(client, provider, revisedArticle, input, context, pipelineResult, `revision-${pass}`);
+    revisions.push({
+      pass,
+      beforeScore: currentReview.score,
+      afterScore: revisedReview.score,
+      recommendations: currentReview.recommendations,
+      changes: revisedReview.strengths
+    });
+    currentArticle = revisedArticle;
+    currentReview = revisedReview;
+  }
+
+  return {
+    workflow: {
+      enabled: true,
+      minTrafficScore: config.minTrafficScore,
+      maxRevisionPasses: config.maxRevisionPasses,
+      initial,
+      final: currentReview,
+      revisions
+    },
+    revisedArticle: revisions.length > 0 ? currentArticle : undefined
+  };
+}
+
+async function finalizeAiSearchReviewWorkflow(
+  client: ReturnType<typeof createOpenAICompatibleClient>,
+  provider: ResolvedAiProvider,
+  result: { workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle },
+  finalArticle: GeneratedArticle,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext,
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
+): Promise<{ workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle }> {
+  if (!result.workflow) return result;
+
+  const finalReview = await reviewArticleForSearchTraffic(
+    client,
+    provider,
+    finalArticle,
+    input,
+    context,
+    pipelineResult,
+    "final-saved-article"
+  );
+
+  return {
+    ...result,
+    workflow: {
+      ...result.workflow,
+      final: finalReview,
+      revisions: result.workflow.revisions.map((revision, index, revisions) =>
+        index === revisions.length - 1 ? { ...revision, afterScore: finalReview.score } : revision
+      )
+    }
+  };
+}
+
+async function reviewArticleForSearchTraffic(
+  client: ReturnType<typeof createOpenAICompatibleClient>,
+  provider: ResolvedAiProvider,
+  article: GeneratedArticle,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext,
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>,
+  stage: string
+): Promise<AiSearchReviewResult> {
+  const result = await client.generateText({
+    model: provider.textModel,
+    temperature: 0.15,
+    system:
+      "You are a senior SEO editor for ecommerce content. Score search traffic potential using evidence, search intent, helpfulness, and content quality. Be strict, practical, and specific.",
+    prompt: [
+      "Return only a JSON object matching this shape:",
+      JSON.stringify({
+        score: 0,
+        searchIntentScore: 0,
+        titleCtrScore: 0,
+        contentDepthScore: 0,
+        keywordFitScore: 0,
+        topicalAuthorityScore: 0,
+        conversionSupportScore: 0,
+        summary: "short reason for the score",
+        strengths: ["specific strength"],
+        recommendations: ["specific improvement that can be applied in the next edit"],
+        revisionBrief: ["concrete edit instruction"]
+      }),
+      "Score means likelihood to earn non-brand organic search traffic, not just keyword stuffing.",
+      "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, and weak product/category fit.",
+      "Do not recommend tricks to evade AI detectors. Recommend evidence-aware, useful, specific editorial improvements.",
+      JSON.stringify({
+        stage,
+        locale: input.locale,
+        targetWordCount: input.targetWordCount,
+        selectedTopic: context.topic ?? input.topic,
+        primaryKeyword: article.primaryKeyword,
+        secondaryKeywords: article.secondaryKeywords,
+        topicSelection: context.topicSelection,
+        keywordEvidence: context.keywordEvidence ?? pipelineResult.artifacts.keywordEvidence,
+        trendSignals: context.trendSignals?.slice(0, 6),
+        internalLinks: context.internalLinks?.slice(0, 6),
+        product: context.product,
+        collection: context.collection,
+        recentTopics: context.recentTopics?.slice(0, 12),
+        article: articleForAiReview(article)
+      })
+    ].join("\n\n"),
+    maxTokens: 1400,
+    responseFormat: { type: "json_object" }
+  });
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonFence(result.content));
+  } catch (error) {
+    throw domainError("AI_SEARCH_REVIEW_INVALID_JSON", "AI search review returned non-JSON output.", {
+      retryable: true,
+      details: {
+        error: getErrorMessage(error),
+        responsePreview: trimForDb(result.content, 800)
+      }
+    });
+  }
+
+  return normalizeAiSearchReview(parsed, input.generationConfig);
+}
+
+async function reviseArticleForSearchTraffic(
+  client: ReturnType<typeof createOpenAICompatibleClient>,
+  provider: ResolvedAiProvider,
+  article: GeneratedArticle,
+  review: AiSearchReviewResult,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext,
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>,
+  pass: number
+): Promise<GeneratedArticle> {
+  const result = await client.generateText({
+    model: provider.textModel,
+    temperature: Math.min(1, provider.temperature),
+    system:
+      "You are a senior ecommerce SEO editor. Rewrite the article to improve search traffic potential while preserving factual accuracy, locale, useful product context, and clean Shopify-compatible HTML.",
+    prompt: [
+      "Return only a JSON object matching this shape:",
+      JSON.stringify({
+        title: "string",
+        handle: "string",
+        summary: "string",
+        bodyHtml: "HTML string, at least 200 characters",
+        primaryKeyword: "string",
+        secondaryKeywords: ["string"],
+        tags: ["string"],
+        locale: input.locale,
+        seoScore: 0,
+        qualityPassed: true,
+        imagePrompt: "optional string",
+        imageAlt: "optional string"
+      }),
+      `Revision pass ${pass}. Improve the article based on this AI search review:`,
+      JSON.stringify(review),
+      "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
+      "Keep the article in the same locale. Do not invent product facts, prices, discounts, testimonials, rankings, medical/legal claims, or unsupported statistics.",
+      "Do not repeat old title formulas or create another generic guide. Do not use the campaign/task name as the title.",
+      "Use semantic HTML sections with H2 headings and natural keyword placement.",
+      JSON.stringify({
+        sourceStrategy: pipelineResult.article,
+        prompts: pipelineResult.artifacts.prompts,
+        sourceContext: context,
+        currentArticle: article
+      })
+    ].join("\n\n"),
+    maxTokens: Math.max(1800, Math.min(5000, input.targetWordCount * 3)),
+    responseFormat: { type: "json_object" }
+  });
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stripJsonFence(result.content));
+  } catch (error) {
+    throw domainError("AI_REVISION_INVALID_JSON", "AI article revision returned non-JSON output.", {
+      retryable: true,
+      details: {
+        error: getErrorMessage(error),
+        responsePreview: trimForDb(result.content, 800)
+      }
+    });
+  }
+
+  const revised = generatedArticleSchema.safeParse(parsed);
+  if (!revised.success) {
+    throw domainError("AI_REVISION_SCHEMA_INVALID", "AI article revision failed schema validation.", {
+      retryable: true,
+      details: revised.error.flatten()
+    });
+  }
+
+  return {
+    ...revised.data,
+    imagePrompt: revised.data.imagePrompt ?? article.imagePrompt,
+    imageAlt: revised.data.imageAlt ?? article.imageAlt
+  };
+}
+
+function applyAiSearchReviewGate(
+  quality: QualityGateResult,
+  workflow: AiSearchReviewWorkflow | undefined
+): QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow } {
+  if (!workflow?.enabled) return quality;
+
+  const searchPassed = workflow.final.score >= workflow.minTrafficScore;
+  const reasons = [...quality.reasons];
+  const warnings = [...quality.warnings];
+  if (!searchPassed) {
+    reasons.push(`AI search traffic score ${workflow.final.score} is below ${workflow.minTrafficScore}.`);
+  }
+  if (workflow.revisions.length > 0) {
+    warnings.push(`AI revised and rescored this article ${workflow.revisions.length} time(s).`);
+  }
+
+  return {
+    ...quality,
+    passed: quality.passed && searchPassed,
+    reasons,
+    warnings,
+    aiSearchReview: workflow
+  };
+}
+
+function resolveAiSearchReviewConfig(generationConfig: GenerationConfig | undefined): {
+  enabled: boolean;
+  minTrafficScore: number;
+  maxRevisionPasses: number;
+} {
+  const config = generationConfig?.aiSearchReview;
+  return {
+    enabled: config?.enabled !== false,
+    minTrafficScore: clampPercent(config?.minTrafficScore ?? 82),
+    maxRevisionPasses: Math.max(0, Math.min(2, Math.round(config?.maxRevisionPasses ?? 1)))
+  };
+}
+
+function normalizeAiSearchReview(value: unknown, generationConfig: GenerationConfig | undefined): AiSearchReviewResult {
+  const record = isRecord(value) ? value : {};
+  const minTrafficScore = resolveAiSearchReviewConfig(generationConfig).minTrafficScore;
+  const score = clampPercent(numberValue(record.score) ?? averageReviewDimensions(record));
+
+  return {
+    score,
+    passed: score >= minTrafficScore,
+    searchIntentScore: clampPercent(numberValue(record.searchIntentScore) ?? score),
+    titleCtrScore: clampPercent(numberValue(record.titleCtrScore) ?? score),
+    contentDepthScore: clampPercent(numberValue(record.contentDepthScore) ?? score),
+    keywordFitScore: clampPercent(numberValue(record.keywordFitScore) ?? score),
+    topicalAuthorityScore: clampPercent(numberValue(record.topicalAuthorityScore) ?? score),
+    conversionSupportScore: clampPercent(numberValue(record.conversionSupportScore) ?? score),
+    summary: stringValue(record.summary) ?? "AI search review completed.",
+    strengths: stringArray(record.strengths).slice(0, 8),
+    recommendations: stringArray(record.recommendations).slice(0, 10),
+    revisionBrief: stringArray(record.revisionBrief).slice(0, 10)
+  };
+}
+
+function averageReviewDimensions(record: Record<string, unknown>): number {
+  const values = [
+    numberValue(record.searchIntentScore),
+    numberValue(record.titleCtrScore),
+    numberValue(record.contentDepthScore),
+    numberValue(record.keywordFitScore),
+    numberValue(record.topicalAuthorityScore),
+    numberValue(record.conversionSupportScore)
+  ].filter((value): value is number => typeof value === "number");
+
+  if (values.length === 0) return 0;
+  return Math.round(values.reduce((total, value) => total + value, 0) / values.length);
+}
+
+function articleForAiReview(article: GeneratedArticle) {
+  return {
+    title: article.title,
+    handle: article.handle,
+    summary: article.summary,
+    primaryKeyword: article.primaryKeyword,
+    secondaryKeywords: article.secondaryKeywords,
+    tags: article.tags,
+    locale: article.locale,
+    bodyText: stripHtmlForReview(article.bodyHtml).slice(0, 9000),
+    bodyHtmlPreview: article.bodyHtml.slice(0, 5000)
+  };
+}
+
+function stripHtmlForReview(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
@@ -1723,6 +2099,13 @@ function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown):
           minEditorialScore: numberValue(candidate.qualityGate.minEditorialScore),
           requireTrendEvidence: candidate.qualityGate.requireTrendEvidence === true,
           rejectTemplatePatterns: candidate.qualityGate.rejectTemplatePatterns !== false
+        }
+      : undefined,
+    aiSearchReview: isRecord(candidate.aiSearchReview)
+      ? {
+          enabled: candidate.aiSearchReview.enabled !== false,
+          minTrafficScore: numberValue(candidate.aiSearchReview.minTrafficScore),
+          maxRevisionPasses: numberValue(candidate.aiSearchReview.maxRevisionPasses)
         }
       : undefined
   };

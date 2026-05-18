@@ -307,6 +307,17 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
             <TextAreaField label="额外参考图 URL" name="referenceImageUrls" rows={3} placeholder="多个 URL 用逗号或换行分隔" />
             <TextAreaField label="图片场景要求" name="imageScenePrompt" rows={3} placeholder="厨房台面晨光、双商品同框、真实使用状态" />
             <Field label="图片风格补充" name="imagePromptStyle" placeholder="Apple 风格、真实生活方式场景、浅色背景" />
+            <SelectField
+              label="AI 搜索评分"
+              name="aiSearchReviewEnabled"
+              value="true"
+              options={[
+                { label: "开启：评分、建议并自动改稿", value: "true" },
+                { label: "关闭", value: "false" }
+              ]}
+            />
+            <Field label="最低 AI 搜索分" name="minTrafficScore" type="number" value={82} min={0} max={100} step={1} />
+            <Field label="自动改稿次数" name="maxRevisionPasses" type="number" value={1} min={0} max={2} step={1} />
             <Field label="最低 SEO 分" name="minSeoScore" type="number" value={78} min={0} max={100} step={1} />
             <Field label="最低编辑质量分" name="minEditorialScore" type="number" value={72} min={0} max={100} step={1} />
             <SelectField

@@ -79,6 +79,12 @@ export interface QualityGateConfig {
   rejectTemplatePatterns?: boolean;
 }
 
+export interface AiSearchReviewConfig {
+  enabled: boolean;
+  minTrafficScore?: number;
+  maxRevisionPasses?: number;
+}
+
 export interface GenerationConfig {
   topicDiscovery?: TopicDiscoveryConfig;
   hotNews?: HotNewsConfig;
@@ -86,6 +92,7 @@ export interface GenerationConfig {
   imageGeneration?: ImageGenerationConfig;
   productImageReference?: ProductImageReferenceConfig;
   qualityGate?: QualityGateConfig;
+  aiSearchReview?: AiSearchReviewConfig;
 }
 
 export interface BlogCampaignInput {
