@@ -437,143 +437,146 @@ export async function persistShopifyStoreSync(
   input: ShopifyStoreSyncPersistenceInput,
   requestContext: AdminRequestContextInput
 ) {
-  return prisma.$transaction(async (tx: AdminDbClient) => {
-    const store = await tx.shopifyStore.findFirst({
-      where: { id: input.storeId, organizationId },
-      include: {
-        localeConfigs: true
-      }
-    });
-
-    if (!store) {
-      throw new Error(`Store ${input.storeId} was not found.`);
-    }
-
-    for (const product of input.products ?? []) {
-      await upsertProductSnapshot(tx, organizationId, input.storeId, product, input.syncedAt);
-    }
-
-    for (const collection of input.collections ?? []) {
-      await upsertCollectionSnapshot(tx, organizationId, input.storeId, collection, input.syncedAt);
-    }
-
-    for (const article of input.blogArticles) {
-      await upsertShopifyBlogArticle(tx, organizationId, store, article, input.blogs, input.syncedAt);
-    }
-
-    let blogMappingsUpdated = 0;
-    for (const localeConfig of store.localeConfigs) {
-      if (!localeConfig.shopifyBlogHandle) continue;
-      const matchedBlog = input.blogs.find((blog) => blog.handle === localeConfig.shopifyBlogHandle);
-      if (!matchedBlog) continue;
-
-      await tx.localeConfig.update({
-        where: { id: localeConfig.id },
-        data: {
-          shopifyBlogId: matchedBlog.id,
-          shopifyBlogHandle: matchedBlog.handle
+  return prisma.$transaction(
+    async (tx: AdminDbClient) => {
+      const store = await tx.shopifyStore.findFirst({
+        where: { id: input.storeId, organizationId },
+        include: {
+          localeConfigs: true
         }
       });
-      blogMappingsUpdated += 1;
-    }
 
-    await tx.shopifyStore.update({
-      where: { id: input.storeId },
-      data: {
-        name: input.shop.name || store.name,
-        shopifyShopGid: input.shop.id,
-        shopOwnerEmail: input.shop.email ?? store.shopOwnerEmail,
-        currencyCode: input.shop.currencyCode ?? store.currencyCode,
-        status: "active",
-        disconnectedAt: null,
-        lastSyncedAt: input.syncedAt,
-        metadata: toPrismaJson({
-          ...(isRecord(store.metadata) ? store.metadata : {}),
-          lastConnectionVerifiedAt: input.syncedAt.toISOString(),
-          lastSync: {
+      if (!store) {
+        throw new Error(`Store ${input.storeId} was not found.`);
+      }
+
+      for (const product of input.products ?? []) {
+        await upsertProductSnapshot(tx, organizationId, input.storeId, product, input.syncedAt);
+      }
+
+      for (const collection of input.collections ?? []) {
+        await upsertCollectionSnapshot(tx, organizationId, input.storeId, collection, input.syncedAt);
+      }
+
+      for (const article of input.blogArticles) {
+        await upsertShopifyBlogArticle(tx, organizationId, store, article, input.blogs, input.syncedAt);
+      }
+
+      let blogMappingsUpdated = 0;
+      for (const localeConfig of store.localeConfigs) {
+        if (!localeConfig.shopifyBlogHandle) continue;
+        const matchedBlog = input.blogs.find((blog) => blog.handle === localeConfig.shopifyBlogHandle);
+        if (!matchedBlog) continue;
+
+        await tx.localeConfig.update({
+          where: { id: localeConfig.id },
+          data: {
+            shopifyBlogId: matchedBlog.id,
+            shopifyBlogHandle: matchedBlog.handle
+          }
+        });
+        blogMappingsUpdated += 1;
+      }
+
+      await tx.shopifyStore.update({
+        where: { id: input.storeId },
+        data: {
+          name: input.shop.name || store.name,
+          shopifyShopGid: input.shop.id,
+          shopOwnerEmail: input.shop.email ?? store.shopOwnerEmail,
+          currencyCode: input.shop.currencyCode ?? store.currencyCode,
+          status: "active",
+          disconnectedAt: null,
+          lastSyncedAt: input.syncedAt,
+          metadata: toPrismaJson({
+            ...(isRecord(store.metadata) ? store.metadata : {}),
+            lastConnectionVerifiedAt: input.syncedAt.toISOString(),
+            lastSync: {
+              products: input.products?.length ?? 0,
+              collections: input.collections?.length ?? 0,
+              blogs: input.blogs.length,
+              blogArticles: input.blogArticles.length,
+              productsCapped: input.productsCapped,
+              collectionsCapped: input.collectionsCapped,
+              blogArticlesCapped: input.blogArticlesCapped,
+              fullSync: input.fullSync,
+              limit: input.limit
+            }
+          })
+        }
+      });
+
+      await tx.publishLog.create({
+        data: {
+          organizationId,
+          storeId: input.storeId,
+          event: "succeeded",
+          level: "info",
+          message: "Shopify store resources synced.",
+          payload: toPrismaJson({
+            shopId: input.shop.id,
             products: input.products?.length ?? 0,
             collections: input.collections?.length ?? 0,
             blogs: input.blogs.length,
             blogArticles: input.blogArticles.length,
+            blogMappingsUpdated,
             productsCapped: input.productsCapped,
             collectionsCapped: input.collectionsCapped,
-            blogArticlesCapped: input.blogArticlesCapped,
-            fullSync: input.fullSync,
-            limit: input.limit
-          }
-        })
-      }
-    });
+            blogArticlesCapped: input.blogArticlesCapped
+          })
+        }
+      });
 
-    await tx.publishLog.create({
-      data: {
-        organizationId,
-        storeId: input.storeId,
-        event: "succeeded",
-        level: "info",
-        message: "Shopify store resources synced.",
-        payload: toPrismaJson({
-          shopId: input.shop.id,
-          products: input.products?.length ?? 0,
-          collections: input.collections?.length ?? 0,
-          blogs: input.blogs.length,
-          blogArticles: input.blogArticles.length,
-          blogMappingsUpdated,
-          productsCapped: input.productsCapped,
-          collectionsCapped: input.collectionsCapped,
-          blogArticlesCapped: input.blogArticlesCapped
-        })
-      }
-    });
+      await tx.auditLog.create({
+        data: {
+          organizationId,
+          storeId: input.storeId,
+          userId: requestContext.requestedByUserId,
+          action: "sync",
+          entityType: "shopify_store",
+          entityId: input.storeId,
+          ipAddress: requestContext.ipAddress,
+          userAgent: requestContext.userAgent,
+          metadata: toPrismaJson({
+            mode: "immediate_shopify_graphql",
+            shopId: input.shop.id,
+            products: input.products?.length ?? 0,
+            collections: input.collections?.length ?? 0,
+            blogs: input.blogs.length,
+            blogArticles: input.blogArticles.length,
+            blogMappingsUpdated
+          })
+        }
+      });
 
-    await tx.auditLog.create({
-      data: {
-        organizationId,
-        storeId: input.storeId,
-        userId: requestContext.requestedByUserId,
-        action: "sync",
-        entityType: "shopify_store",
-        entityId: input.storeId,
-        ipAddress: requestContext.ipAddress,
-        userAgent: requestContext.userAgent,
-        metadata: toPrismaJson({
-          mode: "immediate_shopify_graphql",
-          shopId: input.shop.id,
-          products: input.products?.length ?? 0,
-          collections: input.collections?.length ?? 0,
-          blogs: input.blogs.length,
-          blogArticles: input.blogArticles.length,
-          blogMappingsUpdated
-        })
-      }
-    });
-
-    const refreshedStore = await tx.shopifyStore.findFirstOrThrow({
-      where: { id: input.storeId, organizationId },
-      include: {
-        _count: {
-          select: {
-            productSnapshots: true,
-            collectionSnapshots: true,
-            articles: true,
-            campaigns: true
+      const refreshedStore = await tx.shopifyStore.findFirstOrThrow({
+        where: { id: input.storeId, organizationId },
+        include: {
+          _count: {
+            select: {
+              productSnapshots: true,
+              collectionSnapshots: true,
+              articles: true,
+              campaigns: true
+            }
           }
         }
-      }
-    });
+      });
 
-    return {
-      store: refreshedStore,
-      productsSynced: input.products?.length ?? 0,
-      collectionsSynced: input.collections?.length ?? 0,
-      blogsSynced: input.blogs.length,
-      blogArticlesSynced: input.blogArticles.length,
-      blogMappingsUpdated,
-      productsCapped: input.productsCapped,
-      collectionsCapped: input.collectionsCapped,
-      blogArticlesCapped: input.blogArticlesCapped
-    };
-  });
+      return {
+        store: refreshedStore,
+        productsSynced: input.products?.length ?? 0,
+        collectionsSynced: input.collections?.length ?? 0,
+        blogsSynced: input.blogs.length,
+        blogArticlesSynced: input.blogArticles.length,
+        blogMappingsUpdated,
+        productsCapped: input.productsCapped,
+        collectionsCapped: input.collectionsCapped,
+        blogArticlesCapped: input.blogArticlesCapped
+      };
+    },
+    { maxWait: 10000, timeout: 120000 }
+  );
 }
 
 export async function recordStoreSyncFailure(

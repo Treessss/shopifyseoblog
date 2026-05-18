@@ -1028,17 +1028,33 @@ function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceC
   const existingUrls = extractArticleLinkUrls(article.bodyHtml);
   const missingLinks = links.filter((link) => !existingUrls.has(normalizeInternalLinkUrl(link.url)));
   if (missingLinks.length === 0) return article;
-  if (existingUrls.size > 0 && hasRelatedLinksSection(article.bodyHtml)) return article;
 
-  const list = missingLinks
-    .map((link) => `<li><a href="${escapeHtml(link.url)}">${escapeHtml(link.anchor ?? link.title)}</a></li>`)
-    .join("");
+  const list = renderInternalLinkItems(missingLinks);
+  const bodyWithUpdatedLinks = appendLinksToRelatedSection(article.bodyHtml, list);
+  if (bodyWithUpdatedLinks !== article.bodyHtml) {
+    return {
+      ...article,
+      bodyHtml: bodyWithUpdatedLinks
+    };
+  }
+
   const heading = article.locale === "zh-CN" ? "相关商品与延伸阅读" : "Related products and reading";
 
   return {
     ...article,
     bodyHtml: `${article.bodyHtml}<section><h2>${heading}</h2><ul>${list}</ul></section>`
   };
+}
+
+function renderInternalLinkItems(links: InternalLinkCandidate[]): string {
+  return links.map((link) => `<li><a href="${escapeHtml(link.url)}">${escapeHtml(link.anchor ?? link.title)}</a></li>`).join("");
+}
+
+function appendLinksToRelatedSection(bodyHtml: string, listItems: string): string {
+  const pattern =
+    /(<section\b[^>]*>\s*<h2\b[^>]*>\s*(?:相关商品与延伸阅读|继续了解|Related products and reading|Keep exploring)\s*<\/h2>\s*<ul\b[^>]*>)([\s\S]*?)(<\/ul>\s*<\/section>)/i;
+  if (!pattern.test(bodyHtml)) return bodyHtml;
+  return bodyHtml.replace(pattern, (_match, before: string, currentItems: string, after: string) => `${before}${currentItems}${listItems}${after}`);
 }
 
 function extractArticleLinkUrls(bodyHtml: string): Set<string> {
@@ -1049,12 +1065,6 @@ function extractArticleLinkUrls(bodyHtml: string): Set<string> {
     if (url) urls.add(url);
   }
   return urls;
-}
-
-function hasRelatedLinksSection(bodyHtml: string): boolean {
-  return /<(h2|h3)\b[^>]*>\s*(相关商品与延伸阅读|继续了解|Related products and reading|Keep exploring)\s*<\/\1>/i.test(
-    bodyHtml
-  );
 }
 
 async function maybeGenerateArticleImage(
@@ -2280,7 +2290,17 @@ async function loadInternalLinks(
   const limit = config.maxLinks ?? 4;
   const strategy = config.strategy ?? "auto";
   const queryLimit = Math.max(limit * 2, 6);
-  const [products, collections, articles] = await Promise.all([
+  const includeProducts = strategy !== "collection" && strategy !== "article";
+  const [sourceProduct, products, collections, articles] = await Promise.all([
+    includeProducts && sourceType === "product" && sourceId
+      ? prisma.productSnapshot.findFirst({
+          where: {
+            storeId,
+            OR: [{ shopifyProductId: sourceId }, { id: sourceId }, { handle: sourceId }]
+          },
+          orderBy: { syncedAt: "desc" }
+        })
+      : Promise.resolve(null),
     strategy === "collection" || strategy === "article"
       ? Promise.resolve([])
       : prisma.productSnapshot.findMany({
@@ -2315,6 +2335,17 @@ async function loadInternalLinks(
         })
   ]);
 
+  const sourceProductLinks = sourceProduct
+    ? [
+        {
+          title: sourceProduct.title,
+          url: `https://${shopDomain}/products/${sourceProduct.handle}`,
+          type: "product" as const,
+          anchor: sourceProduct.seoTitle ?? sourceProduct.title,
+          reason: sourceProduct.productType || "Primary product page"
+        }
+      ]
+    : [];
   const productLinks = products.map((product) => ({
     title: product.title,
     url: `https://${shopDomain}/products/${product.handle}`,
@@ -2335,7 +2366,7 @@ async function loadInternalLinks(
     anchor: article.title ?? article.primaryKeyword ?? "Related article"
   }));
 
-  return mixInternalLinkCandidates([productLinks, collectionLinks, articleLinks], limit);
+  return mixInternalLinkCandidates([sourceProductLinks, collectionLinks, articleLinks, productLinks], limit);
 }
 
 function mixInternalLinkCandidates(groups: InternalLinkCandidate[][], limit: number): InternalLinkCandidate[] {
