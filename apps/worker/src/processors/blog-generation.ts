@@ -10,6 +10,7 @@ import {
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
   selectTopicCandidate,
+  type TopicHistoryItem,
   type TopicSelectionResult,
   type TrendSignal
 } from "@shopify-ai-blog/content-engine";
@@ -492,9 +493,16 @@ async function generateArticleWithAi(
         draftPrompt: pipelineResult.artifacts.prompts.draftPrompt,
         sourceContext: context
       }),
+      context.recentTopics?.length
+        ? [
+            "Do not repeat or lightly rewrite these previous topics/titles from this store and language:",
+            JSON.stringify(context.recentTopics.slice(0, 16))
+          ].join("\n")
+        : "",
       "Required quality policy:",
       JSON.stringify(input.generationConfig?.qualityGate ?? {}),
       "Create a fresh editorial title and section flow from the selected topic, product context, trend evidence, and keyword evidence.",
+      "The article title must be meaningfully different from previous topics and titles, not just a synonym swap.",
       "Never use these title formulas: 'Guide: Choosing, Using, and Optimizing ...', 'How to Choose, Use, and Style ...', or '[keyword] Guide'.",
       "Do not use the internal campaign/task name as article topic or title.",
       "Do not try to evade AI detectors. Instead, make the article specific, evidence-aware, varied in rhythm, useful to shoppers, and free of generic template phrases."
@@ -1187,9 +1195,10 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
   const sourceId = campaign?.sourceId ?? article?.sourceId ?? data.sourceId;
   const generationConfig = resolveGenerationConfig(data.generationConfig, campaign?.metadata);
   const initialTopic = firstNonBlank(campaign?.topic, article?.title, data.topic);
-  const [brandVoice, requestedSourceContext] = await Promise.all([
+  const [brandVoice, requestedSourceContext, recentTopics] = await Promise.all([
     loadBrandVoice(data.organizationId, data.storeId, locale, campaign?.brandVoice),
-    loadSourceContext(data.storeId, sourceType, sourceId)
+    loadSourceContext(data.storeId, sourceType, sourceId),
+    loadRecentTopicHistory(data.organizationId, data.storeId, locale, campaign?.id ?? data.campaignId)
   ]);
   const baseSourceContext =
     shouldAutoDiscoverTopic(generationConfig, initialTopic) && !hasCatalogContext(requestedSourceContext)
@@ -1209,6 +1218,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     ...baseSourceContext,
     topic: topicSeed,
     seedKeywords,
+    recentTopics,
     generationConfig
   } satisfies ContentSourceContext;
   const [trendSignals, internalLinks, imageReferences] = await Promise.all([
@@ -1301,6 +1311,101 @@ function resolveSeedKeywords(data: BlogGenerationJobData, campaign: GenerationCa
     .filter(Boolean);
 
   return keywords.length ? Array.from(new Set(keywords)) : undefined;
+}
+
+async function loadRecentTopicHistory(
+  organizationId: string,
+  storeId: string,
+  locale: string,
+  campaignId?: string
+): Promise<TopicHistoryItem[]> {
+  const [campaigns, articles] = await Promise.all([
+    prisma.blogCampaign.findMany({
+      where: {
+        organizationId,
+        storeId,
+        locale,
+        ...(campaignId ? { id: { not: campaignId } } : {}),
+        topic: {
+          not: null
+        }
+      },
+      select: {
+        topic: true,
+        sourceType: true,
+        sourceId: true,
+        primaryKeyword: true,
+        createdAt: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: 40
+    }),
+    prisma.blogArticle.findMany({
+      where: {
+        organizationId,
+        storeId,
+        locale,
+        ...(campaignId ? { NOT: { campaignId } } : {}),
+        title: {
+          not: null
+        }
+      },
+      select: {
+        title: true,
+        sourceType: true,
+        sourceId: true,
+        primaryKeyword: true,
+        createdAt: true
+      },
+      orderBy: {
+        createdAt: "desc"
+      },
+      take: 60
+    })
+  ]);
+
+  return dedupeTopicHistory([
+    ...campaigns.map((campaign) => ({
+      topic: campaign.topic ?? undefined,
+      sourceType: campaign.sourceType,
+      sourceId: campaign.sourceId ?? undefined,
+      primaryKeyword: campaign.primaryKeyword ?? undefined,
+      createdAt: campaign.createdAt.toISOString()
+    })),
+    ...articles.map((article) => ({
+      title: article.title ?? undefined,
+      sourceType: article.sourceType,
+      sourceId: article.sourceId ?? undefined,
+      primaryKeyword: article.primaryKeyword ?? undefined,
+      createdAt: article.createdAt.toISOString()
+    }))
+  ]).slice(0, 60);
+}
+
+function dedupeTopicHistory(items: TopicHistoryItem[]): TopicHistoryItem[] {
+  const seen = new Set<string>();
+  const output: TopicHistoryItem[] = [];
+
+  for (const item of items) {
+    const key = normalizeHistoryKey(firstNonBlank(item.topic, item.title));
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+
+  return output;
+}
+
+function normalizeHistoryKey(value: string | undefined): string {
+  return (
+    value
+      ?.toLowerCase()
+      .replace(/[^\p{L}\p{N}]+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim() ?? ""
+  );
 }
 
 function shouldAutoDiscoverTopic(generationConfig: GenerationConfig | undefined, explicitTopic: string | null | undefined): boolean {

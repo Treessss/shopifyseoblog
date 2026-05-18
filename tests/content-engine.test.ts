@@ -282,6 +282,86 @@ describe("content engine", () => {
     expect(selection.selected.topic).not.toContain("How to choose :");
   });
 
+  it("avoids recently used topics when automatic discovery repeats the same product", () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Shopify blog topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 4,
+          preferTrendSignals: true
+        }
+      }
+    };
+    const repeatedTopic = "How to choose Cross and Heart iPhone Phone Case: use cases, materials, and pairing ideas";
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/2",
+        title: "Cross and Heart iPhone Phone Case",
+        productType: "",
+        vendor: "Caseease",
+        tags: ["iphone", "heart"],
+        imageUrls: []
+      },
+      recentTopics: [
+        { topic: repeatedTopic },
+        { title: "Cross and Heart iPhone Phone Case: Fit, Style, and Everyday Use" }
+      ],
+      generationConfig: input.generationConfig
+    });
+
+    expect(selection.selected.topic).not.toBe(repeatedTopic);
+    expect(selection.candidates.every((candidate) => candidate.topic !== repeatedTopic)).toBe(true);
+    expect(selection.selected.reasons.join(" ")).toMatch(/fresh|non-repeating|scenario/i);
+  });
+
+  it("falls back to a fresh scenario when all evergreen angles were already used", () => {
+    const keyword = "Cross and Heart iPhone Phone Case";
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Shopify blog topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 4
+        }
+      }
+    };
+    const usedTopics = [
+      `How to choose ${keyword}: use cases, materials, and pairing ideas`,
+      `${keyword}: who this product is really for`,
+      `${keyword} styling ideas for commuting, gifting, and everyday outfits`,
+      `${keyword} vs. other similar options: protection, feel, and design differences`,
+      `${keyword} pre-purchase checklist: compatibility, care, and daily use`,
+      `similar options buying mistakes: when ${keyword} may not be the best fit`,
+      `${keyword} gift ideas: matching style, protection, and personality`,
+      `this product detail review: what shoppers should notice before buying`
+    ];
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/2",
+        title: keyword,
+        productType: "",
+        vendor: "Caseease",
+        tags: ["iphone", "heart"],
+        imageUrls: []
+      },
+      recentTopics: usedTopics.map((topic) => ({ topic })),
+      generationConfig: input.generationConfig
+    });
+
+    expect(usedTopics).not.toContain(selection.selected.topic);
+    expect(selection.selected.topic).toContain("for daily commutes");
+    expect(selection.selected.reasons).toContain("fallback fresh scenario angle");
+  });
+
   it("flags repetitive template-like writing as an editorial quality risk", async () => {
     const input: NormalizedContentPipelineInput = {
       locale: "en-US",

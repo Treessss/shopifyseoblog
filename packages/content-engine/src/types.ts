@@ -78,6 +78,15 @@ export interface TopicSelectionResult {
   candidates: TopicCandidate[];
 }
 
+export interface TopicHistoryItem {
+  topic?: string;
+  title?: string;
+  primaryKeyword?: string;
+  sourceType?: SourceType;
+  sourceId?: string;
+  createdAt?: string;
+}
+
 export interface ContentSourceContext {
   product?: ProductContext;
   collection?: CollectionContext;
@@ -90,6 +99,7 @@ export interface ContentSourceContext {
   imageReferences?: ImageReference[];
   keywordEvidence?: KeywordEvidenceItem[];
   topicSelection?: TopicSelectionResult;
+  recentTopics?: TopicHistoryItem[];
   generationConfig?: GenerationConfig;
 }
 

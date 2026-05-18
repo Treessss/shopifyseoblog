@@ -685,6 +685,7 @@ export function selectTopicCandidate(
     ) ?? "Shopify blog topic"
   );
   const category = cleanKeyword(firstNonBlank(context.product?.productType, context.collection?.title, keyword) ?? keyword);
+  const usedTopics = topicHistoryValues(context);
   const candidates: TopicCandidate[] = [];
 
   if (input.topic && context.generationConfig?.topicDiscovery?.enabled === false) {
@@ -712,43 +713,107 @@ export function selectTopicCandidate(
     });
   }
 
-  candidates.push({
-    topic:
-      locale === "zh-CN"
-        ? `${keyword}购买前怎么选：场景、材质与搭配指南`
-        : `How to choose ${keyword}: use cases, materials, and pairing ideas`,
-    primaryKeyword: keyword,
-    score: context.product || context.collection ? 74 : 62,
-    reasons: ["stable product/category evergreen topic", "built from Shopify catalog context"],
-    evidence: evidence.filter((item) => item.type !== "trend").slice(0, 6)
-  });
-
-  candidates.push({
-    topic:
-      locale === "zh-CN"
-        ? `${keyword}常见问题：从搜索意图到下单前检查`
-        : `${keyword} FAQs: from search intent to pre-purchase checks`,
-    primaryKeyword: keyword,
-    score: 69,
-    reasons: ["SEO informational angle", "supports long-tail keyword coverage"],
-    evidence: evidence.slice(0, 6)
-  });
+  candidates.push(...evergreenTopicCandidates(keyword, category, locale, context, evidence));
 
   const sorted = uniqueTopicCandidates(candidates)
     .filter((candidate) => candidate.score >= (context.generationConfig?.topicDiscovery?.minEvidenceScore ?? 0))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxCandidates);
-  const selected = sorted[0] ?? {
-    topic: input.topic,
+    .sort((a, b) => b.score - a.score);
+  const novel = sorted.filter((candidate) => !isRepeatedTopic(candidate.topic, usedTopics));
+  const visibleCandidates = novel.slice(0, maxCandidates);
+  const selected = visibleCandidates[0] ?? fallbackNovelTopic(input.topic, keyword, category, locale, usedTopics, evidence);
+
+  return {
+    selected,
+    candidates: visibleCandidates.length ? visibleCandidates : [selected]
+  };
+}
+
+function evergreenTopicCandidates(
+  keyword: string,
+  category: string,
+  locale: SupportedLocale,
+  context: ContentSourceContext,
+  evidence: KeywordEvidenceItem[]
+): TopicCandidate[] {
+  const baseScore = context.product || context.collection ? 74 : 62;
+  const productTitle = context.product?.title;
+  const collectionTitle = context.collection?.title;
+  const anchor = firstNonBlank(productTitle, collectionTitle, keyword) ?? keyword;
+  const anchorLabel = sameMeaningText(anchor, keyword) ? (locale === "zh-CN" ? "这款产品" : "this product") : anchor;
+  const categoryLabel = sameMeaningText(category, keyword) ? (locale === "zh-CN" ? "同类商品" : "similar options") : category;
+  const nonTrendEvidence = evidence.filter((item) => item.type !== "trend").slice(0, 6);
+
+  const variants =
+    locale === "zh-CN"
+      ? [
+          `${keyword}购买前怎么选：场景、材质与搭配指南`,
+          `${keyword}适合谁：从${anchorLabel}看真实使用场景`,
+          `${keyword}搭配灵感：通勤、礼物和日常风格怎么选`,
+          `${keyword}和其他${categoryLabel}怎么比：保护、手感与外观差异`,
+          `${keyword}下单前检查清单：兼容性、维护和长期使用`,
+          `${categoryLabel}选购误区：什么时候${keyword}不是最佳选择`,
+          `${keyword}礼物选题：如何匹配风格、保护和个性`,
+          `${anchorLabel}细节拆解：哪些设计会影响长期体验`
+        ]
+      : [
+          `How to choose ${keyword}: use cases, materials, and pairing ideas`,
+          `${keyword}: who ${anchorLabel} is really for`,
+          `${keyword} styling ideas for commuting, gifting, and everyday outfits`,
+          `${keyword} vs. other ${categoryLabel}: protection, feel, and design differences`,
+          `${keyword} pre-purchase checklist: compatibility, care, and daily use`,
+          `${categoryLabel} buying mistakes: when ${keyword} may not be the best fit`,
+          `${keyword} gift ideas: matching style, protection, and personality`,
+          `${anchorLabel} detail review: what shoppers should notice before buying`
+        ];
+
+  return variants.map((topic, index) => ({
+    topic,
+    primaryKeyword: keyword,
+    score: Math.max(50, baseScore - index),
+    reasons: [
+      index === 0 ? "stable product/category evergreen topic" : "fresh non-repeating evergreen angle",
+      "built from Shopify catalog context"
+    ],
+    evidence: index % 2 === 0 ? nonTrendEvidence : evidence.slice(0, 6)
+  }));
+}
+
+function fallbackNovelTopic(
+  inputTopic: string | undefined,
+  keyword: string,
+  category: string,
+  locale: SupportedLocale,
+  usedTopics: string[],
+  evidence: KeywordEvidenceItem[]
+): TopicCandidate {
+  const categoryLabel = sameMeaningText(category, keyword) ? (locale === "zh-CN" ? "同类商品" : "similar options") : category;
+  const scenarios =
+    locale === "zh-CN"
+      ? ["通勤场景", "礼物场景", "旅行场景", "学生日常", "办公桌面", "周末出行", "极简搭配", "街头穿搭"]
+      : ["daily commutes", "gift shoppers", "travel days", "student routines", "desk setups", "weekend plans", "minimalist outfits", "streetwear looks"];
+
+  for (const scenario of scenarios) {
+    const topic =
+      locale === "zh-CN"
+        ? `${keyword}在${scenario}里怎么选：${categoryLabel}的细节、风险和搭配`
+        : `${keyword} for ${scenario}: ${categoryLabel} details, tradeoffs, and styling checks`;
+    if (!isRepeatedTopic(topic, usedTopics)) {
+      return {
+        topic,
+        primaryKeyword: keyword,
+        score: 52,
+        reasons: ["fallback fresh scenario angle", "avoids recently used topics"],
+        evidence: evidence.slice(0, 6)
+      };
+    }
+  }
+
+  return {
+    topic: inputTopic ?? (locale === "zh-CN" ? `${keyword}新选题：${categoryLabel}使用场景拆解` : `${keyword} fresh angle: ${categoryLabel} use-case breakdown`),
     primaryKeyword: keyword,
     score: 50,
     reasons: ["fallback topic"],
     evidence: evidence.slice(0, 6)
-  };
-
-  return {
-    selected,
-    candidates: sorted.length ? sorted : [selected]
   };
 }
 
@@ -921,6 +986,100 @@ function uniqueTopicCandidates(items: TopicCandidate[]): TopicCandidate[] {
   }
   return output;
 }
+
+function topicHistoryValues(context: ContentSourceContext): string[] {
+  return unique([
+    ...(context.recentTopics ?? []).flatMap((item) => [item.topic, item.title]),
+    ...(context.competitorTitles ?? [])
+  ]);
+}
+
+function isRepeatedTopic(topic: string, usedTopics: string[]): boolean {
+  const candidate = topicFingerprint(topic);
+  if (!candidate.normalized) return false;
+
+  return usedTopics.some((used) => {
+    const historical = topicFingerprint(used);
+    if (!historical.normalized) return false;
+    if (candidate.normalized === historical.normalized) return true;
+    if (candidate.normalized.includes(historical.normalized) || historical.normalized.includes(candidate.normalized)) return true;
+    return tokenSimilarity(candidate.tokens, historical.tokens) >= 0.78;
+  });
+}
+
+function sameMeaningText(left: string, right: string): boolean {
+  const leftFingerprint = topicFingerprint(left);
+  const rightFingerprint = topicFingerprint(right);
+  return Boolean(leftFingerprint.normalized && leftFingerprint.normalized === rightFingerprint.normalized);
+}
+
+function topicFingerprint(value: string): { normalized: string; tokens: string[] } {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const wordTokens = normalized
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 1 && !topicStopWords.has(token));
+  const cjkChars = normalized.match(/[\u3400-\u9fff]/g) ?? [];
+  const cjkTokens = cjkChars.length >= 4 ? cjkChars.slice(0, 60) : [];
+  return {
+    normalized,
+    tokens: unique([...wordTokens, ...cjkTokens])
+  };
+}
+
+function tokenSimilarity(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) return 0;
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  let intersection = 0;
+  for (const token of leftSet) {
+    if (rightSet.has(token)) intersection += 1;
+  }
+  const union = new Set([...leftSet, ...rightSet]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+const topicStopWords = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "your",
+  "you",
+  "how",
+  "what",
+  "why",
+  "when",
+  "who",
+  "use",
+  "uses",
+  "using",
+  "choose",
+  "guide",
+  "ideas",
+  "tips",
+  "faq",
+  "faqs",
+  "check",
+  "checks",
+  "before",
+  "buy",
+  "buying",
+  "选题",
+  "指南",
+  "怎么",
+  "如何",
+  "购买",
+  "选购",
+  "使用",
+  "建议",
+  "常见问题"
+]);
 
 function trafficBoost(traffic?: string): number {
   if (!traffic) return 0;
