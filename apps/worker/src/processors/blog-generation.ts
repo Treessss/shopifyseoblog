@@ -9,6 +9,7 @@ import {
   type ContentSourceContext,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
+  type KeywordEvidenceItem,
   type QualityGateResult,
   selectTopicCandidate,
   type TopicHistoryItem,
@@ -22,6 +23,8 @@ import {
   type GenerationConfig,
   type GeneratedArticle,
   type PublishPolicy,
+  type ProductOptionContext,
+  type ProductVariantContext,
   type SourceType,
   type SupportedLocale
 } from "@shopify-ai-blog/shared";
@@ -197,10 +200,13 @@ interface ProductSnapshotSourceRow {
   descriptionHtml: string | null;
   productType: string | null;
   vendor: string | null;
+  status: string | null;
   tags: string[];
   imageUrls: string[];
   seoTitle: string | null;
   seoDescription: string | null;
+  options: unknown;
+  variants: unknown;
 }
 
 interface CollectionSnapshotSourceRow {
@@ -557,7 +563,7 @@ async function generateArticleWithAi(
       JSON.stringify({
         outlinePrompt: pipelineResult.artifacts.prompts.outlinePrompt,
         draftPrompt: pipelineResult.artifacts.prompts.draftPrompt,
-        sourceContext: context
+        sourceContext: contextForAiEditing(context)
       }),
       context.recentTopics?.length
         ? [
@@ -568,6 +574,7 @@ async function generateArticleWithAi(
       "Required quality policy:",
       JSON.stringify(input.generationConfig?.qualityGate ?? {}),
       "Create a fresh editorial title and section flow from the selected topic, product context, trend evidence, and keyword evidence.",
+      "Use verified product facts, synced options, variants, SEO descriptions, images, and tags when available. If material, protection, compatibility, or fit details are missing, say they are not confirmed instead of guessing.",
       "The article title must be meaningfully different from previous topics and titles, not just a synonym swap.",
       "Never use these title formulas: 'Guide: Choosing, Using, and Optimizing ...', 'How to Choose, Use, and Style ...', or '[keyword] Guide'.",
       "Do not use the internal campaign/task name as article topic or title.",
@@ -762,6 +769,7 @@ async function reviewArticleForSearchTraffic(
       }),
       "Score means likelihood to earn non-brand organic search traffic, not just keyword stuffing.",
       "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, and weak product/category fit.",
+      "Ignore low-relevance trend evidence. Penalize the article if unrelated news or trend terms appear in the copy.",
       "Do not recommend tricks to evade AI detectors. Recommend evidence-aware, useful, specific editorial improvements.",
       JSON.stringify({
         stage,
@@ -771,9 +779,9 @@ async function reviewArticleForSearchTraffic(
         primaryKeyword: article.primaryKeyword,
         secondaryKeywords: article.secondaryKeywords,
         topicSelection: context.topicSelection,
-        keywordEvidence: context.keywordEvidence ?? pipelineResult.artifacts.keywordEvidence,
-        trendSignals: context.trendSignals?.slice(0, 6),
-        internalLinks: context.internalLinks?.slice(0, 6),
+        keywordEvidence: filterKeywordEvidence(context.keywordEvidence ?? pipelineResult.artifacts.keywordEvidence),
+        trendSignals: relevantTrendSignals(context).slice(0, 6),
+        internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], 6),
         product: context.product,
         collection: context.collection,
         recentTopics: context.recentTopics?.slice(0, 12),
@@ -834,13 +842,15 @@ async function reviseArticleForSearchTraffic(
       `Revision pass ${pass}. Improve the article based on this AI search review:`,
       JSON.stringify(review),
       "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
+      "Treat the revisionBrief as a checklist. Fix each item you can with the supplied evidence, and remove any unrelated trend/news terms.",
       "Keep the article in the same locale. Do not invent product facts, prices, discounts, testimonials, rankings, medical/legal claims, or unsupported statistics.",
+      "Use synced product options, variants, image context, SEO descriptions, and tags as facts. If important specs are missing, state that they are not confirmed and shift the angle to styling, gifting, cleaning, comparison, or shopper fit.",
       "Do not repeat old title formulas or create another generic guide. Do not use the campaign/task name as the title.",
       "Use semantic HTML sections with H2 headings and natural keyword placement.",
       JSON.stringify({
         sourceStrategy: pipelineResult.article,
         prompts: pipelineResult.artifacts.prompts,
-        sourceContext: context,
+        sourceContext: contextForAiEditing(context),
         currentArticle: article
       })
     ].join("\n\n"),
@@ -963,6 +973,41 @@ function articleForAiReview(article: GeneratedArticle) {
   };
 }
 
+function contextForAiEditing(context: ContentSourceContext): ContentSourceContext {
+  return {
+    ...context,
+    trendSignals: relevantTrendSignals(context).slice(0, 8),
+    internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4),
+    keywordEvidence: filterKeywordEvidence(context.keywordEvidence)
+  };
+}
+
+function relevantTrendSignals(context: ContentSourceContext): TrendSignal[] {
+  const hasCatalogAnchor = Boolean(context.product || context.collection || context.seedKeywords?.length);
+  const seen = new Set<string>();
+  const output: TrendSignal[] = [];
+
+  for (const signal of context.trendSignals ?? []) {
+    if (hasCatalogAnchor && typeof signal.relevanceScore === "number" && signal.relevanceScore <= 0) continue;
+    const key = (signal.url || signal.title).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(signal);
+  }
+
+  return output;
+}
+
+function filterKeywordEvidence(items: KeywordEvidenceItem[] | undefined): KeywordEvidenceItem[] | undefined {
+  if (!Array.isArray(items)) return items;
+
+  return items.filter((item) => {
+    if (item.type !== "trend") return true;
+    const relevance = item.relevanceScore;
+    return relevance === undefined || relevance > 0;
+  });
+}
+
 function stripHtmlForReview(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -978,11 +1023,14 @@ function clampPercent(value: number): number {
 }
 
 function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
-  const links = context.internalLinks?.slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4) ?? [];
+  const links = mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4);
   if (!context.generationConfig?.internalLinks?.enabled || links.length === 0) return article;
-  if (links.some((link) => article.bodyHtml.includes(link.url))) return article;
+  const existingUrls = extractArticleLinkUrls(article.bodyHtml);
+  const missingLinks = links.filter((link) => !existingUrls.has(normalizeInternalLinkUrl(link.url)));
+  if (missingLinks.length === 0) return article;
+  if (existingUrls.size > 0 && hasRelatedLinksSection(article.bodyHtml)) return article;
 
-  const list = links
+  const list = missingLinks
     .map((link) => `<li><a href="${escapeHtml(link.url)}">${escapeHtml(link.anchor ?? link.title)}</a></li>`)
     .join("");
   const heading = article.locale === "zh-CN" ? "相关商品与延伸阅读" : "Related products and reading";
@@ -991,6 +1039,22 @@ function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceC
     ...article,
     bodyHtml: `${article.bodyHtml}<section><h2>${heading}</h2><ul>${list}</ul></section>`
   };
+}
+
+function extractArticleLinkUrls(bodyHtml: string): Set<string> {
+  const urls = new Set<string>();
+  const pattern = /<a\b[^>]*\shref=["']([^"']+)["'][^>]*>/gi;
+  for (const match of bodyHtml.matchAll(pattern)) {
+    const url = normalizeInternalLinkUrl(match[1] ?? "");
+    if (url) urls.add(url);
+  }
+  return urls;
+}
+
+function hasRelatedLinksSection(bodyHtml: string): boolean {
+  return /<(h2|h3)\b[^>]*>\s*(相关商品与延伸阅读|继续了解|Related products and reading|Keep exploring)\s*<\/\1>/i.test(
+    bodyHtml
+  );
 }
 
 async function maybeGenerateArticleImage(
@@ -1637,7 +1701,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
       generationConfig,
       context: sourceContextBase
     }),
-    loadInternalLinks(store.myshopifyDomain, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig),
+    loadInternalLinks(store.myshopifyDomain, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig, data.articleId),
     loadImageReferences(data.storeId, sourceContextBase, generationConfig)
   ]);
   const enrichedContextBase = {
@@ -1962,6 +2026,9 @@ async function loadFallbackCatalogContext(
 }
 
 function productSourceContext(product: ProductSnapshotSourceRow): ContentSourceContext {
+  const options = normalizeProductOptions(product.options);
+  const variants = normalizeProductVariants(product.variants);
+
   return {
     product: {
       id: product.shopifyProductId,
@@ -1973,9 +2040,97 @@ function productSourceContext(product: ProductSnapshotSourceRow): ContentSourceC
       tags: product.tags ?? [],
       imageUrls: product.imageUrls ?? [],
       seoTitle: product.seoTitle ?? undefined,
-      seoDescription: product.seoDescription ?? undefined
+      seoDescription: product.seoDescription ?? undefined,
+      options,
+      variants,
+      facts: buildProductFacts(product, options, variants)
     }
   };
+}
+
+function normalizeProductOptions(value: unknown): ProductOptionContext[] {
+  if (!Array.isArray(value)) return [];
+
+  const output: ProductOptionContext[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const name = stringValue(item.name);
+    const values = stringArray(item.values);
+    if (!name || values.length === 0) continue;
+    output.push({
+      name,
+      values: uniqueStrings(values)
+    });
+  }
+  return output;
+}
+
+function normalizeProductVariants(value: unknown): ProductVariantContext[] {
+  if (!Array.isArray(value)) return [];
+
+  const output: ProductVariantContext[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const selectedOptions = Array.isArray(item.selectedOptions)
+      ? item.selectedOptions
+          .map((option) => {
+            if (!isRecord(option)) return undefined;
+            const name = stringValue(option.name);
+            const selectedValue = stringValue(option.value);
+            if (!name || !selectedValue) return undefined;
+            return {
+              name,
+              values: [selectedValue]
+            };
+          })
+          .filter((option): option is ProductOptionContext => Boolean(option))
+      : undefined;
+
+    output.push({
+      title: stringValue(item.title),
+      sku: stringValue(item.sku),
+      price: stringValue(item.price) ?? numberValue(item.price)?.toString(),
+      availableForSale: typeof item.availableForSale === "boolean" ? item.availableForSale : undefined,
+      selectedOptions
+    });
+  }
+  return output;
+}
+
+function buildProductFacts(
+  product: ProductSnapshotSourceRow,
+  options: ProductOptionContext[],
+  variants: ProductVariantContext[]
+): string[] {
+  const optionFacts = options.map((option) => `${option.name}: ${option.values.slice(0, 8).join(", ")}`);
+  const variantTitles = uniqueStrings(
+    variants
+      .map((variant) => variant.title)
+      .filter((title): title is string => Boolean(title && title.toLowerCase() !== "default title"))
+  ).slice(0, 6);
+  const prices = uniqueStrings(variants.map((variant) => variant.price).filter((price): price is string => Boolean(price))).slice(0, 4);
+  const skuCount = uniqueStrings(variants.map((variant) => variant.sku).filter((sku): sku is string => Boolean(sku))).length;
+  const availability =
+    variants.some((variant) => variant.availableForSale === true)
+      ? "At least one synced variant is available for sale"
+      : variants.length && variants.every((variant) => variant.availableForSale === false)
+        ? "All synced variants are unavailable for sale"
+        : undefined;
+
+  return uniqueStrings([
+    product.status ? `Shopify product status: ${product.status}` : undefined,
+    product.productType ? `Product type: ${product.productType}` : undefined,
+    product.vendor ? `Vendor: ${product.vendor}` : undefined,
+    product.seoTitle ? `SEO title: ${product.seoTitle}` : undefined,
+    product.seoDescription ? `SEO description: ${product.seoDescription}` : undefined,
+    product.tags.length ? `Tags: ${product.tags.slice(0, 8).join(", ")}` : undefined,
+    product.imageUrls.length ? `${product.imageUrls.length} synced product image(s)` : undefined,
+    ...optionFacts,
+    variantTitles.length ? `Variant titles: ${variantTitles.join(", ")}` : undefined,
+    prices.length ? `Variant price values: ${prices.join(", ")}` : undefined,
+    skuCount > 0 ? `${skuCount} synced SKU value(s)` : undefined,
+    availability
+  ]);
 }
 
 function collectionSourceContext(collection: CollectionSnapshotSourceRow): ContentSourceContext {
@@ -2116,13 +2271,15 @@ async function loadInternalLinks(
   storeId: string,
   sourceType: string,
   sourceId: string | null | undefined,
-  generationConfig: GenerationConfig | undefined
+  generationConfig: GenerationConfig | undefined,
+  articleId?: string
 ): Promise<InternalLinkCandidate[]> {
   const config = generationConfig?.internalLinks;
   if (!config?.enabled) return [];
 
   const limit = config.maxLinks ?? 4;
   const strategy = config.strategy ?? "auto";
+  const queryLimit = Math.max(limit * 2, 6);
   const [products, collections, articles] = await Promise.all([
     strategy === "collection" || strategy === "article"
       ? Promise.resolve([])
@@ -2132,7 +2289,7 @@ async function loadInternalLinks(
             shopifyProductId: sourceType === "product" && sourceId ? { not: sourceId } : undefined
           },
           orderBy: { syncedAt: "desc" },
-          take: limit
+          take: queryLimit
         }),
     strategy === "product" || strategy === "article"
       ? Promise.resolve([])
@@ -2142,42 +2299,74 @@ async function loadInternalLinks(
             shopifyCollectionId: sourceType === "collection" && sourceId ? { not: sourceId } : undefined
           },
           orderBy: { syncedAt: "desc" },
-          take: limit
+          take: queryLimit
         }),
     strategy === "product" || strategy === "collection"
       ? Promise.resolve([])
       : prisma.blogArticle.findMany({
           where: {
             storeId,
+            id: articleId ? { not: articleId } : undefined,
             status: "published",
             handle: { not: null }
           },
           orderBy: { publishedAt: "desc" },
-          take: limit
+          take: queryLimit
         })
   ]);
 
-  return [
-    ...products.map((product) => ({
-      title: product.title,
-      url: `https://${shopDomain}/products/${product.handle}`,
-      type: "product" as const,
-      anchor: product.seoTitle ?? product.title,
-      reason: product.productType ?? undefined
-    })),
-    ...collections.map((collection) => ({
-      title: collection.title,
-      url: `https://${shopDomain}/collections/${collection.handle}`,
-      type: "collection" as const,
-      anchor: collection.title
-    })),
-    ...articles.map((article) => ({
-      title: article.title ?? "Related article",
-      url: article.canonicalUrl ?? `https://${shopDomain}/blogs/news/${article.handle}`,
-      type: "article" as const,
-      anchor: article.title ?? article.primaryKeyword ?? "Related article"
-    }))
-  ].slice(0, limit);
+  const productLinks = products.map((product) => ({
+    title: product.title,
+    url: `https://${shopDomain}/products/${product.handle}`,
+    type: "product" as const,
+    anchor: product.seoTitle ?? product.title,
+    reason: product.productType ?? undefined
+  }));
+  const collectionLinks = collections.map((collection) => ({
+    title: collection.title,
+    url: `https://${shopDomain}/collections/${collection.handle}`,
+    type: "collection" as const,
+    anchor: collection.title
+  }));
+  const articleLinks = articles.map((article) => ({
+    title: article.title ?? "Related article",
+    url: article.canonicalUrl ?? `https://${shopDomain}/blogs/news/${article.handle}`,
+    type: "article" as const,
+    anchor: article.title ?? article.primaryKeyword ?? "Related article"
+  }));
+
+  return mixInternalLinkCandidates([productLinks, collectionLinks, articleLinks], limit);
+}
+
+function mixInternalLinkCandidates(groups: InternalLinkCandidate[][], limit: number): InternalLinkCandidate[] {
+  const seen = new Set<string>();
+  const output: InternalLinkCandidate[] = [];
+  const maxLength = Math.max(0, ...groups.map((group) => group.length));
+
+  for (let index = 0; index < maxLength && output.length < limit; index += 1) {
+    for (const group of groups) {
+      const candidate = group[index];
+      if (!candidate) continue;
+      const key = normalizeInternalLinkUrl(candidate.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      output.push(candidate);
+      if (output.length >= limit) break;
+    }
+  }
+
+  return output;
+}
+
+function normalizeInternalLinkUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    return `${url.hostname.toLowerCase()}${url.pathname.replace(/\/+$/g, "")}`;
+  } catch {
+    return value.trim().toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/g, "");
+  }
 }
 
 async function loadImageReferences(
@@ -2475,8 +2664,8 @@ function stringArray(value: unknown): string[] {
   return [];
 }
 
-function uniqueStrings(values: string[]): string[] {
-  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))));
 }
 
 function dedupeImageReferences(

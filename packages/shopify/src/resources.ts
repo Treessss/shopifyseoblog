@@ -32,6 +32,7 @@ export interface ShopifyProduct {
   descriptionHtml?: string;
   productType?: string;
   vendor?: string;
+  status?: string;
   tags: string[];
   updatedAt?: string;
   featuredImage?: {
@@ -48,6 +49,23 @@ export interface ShopifyProduct {
     title?: string;
     description?: string;
   };
+  options?: Array<{
+    name?: string;
+    values?: string[];
+  }>;
+  variants?: {
+    nodes?: Array<{
+      id?: string;
+      title?: string;
+      sku?: string | null;
+      price?: string;
+      availableForSale?: boolean;
+      selectedOptions?: Array<{
+        name?: string;
+        value?: string;
+      }>;
+    }>;
+  } | null;
 }
 
 export interface ShopifyCollection {
@@ -125,6 +143,7 @@ const PRODUCTS_QUERY = /* GraphQL */ `
           descriptionHtml
           productType
           vendor
+          status
           tags
           updatedAt
           featuredImage {
@@ -140,6 +159,23 @@ const PRODUCTS_QUERY = /* GraphQL */ `
           seo {
             title
             description
+          }
+          options {
+            name
+            values
+          }
+          variants(first: 20) {
+            nodes {
+              id
+              title
+              sku
+              price
+              availableForSale
+              selectedOptions {
+                name
+                value
+              }
+            }
           }
         }
       }

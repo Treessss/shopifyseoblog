@@ -251,6 +251,51 @@ describe("content engine", () => {
     expect(selection.selected.evidence.some((item) => item.type === "trend" && item.metric?.includes("traffic 50K+"))).toBe(true);
   });
 
+  it("filters unrelated zero-relevance trends from keyword evidence and topic selection", async () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Shopify blog topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      primaryKeyword: "cat phone case",
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 3,
+          preferTrendSignals: true
+        }
+      }
+    };
+    const context = {
+      product: {
+        id: "gid://shopify/Product/3",
+        title: "Fluffy White Cat Phone Case",
+        productType: "Phone Case",
+        vendor: "Caseease",
+        tags: ["cat", "pink"],
+        imageUrls: ["https://cdn.example.com/cat-case.png"]
+      },
+      trendSignals: [
+        {
+          title: "csk vs srh match score",
+          source: "Google Trends",
+          traffic: "500K+",
+          relevanceScore: 0
+        }
+      ],
+      generationConfig: input.generationConfig
+    };
+
+    const result = await runContentPipeline(input, context);
+    const selection = selectTopicCandidate(input, context);
+    const evidenceText = result.artifacts.keywords.evidence?.join(" ") ?? "";
+
+    expect(evidenceText).not.toContain("csk vs srh");
+    expect(selection.selected.topic).not.toContain("csk vs srh");
+    expect(result.article.secondaryKeywords.join(" ")).not.toContain("csk");
+  });
+
   it("skips blank catalog fields when selecting automatic topics", () => {
     const input: NormalizedContentPipelineInput = {
       locale: "en-US",

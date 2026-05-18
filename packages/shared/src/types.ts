@@ -20,6 +20,22 @@ export interface ProductContext {
   imageUrls: string[];
   seoTitle?: string;
   seoDescription?: string;
+  options?: ProductOptionContext[];
+  variants?: ProductVariantContext[];
+  facts?: string[];
+}
+
+export interface ProductOptionContext {
+  name: string;
+  values: string[];
+}
+
+export interface ProductVariantContext {
+  title?: string;
+  sku?: string;
+  price?: string;
+  availableForSale?: boolean;
+  selectedOptions?: ProductOptionContext[];
 }
 
 export interface BrandVoice {

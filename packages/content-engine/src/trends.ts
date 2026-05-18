@@ -43,6 +43,7 @@ export async function discoverTrendSignals(input: DiscoverTrendSignalsInput): Pr
 
   return rankTrendSignals(collected, query, input.context)
     .filter((signal) => withinLookback(signal.publishedAt, config.lookbackDays ?? 7))
+    .filter((signal) => passesRelevanceGate(signal, input.context))
     .slice(0, maxItems);
 }
 
@@ -123,7 +124,18 @@ function stripTags(value: string) {
 }
 
 function rankTrendSignals(signals: TrendSignal[], query: string, context?: ContentSourceContext) {
-  const terms = tokenSet([query, context?.product?.title, context?.product?.productType, context?.collection?.title].filter(Boolean).join(" "));
+  const terms = tokenSet(
+    [
+      query,
+      context?.product?.title,
+      context?.product?.productType,
+      context?.product?.tags?.join(" "),
+      context?.collection?.title,
+      context?.seedKeywords?.join(" ")
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
   const unique = new Map<string, TrendSignal>();
 
   for (const signal of signals) {
@@ -146,9 +158,38 @@ function tokenSet(value: string) {
       .toLowerCase()
       .replace(/[^\p{L}\p{N}\s-]/gu, " ")
       .split(/\s+/)
-      .filter((token) => token.length >= 3)
+      .filter((token) => token.length >= 3 && !trendStopWords.has(token))
   );
 }
+
+function passesRelevanceGate(signal: TrendSignal, context?: ContentSourceContext): boolean {
+  const hasCatalogAnchor = Boolean(context?.product || context?.collection || context?.seedKeywords?.length);
+  if (!hasCatalogAnchor) return true;
+  return (signal.relevanceScore ?? 0) > 0;
+}
+
+const trendStopWords = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "this",
+  "that",
+  "shop",
+  "guide",
+  "tips",
+  "trend",
+  "trends",
+  "blog",
+  "topic",
+  "best",
+  "new",
+  "how",
+  "choose",
+  "use",
+  "using"
+]);
 
 function withinLookback(value: string | undefined, lookbackDays: number) {
   if (!value) return true;

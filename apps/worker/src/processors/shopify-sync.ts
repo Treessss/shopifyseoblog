@@ -421,6 +421,7 @@ async function upsertProductSnapshot(
     descriptionHtml: product.descriptionHtml ?? product.description ?? null,
     productType: product.productType ?? null,
     vendor: product.vendor ?? null,
+    status: product.status ?? null,
     tags: product.tags ?? [],
     imageUrls: uniqueStrings([
       product.featuredImage?.url,
@@ -428,6 +429,8 @@ async function upsertProductSnapshot(
     ]),
     seoTitle: product.seo?.title ?? null,
     seoDescription: product.seo?.description ?? null,
+    options: toPrismaJson(product.options ?? []),
+    variants: toPrismaJson(product.variants?.nodes ?? []),
     raw: toPrismaJson(product),
     syncedAt
   };

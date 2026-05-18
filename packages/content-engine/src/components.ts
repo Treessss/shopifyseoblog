@@ -356,7 +356,7 @@ function resolveDraftAngle(
   const productTitle = context.product?.title;
   const collectionTitle = context.collection?.title;
   const category = firstNonBlank(context.product?.productType, collectionTitle, keywords.primaryKeyword) ?? keywords.primaryKeyword;
-  const trendTitle = context.trendSignals?.[0]?.title;
+  const trendTitle = usableTrendSignals(context)[0]?.title;
   const anchorLabel = firstNonBlank(productTitle, collectionTitle, category) ?? category;
   const themes: DraftAngle["theme"][] = trendTitle
     ? ["trend", "product_fit", "comparison", "care"]
@@ -499,11 +499,17 @@ function localeInstruction(locale: SupportedLocale): string {
 
 function productContextLine(context: ContentSourceContext): string {
   if (!context.product) return "";
-  return `Product context: ${context.product.title}; vendor ${context.product.vendor ?? "unknown"}; type ${context.product.productType ?? "unknown"}.`;
+  const facts = productFactLines(context).slice(0, 12);
+  return [
+    `Product context: ${context.product.title}; vendor ${context.product.vendor ?? "unknown"}; type ${context.product.productType ?? "unknown"}.`,
+    facts.length
+      ? `Verified product facts to use: ${facts.join(" | ")}. Mark missing specs as unknown instead of guessing.`
+      : "Verified product facts are limited; mark missing specs as unknown instead of guessing."
+  ].join(" ");
 }
 
 function trendContextLine(context: ContentSourceContext): string {
-  const signals = context.trendSignals?.slice(0, 5) ?? [];
+  const signals = usableTrendSignals(context).slice(0, 5);
   if (signals.length === 0) return "";
 
   return [
@@ -517,11 +523,11 @@ function trendContextLine(context: ContentSourceContext): string {
 
 function internalLinkInstruction(context: ContentSourceContext): string {
   if (context.generationConfig?.internalLinks?.enabled === false) return "";
-  const links = context.internalLinks?.slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4) ?? [];
+  const links = dedupeInternalLinks(context.internalLinks ?? []).slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4);
   if (links.length === 0) return "";
 
   return [
-    "Insert these internal links naturally where they help the reader:",
+    "Use these internal links only where they help the reader. Do not create a duplicate related-links block if one already exists:",
     ...links.map((link) => `- ${link.anchor ?? link.title}: ${link.url} (${link.type})`)
   ].join("\n");
 }
@@ -554,14 +560,14 @@ function imagePromptInstruction(context: ContentSourceContext): string {
 }
 
 function trendKeywordCandidates(context: ContentSourceContext): string[] {
-  return (context.trendSignals ?? [])
+  return usableTrendSignals(context)
     .flatMap((signal) => tokenizeSignal(signal.title))
     .filter((token) => token.length >= 3)
     .slice(0, 12);
 }
 
 function trendLongTailKeywords(primaryKeyword: string, context: ContentSourceContext, locale: SupportedLocale): string[] {
-  const signals = context.trendSignals?.slice(0, 3) ?? [];
+  const signals = usableTrendSignals(context).slice(0, 3);
   if (signals.length === 0) return [];
 
   if (locale === "zh-CN") {
@@ -605,7 +611,9 @@ export function buildKeywordEvidence(
       source: "Shopify product snapshot",
       label: context.product.productType ?? "Product",
       value: context.product.title,
-      snippet: [context.product.vendor, context.product.tags.slice(0, 4).join(", ")].filter(Boolean).join(" · "),
+      snippet: [context.product.vendor, context.product.tags.slice(0, 4).join(", "), ...productFactLines(context).slice(0, 4)]
+        .filter(Boolean)
+        .join(" · "),
       metric: context.product.imageUrls.length ? `${context.product.imageUrls.length} product images` : undefined,
       confidence: 82
     });
@@ -623,7 +631,7 @@ export function buildKeywordEvidence(
     });
   }
 
-  for (const signal of context.trendSignals?.slice(0, 6) ?? []) {
+  for (const signal of usableTrendSignals(context).slice(0, 6)) {
     evidence.push({
       type: "trend",
       source: signal.source || "trend feed",
@@ -638,7 +646,7 @@ export function buildKeywordEvidence(
     });
   }
 
-  for (const link of context.internalLinks?.slice(0, 4) ?? []) {
+  for (const link of dedupeInternalLinks(context.internalLinks ?? []).slice(0, 4)) {
     evidence.push({
       type: "internal_link",
       source: "store internal links",
@@ -698,7 +706,8 @@ export function selectTopicCandidate(
     });
   }
 
-  for (const signal of context.trendSignals?.slice(0, maxCandidates) ?? []) {
+  const trendCandidates = context.generationConfig?.topicDiscovery?.preferTrendSignals === false ? [] : usableTrendSignals(context);
+  for (const signal of trendCandidates.slice(0, maxCandidates)) {
     const signalEvidence = evidence.filter((item) => item.type === "trend" && item.value === signal.title);
     const topic =
       locale === "zh-CN"
@@ -818,7 +827,7 @@ function fallbackNovelTopic(
 }
 
 function relatedLinksHtml(context: ContentSourceContext, locale: SupportedLocale): string {
-  const links = context.internalLinks?.slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4) ?? [];
+  const links = dedupeInternalLinks(context.internalLinks ?? []).slice(0, context.generationConfig?.internalLinks?.maxLinks ?? 4);
   if (!context.generationConfig?.internalLinks?.enabled || links.length === 0) return "";
 
   const heading = locale === "zh-CN" ? "继续了解" : "Keep exploring";
@@ -846,7 +855,7 @@ function buildDetailedImagePrompt(
   const style = imageConfig?.promptStyle;
   const scene = imageConfig?.scenePrompt;
   const limit = imageConfig?.referenceImageLimit ?? context.generationConfig?.productImageReference?.maxImages ?? 6;
-  const trend = context.trendSignals?.[0]?.title;
+  const trend = usableTrendSignals(context)[0]?.title;
   const fusion =
     imageConfig?.fusionMode === "multi_product_fusion"
       ? locale === "zh-CN"
@@ -992,6 +1001,89 @@ function topicHistoryValues(context: ContentSourceContext): string[] {
     ...(context.recentTopics ?? []).flatMap((item) => [item.topic, item.title]),
     ...(context.competitorTitles ?? [])
   ]);
+}
+
+function usableTrendSignals(context: ContentSourceContext) {
+  const hasCatalogAnchor = Boolean(context.product || context.collection || context.seedKeywords?.length);
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["trendSignals"]> = [];
+
+  for (const signal of context.trendSignals ?? []) {
+    const relevance = signal.relevanceScore;
+    if (hasCatalogAnchor && typeof relevance === "number" && relevance <= 0) continue;
+    const key = (signal.url || signal.title).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(signal);
+  }
+
+  return output;
+}
+
+function dedupeInternalLinks(links: NonNullable<ContentSourceContext["internalLinks"]>) {
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["internalLinks"]> = [];
+
+  for (const link of links) {
+    const key = normalizeLinkUrl(link.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(link);
+  }
+
+  return output;
+}
+
+function normalizeLinkUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    url.search = "";
+    return `${url.hostname.toLowerCase()}${url.pathname.replace(/\/+$/g, "")}`;
+  } catch {
+    return value.trim().toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/g, "");
+  }
+}
+
+function productFactLines(context: ContentSourceContext): string[] {
+  const product = context.product;
+  if (!product) return [];
+
+  const optionFacts = (product.options ?? [])
+    .map((option) => {
+      const values = unique(option.values ?? []).slice(0, 8);
+      if (!option.name || values.length === 0) return undefined;
+      return `${option.name}: ${values.join(", ")}`;
+    })
+    .filter((item): item is string => Boolean(item));
+  const variantTitles = unique(
+    (product.variants ?? [])
+      .map((variant) => variant.title)
+      .filter((title) => title && title.toLowerCase() !== "default title")
+  ).slice(0, 6);
+  const prices = unique((product.variants ?? []).map((variant) => variant.price)).slice(0, 4);
+  const skuCount = unique((product.variants ?? []).map((variant) => variant.sku)).length;
+  const variantCount = product.variants?.length ?? 0;
+  const availability =
+    product.variants?.some((variant) => variant.availableForSale === true) === true
+      ? "At least one variant is available for sale"
+      : variantCount > 0 && product.variants?.every((variant) => variant.availableForSale === false) === true
+        ? "All synced variants are unavailable for sale"
+        : undefined;
+
+  return unique([
+    product.seoDescription ? `SEO description: ${product.seoDescription}` : undefined,
+    product.productType ? `Product type: ${product.productType}` : undefined,
+    product.vendor ? `Vendor: ${product.vendor}` : undefined,
+    product.tags.length ? `Tags: ${product.tags.slice(0, 8).join(", ")}` : undefined,
+    product.imageUrls.length ? `${product.imageUrls.length} synced product image(s)` : undefined,
+    ...optionFacts,
+    variantTitles.length ? `Variant titles: ${variantTitles.join(", ")}` : undefined,
+    prices.length ? `Synced variant price values: ${prices.join(", ")}` : undefined,
+    skuCount > 0 ? `${skuCount} synced SKU value(s)` : undefined,
+    availability,
+    ...(product.facts ?? [])
+  ]).map((fact) => fact.slice(0, 220));
 }
 
 function isRepeatedTopic(topic: string, usedTopics: string[]): boolean {

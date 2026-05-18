@@ -1349,10 +1349,16 @@ async function upsertProductSnapshot(
     descriptionHtml: product.descriptionHtml ?? product.description ?? null,
     productType: product.productType ?? null,
     vendor: product.vendor ?? null,
+    status: product.status ?? null,
     tags: product.tags ?? [],
-    imageUrls: product.featuredImage?.url ? [product.featuredImage.url] : [],
+    imageUrls: uniqueStrings([
+      product.featuredImage?.url,
+      ...(product.images?.nodes?.map((image) => image.url) ?? [])
+    ]),
     seoTitle: product.seo?.title ?? null,
     seoDescription: product.seo?.description ?? null,
+    options: toPrismaJson(product.options ?? []),
+    variants: toPrismaJson(product.variants?.nodes ?? []),
     raw: toPrismaJson(product),
     syncedAt
   };
@@ -1600,6 +1606,18 @@ function sanitizeJson(value: unknown, seen: WeakSet<object>): unknown {
 function fallbackHandle(prefix: string, shopifyId: string): string {
   const id = extractShopifySearchId(shopifyId) || String(hashString(shopifyId));
   return `${prefix}-${id}`.toLowerCase();
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(normalized);
+  }
+  return output;
 }
 
 function extractShopifySearchId(value: string): string {
