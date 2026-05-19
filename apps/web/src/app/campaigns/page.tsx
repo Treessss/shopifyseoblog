@@ -317,7 +317,7 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
               ]}
             />
             <Field label="最低 AI 搜索分" name="minTrafficScore" type="number" value={82} min={0} max={100} step={1} />
-            <Field label="自动改稿次数" name="maxRevisionPasses" type="number" value={1} min={0} max={2} step={1} />
+            <Field label="自动改稿次数" name="maxRevisionPasses" type="number" value={3} min={0} max={5} step={1} />
             <Field label="最低 SEO 分" name="minSeoScore" type="number" value={78} min={0} max={100} step={1} />
             <Field label="最低编辑质量分" name="minEditorialScore" type="number" value={72} min={0} max={100} step={1} />
             <SelectField

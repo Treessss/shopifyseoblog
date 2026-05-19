@@ -166,6 +166,15 @@ interface AiSearchReviewResult {
   strengths: string[];
   recommendations: string[];
   revisionBrief: string[];
+  actionItems: AiSearchActionItem[];
+}
+
+interface AiSearchActionItem {
+  priority: "critical" | "high" | "medium";
+  area: string;
+  issue: string;
+  concreteEdit: string;
+  acceptanceCheck: string;
 }
 
 interface AiSearchRevisionPass {
@@ -582,7 +591,7 @@ async function generateArticleWithAi(
       "Do not use the internal campaign/task name as article topic or title.",
       "Do not try to evade AI detectors. Instead, make the article specific, evidence-aware, varied in rhythm, useful to shoppers, and free of generic template phrases."
     ].join("\n\n"),
-    maxTokens: Math.max(1800, Math.min(5000, input.targetWordCount * 3)),
+    maxTokens: Math.max(2400, Math.min(8000, input.targetWordCount * 5)),
     responseFormat: { type: "json_object" }
   });
 
@@ -632,6 +641,15 @@ async function generateArticleWithAi(
   aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult).catch((error) =>
     recoverAiSearchReviewFailure(error, input, "final-review", aiSearchReview)
   );
+  if (aiSearchReview.revisedArticle) {
+    finalArticle = enforceInternalLinks(aiSearchReview.revisedArticle, context);
+    if (imageAsset?.publicUrl && !finalArticle.bodyHtml.includes(imageAsset.publicUrl)) {
+      finalArticle = {
+        ...finalArticle,
+        bodyHtml: injectImageFigure(finalArticle.bodyHtml, imageAsset.publicUrl, imageAsset.altText, input.generationConfig)
+      };
+    }
+  }
 
   const qualityInput = normalizeFinalQualityInput(input);
   const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
@@ -691,7 +709,7 @@ async function runAiSearchReviewWorkflow(
       pass,
       beforeScore: currentReview.score,
       afterScore: revisedReview.score,
-      recommendations: currentReview.recommendations,
+      recommendations: concreteReviewInstructions(currentReview),
       changes: revisedReview.strengths
     });
     currentArticle = revisedArticle;
@@ -722,25 +740,61 @@ async function finalizeAiSearchReviewWorkflow(
 ): Promise<{ workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle }> {
   if (!result.workflow) return result;
 
-  const finalReview = await reviewArticleForSearchTraffic(
+  let currentArticle = finalArticle;
+  let currentReview = await reviewArticleForSearchTraffic(
     client,
     provider,
-    finalArticle,
+    currentArticle,
     input,
     context,
     pipelineResult,
     "final-saved-article"
   );
+  const revisions = result.workflow.revisions.map((revision, index, allRevisions) =>
+    index === allRevisions.length - 1 ? { ...revision, afterScore: currentReview.score } : revision
+  );
+
+  for (let pass = revisions.length + 1; pass <= result.workflow.maxRevisionPasses; pass += 1) {
+    if (currentReview.score >= result.workflow.minTrafficScore) break;
+
+    const revisedArticle = await reviseArticleForSearchTraffic(
+      client,
+      provider,
+      currentArticle,
+      currentReview,
+      input,
+      context,
+      pipelineResult,
+      pass
+    );
+    currentArticle = enforceInternalLinks(revisedArticle, context);
+    const revisedReview = await reviewArticleForSearchTraffic(
+      client,
+      provider,
+      currentArticle,
+      input,
+      context,
+      pipelineResult,
+      `final-revision-${pass}`
+    );
+    revisions.push({
+      pass,
+      beforeScore: currentReview.score,
+      afterScore: revisedReview.score,
+      recommendations: concreteReviewInstructions(currentReview),
+      changes: revisedReview.strengths
+    });
+    currentReview = revisedReview;
+  }
 
   return {
     ...result,
     workflow: {
       ...result.workflow,
-      final: finalReview,
-      revisions: result.workflow.revisions.map((revision, index, revisions) =>
-        index === revisions.length - 1 ? { ...revision, afterScore: finalReview.score } : revision
-      )
-    }
+      final: currentReview,
+      revisions
+    },
+    revisedArticle: currentArticle !== finalArticle ? currentArticle : result.revisedArticle
   };
 }
 
@@ -771,10 +825,21 @@ async function reviewArticleForSearchTraffic(
         summary: "short reason for the score",
         strengths: ["specific strength"],
         recommendations: ["specific improvement that can be applied in the next edit"],
-        revisionBrief: ["concrete edit instruction"]
+        revisionBrief: ["concrete edit instruction"],
+        actionItems: [
+          {
+            priority: "critical",
+            area: "title | intro | section | internal links | facts | FAQ | conversion",
+            issue: "what is weak right now",
+            concreteEdit: "the exact section, table, paragraph, link, or FAQ to add/change",
+            acceptanceCheck: "how to verify the edit is complete"
+          }
+        ]
       }),
       "Score means likelihood to earn non-brand organic search traffic, not just keyword stuffing.",
       "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, and weak product/category fit.",
+      `If the score is below ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore}, return at least 5 actionItems. Each actionItem must be section-specific, directly editable, and include an acceptanceCheck. Avoid vague advice like 'add more detail'.`,
+      "Make revisionBrief an ordered checklist that an editor can apply immediately. Name the exact H2/table/FAQ/internal link/product fact to add or replace.",
       "Ignore low-relevance trend evidence. Penalize the article if unrelated news or trend terms appear in the copy.",
       "Do not recommend tricks to evade AI detectors. Recommend evidence-aware, useful, specific editorial improvements.",
       JSON.stringify({
@@ -796,7 +861,7 @@ async function reviewArticleForSearchTraffic(
         article: articleForAiReview(article)
       })
     ].join("\n\n"),
-    maxTokens: 1400,
+    maxTokens: 2200,
     responseFormat: { type: "json_object" }
   });
 
@@ -849,10 +914,16 @@ async function reviseArticleForSearchTraffic(
       }),
       `Revision pass ${pass}. Improve the article based on this AI search review:`,
       JSON.stringify(review),
+      `Target outcome: the revised article should be strong enough to score at least ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore} in the next AI search traffic review.`,
       "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
-      "Treat the revisionBrief as a checklist. Fix each item you can with the supplied evidence, and remove any unrelated trend/news terms.",
+      "Treat revisionBrief and actionItems as a required checklist. Satisfy every acceptanceCheck that can be satisfied with the supplied evidence, and remove unrelated trend/news terms.",
+      "Before returning, audit your own draft: if an actionItem asks for a section, table, FAQ, internal link, product fact box, comparison, or CTA, it must actually exist in bodyHtml.",
+      "When score is low because the article is generic, restructure heavily instead of making small wording changes.",
       "Keep the article in the same locale. Do not invent product facts, prices, discounts, testimonials, rankings, medical/legal claims, or unsupported statistics.",
       "Use synced product options, variants, image context, SEO descriptions, and tags as facts. If important specs are missing, state that they are not confirmed and shift the angle to styling, gifting, cleaning, comparison, or shopper fit.",
+      "If currentArticle already contains an image figure or generated image URL, preserve it unless it is broken or irrelevant.",
+      "For ecommerce product content, prefer concrete modules: verified facts table, variant/finish decision table, choose-this-if/skip-this-if section, contextual internal links, FAQ, and a complete buyer-facing conclusion.",
+      `Aim for ${Math.max(900, Math.round(input.targetWordCount * 0.85))}-${Math.round(input.targetWordCount * 1.15)} words unless the targetWordCount is lower. Do not end with an unfinished FAQ, heading, list, or sentence.`,
       "Do not repeat old title formulas or create another generic guide. Do not use the campaign/task name as the title.",
       "Use semantic HTML sections with H2 headings and natural keyword placement.",
       JSON.stringify({
@@ -861,7 +932,7 @@ async function reviseArticleForSearchTraffic(
         currentArticle: articleForAiRevision(article)
       })
     ].join("\n\n"),
-    maxTokens: Math.max(1800, Math.min(5000, input.targetWordCount * 3)),
+    maxTokens: Math.max(2400, Math.min(8000, input.targetWordCount * 5)),
     responseFormat: { type: "json_object" }
   });
 
@@ -930,7 +1001,7 @@ function resolveAiSearchReviewConfig(generationConfig: GenerationConfig | undefi
   return {
     enabled: config?.enabled !== false,
     minTrafficScore: clampPercent(config?.minTrafficScore ?? 82),
-    maxRevisionPasses: Math.max(0, Math.min(2, Math.round(config?.maxRevisionPasses ?? 1)))
+    maxRevisionPasses: Math.max(0, Math.min(5, Math.round(config?.maxRevisionPasses ?? 3)))
   };
 }
 
@@ -951,8 +1022,54 @@ function normalizeAiSearchReview(value: unknown, generationConfig: GenerationCon
     summary: stringValue(record.summary) ?? "AI search review completed.",
     strengths: stringArray(record.strengths).slice(0, 8),
     recommendations: stringArray(record.recommendations).slice(0, 10),
-    revisionBrief: stringArray(record.revisionBrief).slice(0, 10)
+    revisionBrief: stringArray(record.revisionBrief).slice(0, 10),
+    actionItems: normalizeAiSearchActionItems(record.actionItems, record.recommendations, record.revisionBrief).slice(0, 10)
   };
+}
+
+function normalizeAiSearchActionItems(
+  value: unknown,
+  recommendations: unknown,
+  revisionBrief: unknown
+): AiSearchActionItem[] {
+  const items = Array.isArray(value)
+    ? value.map((item) => {
+        if (!isRecord(item)) return undefined;
+        const priority = stringValue(item.priority);
+        const normalizedPriority: AiSearchActionItem["priority"] =
+          priority === "critical" || priority === "high" || priority === "medium" ? priority : "high";
+        const area = stringValue(item.area);
+        const issue = stringValue(item.issue);
+        const concreteEdit = stringValue(item.concreteEdit);
+        const acceptanceCheck = stringValue(item.acceptanceCheck);
+        if (!area || !issue || !concreteEdit) return undefined;
+        return {
+          priority: normalizedPriority,
+          area,
+          issue,
+          concreteEdit,
+          acceptanceCheck: acceptanceCheck ?? `确认 ${area} 已按修改点完成。`
+        };
+      })
+    : [];
+
+  const normalized = items.filter((item): item is AiSearchActionItem => Boolean(item));
+  if (normalized.length > 0) return normalized;
+
+  return [...stringArray(revisionBrief), ...stringArray(recommendations)].slice(0, 8).map((item) => ({
+    priority: "high",
+    area: "article",
+    issue: item,
+    concreteEdit: item,
+    acceptanceCheck: "文章中可以直接看到该修改点已经落地。"
+  }));
+}
+
+function concreteReviewInstructions(review: AiSearchReviewResult): string[] {
+  const actionItems = review.actionItems.map((item) =>
+    `${item.area}: ${item.concreteEdit} 验收: ${item.acceptanceCheck}`
+  );
+  return uniqueStrings([...actionItems, ...review.revisionBrief, ...review.recommendations]).slice(0, 12);
 }
 
 function averageReviewDimensions(record: Record<string, unknown>): number {
@@ -1139,7 +1256,16 @@ function unavailableAiSearchReview(input: ParsedGenerationInput, stage: string, 
     summary: `AI search traffic review was unavailable during ${stage}: ${message}`,
     strengths: [],
     recommendations: ["Retry AI scoring when the provider connection is stable, then apply the returned search-traffic recommendations."],
-    revisionBrief: ["Manual review required because the AI search traffic review did not complete."]
+    revisionBrief: ["Manual review required because the AI search traffic review did not complete."],
+    actionItems: [
+      {
+        priority: "critical",
+        area: "AI review",
+        issue: "AI search traffic review did not complete.",
+        concreteEdit: "Retry AI scoring when the provider connection is stable.",
+        acceptanceCheck: "The article has a completed AI search traffic score and concrete revision guidance."
+      }
+    ]
   };
 
   return {

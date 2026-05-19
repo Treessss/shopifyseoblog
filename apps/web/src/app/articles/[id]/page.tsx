@@ -39,6 +39,7 @@ export default async function ArticleReviewPage({ params }: PageProps) {
   const aiSearchFinal = asRecord(aiSearchReview.final);
   const aiSearchScore = numberValue(aiSearchFinal.score);
   const aiSearchRevisions = recordArray(aiSearchReview.revisions);
+  const aiSearchActionItems = recordArray(aiSearchFinal.actionItems);
   const topicSelection = generationMetadata.topicSelection;
   const keywordEvidence = generationMetadata.keywordEvidence;
   const evidenceSummary =
@@ -257,14 +258,19 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                       </dl>
                       <ScoreGrid review={aiSearchFinal} />
                       <TextList title="AI 判断" items={[stringValue(aiSearchFinal.summary)].filter(Boolean) as string[]} />
+                      <ActionItemList title="最终待优化点" items={aiSearchActionItems} />
                       <TextList title="提升建议" items={stringArray(aiSearchFinal.recommendations)} />
                       <TextList title="改稿指令" items={stringArray(aiSearchFinal.revisionBrief)} />
                       {aiSearchRevisions.length > 0 ? (
                         <div className="json-block">
                           {aiSearchRevisions.map((revision, index) => (
-                            <div key={index}>
-                              第 {numberValue(revision.pass) ?? index + 1} 次：{numberValue(revision.beforeScore) ?? "-"} →{" "}
-                              {numberValue(revision.afterScore) ?? "-"}
+                            <div key={index} className="stack">
+                              <strong>
+                                第 {numberValue(revision.pass) ?? index + 1} 次：{numberValue(revision.beforeScore) ?? "-"} →{" "}
+                                {numberValue(revision.afterScore) ?? "-"}
+                              </strong>
+                              <TextList title="本轮修改依据" items={stringArray(revision.recommendations)} />
+                              <TextList title="本轮改稿变化" items={stringArray(revision.changes)} />
                             </div>
                           ))}
                         </div>
@@ -354,6 +360,36 @@ function TextList({ title, items }: { title: string; items: string[] }) {
             {item}
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function ActionItemList({ title, items }: { title: string; items: Array<Record<string, unknown>> }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div>
+      <strong>{title}</strong>
+      <div className="json-block">
+        {items.map((item, index) => {
+          const priority = stringValue(item.priority) ?? "high";
+          const area = stringValue(item.area) ?? "文章";
+          const issue = stringValue(item.issue) ?? "暂无问题说明";
+          const concreteEdit = stringValue(item.concreteEdit) ?? "暂无具体改法";
+          const acceptanceCheck = stringValue(item.acceptanceCheck) ?? "确认修改已经落地。";
+
+          return (
+            <div key={`${area}-${index}`} className="stack">
+              <strong>
+                {index + 1}. [{priority}] {area}
+              </strong>
+              <div>问题：{issue}</div>
+              <div>改法：{concreteEdit}</div>
+              <div>验收：{acceptanceCheck}</div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

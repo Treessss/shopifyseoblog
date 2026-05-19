@@ -367,7 +367,7 @@ function parseGenerationConfig(body: Record<string, unknown>) {
     aiSearchReview: {
       enabled: booleanValue(body.aiSearchReviewEnabled, true),
       minTrafficScore: optionalInteger(body.minTrafficScore, "minTrafficScore", 0, 100) ?? 82,
-      maxRevisionPasses: optionalInteger(body.maxRevisionPasses, "maxRevisionPasses", 0, 2) ?? 1
+      maxRevisionPasses: optionalInteger(body.maxRevisionPasses, "maxRevisionPasses", 0, 5) ?? 3
     }
   };
 }

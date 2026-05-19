@@ -78,7 +78,7 @@ export const generationConfigSchema = z.object({
     .object({
       enabled: z.boolean().default(true),
       minTrafficScore: z.number().int().min(0).max(100).default(82),
-      maxRevisionPasses: z.number().int().min(0).max(2).default(1)
+      maxRevisionPasses: z.number().int().min(0).max(5).default(3)
     })
     .optional()
 });
