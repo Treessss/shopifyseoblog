@@ -1,5 +1,5 @@
 import type { Job } from "bullmq";
-import { createOpenAICompatibleClient, type GenerateImageResult, type GenerateTextResult } from "@shopify-ai-blog/ai";
+import { AIClientError, createOpenAICompatibleClient, type GenerateImageResult, type GenerateTextResult } from "@shopify-ai-blog/ai";
 import { maybeDecryptSecret, prisma } from "@shopify-ai-blog/db";
 import {
   defaultQualityGate,
@@ -183,6 +183,8 @@ interface AiSearchReviewWorkflow {
   initial: AiSearchReviewResult;
   final: AiSearchReviewResult;
   revisions: AiSearchRevisionPass[];
+  unavailable?: boolean;
+  warning?: string;
 }
 
 interface ResolvedCatalogSource {
@@ -606,7 +608,9 @@ async function generateArticleWithAi(
   }
 
   let finalArticle = enforceInternalLinks(article.data, context);
-  let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, finalArticle, input, context, pipelineResult);
+  let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, finalArticle, input, context, pipelineResult).catch((error) =>
+    recoverAiSearchReviewFailure(error, input, "initial-review")
+  );
   if (aiSearchReview.revisedArticle) {
     finalArticle = enforceInternalLinks(aiSearchReview.revisedArticle, context);
   }
@@ -625,7 +629,9 @@ async function generateArticleWithAi(
       imageAlt: imageAsset.altText
     };
   }
-  aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult);
+  aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult).catch((error) =>
+    recoverAiSearchReviewFailure(error, input, "final-review", aiSearchReview)
+  );
 
   const qualityInput = normalizeFinalQualityInput(input);
   const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
@@ -778,12 +784,14 @@ async function reviewArticleForSearchTraffic(
         selectedTopic: context.topic ?? input.topic,
         primaryKeyword: article.primaryKeyword,
         secondaryKeywords: article.secondaryKeywords,
-        topicSelection: context.topicSelection,
-        keywordEvidence: filterKeywordEvidence(context.keywordEvidence ?? pipelineResult.artifacts.keywordEvidence),
-        trendSignals: relevantTrendSignals(context).slice(0, 6),
-        internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], 6),
-        product: context.product,
-        collection: context.collection,
+        topicSelection: compactTopicSelection(context.topicSelection),
+        keywordEvidence: filterKeywordEvidence(context.keywordEvidence ?? pipelineResult.artifacts.keywordEvidence)
+          ?.slice(0, 10)
+          .map(compactKeywordEvidenceItem),
+        trendSignals: relevantTrendSignals(context).slice(0, 6).map(compactTrendSignal),
+        internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], 6).map(compactInternalLinkCandidate),
+        product: compactProductContext(context.product),
+        collection: compactCollectionContext(context.collection),
         recentTopics: context.recentTopics?.slice(0, 12),
         article: articleForAiReview(article)
       })
@@ -848,10 +856,9 @@ async function reviseArticleForSearchTraffic(
       "Do not repeat old title formulas or create another generic guide. Do not use the campaign/task name as the title.",
       "Use semantic HTML sections with H2 headings and natural keyword placement.",
       JSON.stringify({
-        sourceStrategy: pipelineResult.article,
-        prompts: pipelineResult.artifacts.prompts,
+        sourceStrategy: articleForAiReview(pipelineResult.article),
         sourceContext: contextForAiEditing(context),
-        currentArticle: article
+        currentArticle: articleForAiRevision(article)
       })
     ].join("\n\n"),
     maxTokens: Math.max(1800, Math.min(5000, input.targetWordCount * 3)),
@@ -892,9 +899,12 @@ function applyAiSearchReviewGate(
 ): QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow } {
   if (!workflow?.enabled) return quality;
 
-  const searchPassed = workflow.final.score >= workflow.minTrafficScore;
+  const searchPassed = !workflow.unavailable && workflow.final.score >= workflow.minTrafficScore;
   const reasons = [...quality.reasons];
   const warnings = [...quality.warnings];
+  if (workflow.unavailable) {
+    reasons.push(workflow.warning ?? "AI search traffic review was unavailable, so the article needs manual review.");
+  }
   if (!searchPassed) {
     reasons.push(`AI search traffic score ${workflow.final.score} is below ${workflow.minTrafficScore}.`);
   }
@@ -968,18 +978,201 @@ function articleForAiReview(article: GeneratedArticle) {
     secondaryKeywords: article.secondaryKeywords,
     tags: article.tags,
     locale: article.locale,
-    bodyText: stripHtmlForReview(article.bodyHtml).slice(0, 9000),
-    bodyHtmlPreview: article.bodyHtml.slice(0, 5000)
+    bodyText: stripHtmlForReview(article.bodyHtml).slice(0, 7000),
+    bodyHtmlPreview: article.bodyHtml.slice(0, 1800)
+  };
+}
+
+function articleForAiRevision(article: GeneratedArticle) {
+  return {
+    ...articleForAiReview(article),
+    seoScore: article.seoScore,
+    qualityPassed: article.qualityPassed,
+    imagePrompt: article.imagePrompt,
+    imageAlt: article.imageAlt,
+    bodyHtml: trimForPrompt(article.bodyHtml, 12000)
   };
 }
 
 function contextForAiEditing(context: ContentSourceContext): ContentSourceContext {
   return {
-    ...context,
-    trendSignals: relevantTrendSignals(context).slice(0, 8),
-    internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4),
-    keywordEvidence: filterKeywordEvidence(context.keywordEvidence)
+    product: compactProductContext(context.product),
+    collection: compactCollectionContext(context.collection),
+    brandVoice: context.brandVoice,
+    topic: context.topic,
+    seedKeywords: context.seedKeywords?.slice(0, 8),
+    competitorTitles: context.competitorTitles?.slice(0, 8),
+    trendSignals: relevantTrendSignals(context).slice(0, 6).map(compactTrendSignal),
+    internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4).map(
+      compactInternalLinkCandidate
+    ),
+    imageReferences: context.imageReferences?.slice(0, 6),
+    keywordEvidence: filterKeywordEvidence(context.keywordEvidence)?.slice(0, 10).map(compactKeywordEvidenceItem),
+    topicSelection: compactTopicSelection(context.topicSelection),
+    recentTopics: context.recentTopics?.slice(0, 12),
+    generationConfig: context.generationConfig
   };
+}
+
+function compactProductContext(product: ContentSourceContext["product"]): ContentSourceContext["product"] {
+  if (!product) return undefined;
+
+  return {
+    ...product,
+    description: product.description ? trimForPrompt(stripHtmlForReview(product.description), 1200) : undefined,
+    tags: product.tags.slice(0, 12),
+    imageUrls: product.imageUrls.slice(0, 6),
+    seoTitle: product.seoTitle ? trimForPrompt(product.seoTitle, 180) : undefined,
+    seoDescription: product.seoDescription ? trimForPrompt(product.seoDescription, 360) : undefined,
+    options: product.options?.slice(0, 6).map((option) => ({
+      ...option,
+      values: option.values.slice(0, 16)
+    })),
+    variants: product.variants?.slice(0, 10).map((variant) => ({
+      title: variant.title,
+      sku: variant.sku,
+      price: variant.price,
+      availableForSale: variant.availableForSale,
+      selectedOptions: variant.selectedOptions?.map((option) => ({
+        ...option,
+        values: option.values.slice(0, 4)
+      }))
+    })),
+    facts: product.facts?.slice(0, 14).map((fact) => trimForPrompt(fact, 220))
+  };
+}
+
+function compactCollectionContext(collection: ContentSourceContext["collection"]): ContentSourceContext["collection"] {
+  if (!collection) return undefined;
+
+  return {
+    ...collection,
+    description: collection.description ? trimForPrompt(stripHtmlForReview(collection.description), 1000) : undefined,
+    imageUrls: collection.imageUrls?.slice(0, 4)
+  };
+}
+
+function compactTopicSelection(selection: TopicSelectionResult | undefined): TopicSelectionResult | undefined {
+  if (!selection) return undefined;
+
+  return {
+    selected: compactTopicCandidate(selection.selected),
+    candidates: selection.candidates.slice(0, 4).map(compactTopicCandidate)
+  };
+}
+
+function compactTopicCandidate(candidate: TopicSelectionResult["selected"]): TopicSelectionResult["selected"] {
+  return {
+    ...candidate,
+    topic: trimForPrompt(candidate.topic, 260),
+    primaryKeyword: trimForPrompt(candidate.primaryKeyword, 120),
+    reasons: candidate.reasons.slice(0, 5).map((reason) => trimForPrompt(reason, 160)),
+    evidence: candidate.evidence.slice(0, 6).map(compactKeywordEvidenceItem)
+  };
+}
+
+function compactKeywordEvidenceItem(item: KeywordEvidenceItem): KeywordEvidenceItem {
+  return {
+    ...item,
+    label: trimForPrompt(item.label, 120),
+    value: trimForPrompt(item.value, 220),
+    snippet: item.snippet ? trimForPrompt(item.snippet, 360) : undefined,
+    metric: item.metric ? trimForPrompt(item.metric, 120) : undefined
+  };
+}
+
+function compactTrendSignal(signal: TrendSignal): TrendSignal {
+  return {
+    ...signal,
+    title: trimForPrompt(signal.title, 220),
+    summary: signal.summary ? trimForPrompt(signal.summary, 360) : undefined
+  };
+}
+
+function compactInternalLinkCandidate(link: InternalLinkCandidate): InternalLinkCandidate {
+  return {
+    ...link,
+    title: trimForPrompt(link.title, 180),
+    anchor: link.anchor ? trimForPrompt(link.anchor, 120) : undefined,
+    reason: link.reason ? trimForPrompt(link.reason, 180) : undefined
+  };
+}
+
+function recoverAiSearchReviewFailure(
+  error: unknown,
+  input: ParsedGenerationInput,
+  stage: string,
+  current?: { workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle }
+): { workflow: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle } {
+  if (!isAiSearchReviewUnavailableError(error)) {
+    throw error;
+  }
+
+  const unavailable = unavailableAiSearchReview(input, stage, error);
+  if (!current?.workflow) {
+    return { workflow: unavailable };
+  }
+
+  return {
+    ...current,
+    workflow: {
+      ...current.workflow,
+      final: unavailable.final,
+      unavailable: true,
+      warning: unavailable.warning
+    }
+  };
+}
+
+function unavailableAiSearchReview(input: ParsedGenerationInput, stage: string, error: unknown): AiSearchReviewWorkflow {
+  const config = resolveAiSearchReviewConfig(input.generationConfig);
+  const message = trimForPrompt(getErrorMessage(error), 240);
+  const result: AiSearchReviewResult = {
+    score: 0,
+    passed: false,
+    searchIntentScore: 0,
+    titleCtrScore: 0,
+    contentDepthScore: 0,
+    keywordFitScore: 0,
+    topicalAuthorityScore: 0,
+    conversionSupportScore: 0,
+    summary: `AI search traffic review was unavailable during ${stage}: ${message}`,
+    strengths: [],
+    recommendations: ["Retry AI scoring when the provider connection is stable, then apply the returned search-traffic recommendations."],
+    revisionBrief: ["Manual review required because the AI search traffic review did not complete."]
+  };
+
+  return {
+    enabled: true,
+    minTrafficScore: config.minTrafficScore,
+    maxRevisionPasses: config.maxRevisionPasses,
+    initial: result,
+    final: result,
+    revisions: [],
+    unavailable: true,
+    warning: result.summary
+  };
+}
+
+function isAiSearchReviewUnavailableError(error: unknown): boolean {
+  if (error instanceof AIClientError) {
+    return error.status === 408 || error.status === 409 || error.status === 425 || error.status === 429 || (error.status ?? 0) >= 500;
+  }
+
+  if (!(error instanceof Error)) return false;
+  if (error.name === "AbortError") return false;
+  if (/fetch failed|network|socket|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_SOCKET/i.test(error.message)) return true;
+
+  const cause = (error as Error & { cause?: unknown }).cause;
+  if (!isRecord(cause)) return false;
+
+  const code = typeof cause.code === "string" ? cause.code : "";
+  return ["UND_ERR_SOCKET", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNREFUSED"].includes(code);
+}
+
+function trimForPrompt(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength - 3)}...`;
 }
 
 function relevantTrendSignals(context: ContentSourceContext): TrendSignal[] {

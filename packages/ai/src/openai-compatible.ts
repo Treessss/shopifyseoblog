@@ -81,6 +81,8 @@ export class AIClientError extends Error {
 }
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const DEFAULT_TRANSIENT_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 450;
 
 export class OpenAICompatibleClient {
   readonly baseUrl: string;
@@ -122,8 +124,6 @@ export class OpenAICompatibleClient {
     }
 
     const messages = buildMessages(options);
-    const controller = createAbortController(options.signal, this.timeoutMs);
-
     const body = removeUndefined({
       model,
       messages,
@@ -136,23 +136,7 @@ export class OpenAICompatibleClient {
       ...options.extraBody
     });
 
-    const response = await this.fetchImpl(joinUrl(this.baseUrl, "chat/completions"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...this.defaultHeaders
-      },
-      body: JSON.stringify(body),
-      signal: controller?.signal ?? options.signal
-    });
-
-    controller?.clear();
-
-    const payload = await readJson(response);
-    if (!response.ok) {
-      throw new AIClientError(`OpenAI-compatible request failed with HTTP ${response.status}.`, payload, response.status);
-    }
+    const payload = await this.postJson("chat/completions", body, options.signal, "OpenAI-compatible request");
 
     return parseChatCompletion(payload);
   }
@@ -180,7 +164,6 @@ export class OpenAICompatibleClient {
       throw new AIClientError("OpenAI-compatible apiKey is required.");
     }
 
-    const controller = createAbortController(options.signal, this.timeoutMs);
     const body = removeUndefined({
       model,
       prompt: options.prompt,
@@ -192,25 +175,56 @@ export class OpenAICompatibleClient {
       ...options.extraBody
     });
 
-    const response = await this.fetchImpl(joinUrl(this.baseUrl, "images/generations"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-        ...this.defaultHeaders
-      },
-      body: JSON.stringify(body),
-      signal: controller?.signal ?? options.signal
-    });
-
-    controller?.clear();
-
-    const payload = await readJson(response);
-    if (!response.ok) {
-      throw new AIClientError(`OpenAI-compatible image request failed with HTTP ${response.status}.`, payload, response.status);
-    }
+    const payload = await this.postJson("images/generations", body, options.signal, "OpenAI-compatible image request");
 
     return parseImageGeneration(payload, model);
+  }
+
+  private async postJson(
+    path: string,
+    body: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    errorLabel: string
+  ): Promise<unknown> {
+    const bodyJson = JSON.stringify(body);
+    const controller = createAbortController(signal, this.timeoutMs);
+    const operationSignal = controller?.signal ?? signal;
+
+    try {
+      for (let attempt = 0; attempt <= DEFAULT_TRANSIENT_RETRIES; attempt += 1) {
+        throwIfAborted(operationSignal);
+
+        try {
+          const response = await this.fetchImpl(joinUrl(this.baseUrl, path), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.apiKey}`,
+              ...this.defaultHeaders
+            },
+            body: bodyJson,
+            signal: operationSignal
+          });
+
+          const payload = await readJson(response);
+          if (!response.ok) {
+            throw new AIClientError(`${errorLabel} failed with HTTP ${response.status}.`, payload, response.status);
+          }
+
+          return payload;
+        } catch (error) {
+          if (operationSignal?.aborted || attempt >= DEFAULT_TRANSIENT_RETRIES || !isRetryableAiError(error)) {
+            throw error;
+          }
+
+          await sleep(retryDelay(attempt), operationSignal);
+        }
+      }
+    } finally {
+      controller?.clear();
+    }
+
+    throw new AIClientError(`${errorLabel} failed.`);
   }
 }
 
@@ -304,7 +318,11 @@ function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): 
   const controller = new AbortController() as AbortController & { clear: () => void };
   const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   const abort = () => controller.abort();
-  parentSignal?.addEventListener("abort", abort, { once: true });
+  if (parentSignal?.aborted) {
+    controller.abort();
+  } else {
+    parentSignal?.addEventListener("abort", abort, { once: true });
+  }
   controller.clear = () => {
     if (timeout) clearTimeout(timeout);
     parentSignal?.removeEventListener("abort", abort);
@@ -358,4 +376,55 @@ function asNumber(value: unknown): number | undefined {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function isRetryableAiError(error: unknown): boolean {
+  if (error instanceof AIClientError) {
+    return error.status === 408 || error.status === 409 || error.status === 425 || error.status === 429 || (error.status ?? 0) >= 500;
+  }
+
+  if (!(error instanceof Error)) return false;
+  if (error.name === "AbortError") return false;
+  if (/fetch failed|network|socket|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR_SOCKET/i.test(error.message)) return true;
+
+  const cause = (error as Error & { cause?: unknown }).cause;
+  if (isRecord(cause)) {
+    const code = typeof cause.code === "string" ? cause.code : "";
+    return ["UND_ERR_SOCKET", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ECONNREFUSED"].includes(code);
+  }
+
+  return false;
+}
+
+function retryDelay(attempt: number): number {
+  return RETRY_BASE_DELAY_MS * 2 ** attempt;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      reject(createAbortError());
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+function createAbortError(): Error {
+  const error = new Error("The operation was aborted.");
+  error.name = "AbortError";
+  return error;
 }
