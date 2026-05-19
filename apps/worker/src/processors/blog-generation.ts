@@ -584,6 +584,7 @@ async function generateArticleWithAi(
         : "",
       "Required quality policy:",
       JSON.stringify(input.generationConfig?.qualityGate ?? {}),
+      highScoreArticleContract(input, context).join("\n"),
       "Create a fresh editorial title and section flow from the selected topic, product context, trend evidence, and keyword evidence.",
       "Use verified product facts, synced options, variants, SEO descriptions, images, and tags when available. If material, protection, compatibility, or fit details are missing, say they are not confirmed instead of guessing.",
       "The article title must be meaningfully different from previous topics and titles, not just a synonym swap.",
@@ -838,6 +839,8 @@ async function reviewArticleForSearchTraffic(
       }),
       "Score means likelihood to earn non-brand organic search traffic, not just keyword stuffing.",
       "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, and weak product/category fit.",
+      "Use this high-score contract as the scoring rubric. Do not give 82+ unless the article substantially satisfies it:",
+      highScoreArticleContract(input, context).join("\n"),
       `If the score is below ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore}, return at least 5 actionItems. Each actionItem must be section-specific, directly editable, and include an acceptanceCheck. Avoid vague advice like 'add more detail'.`,
       "Make revisionBrief an ordered checklist that an editor can apply immediately. Name the exact H2/table/FAQ/internal link/product fact to add or replace.",
       "Ignore low-relevance trend evidence. Penalize the article if unrelated news or trend terms appear in the copy.",
@@ -893,7 +896,7 @@ async function reviseArticleForSearchTraffic(
 ): Promise<GeneratedArticle> {
   const result = await client.generateText({
     model: provider.textModel,
-    temperature: Math.min(1, provider.temperature),
+    temperature: Math.min(0.45, provider.temperature),
     system:
       "You are a senior ecommerce SEO editor. Rewrite the article to improve search traffic potential while preserving factual accuracy, locale, useful product context, and clean Shopify-compatible HTML.",
     prompt: [
@@ -914,7 +917,10 @@ async function reviseArticleForSearchTraffic(
       }),
       `Revision pass ${pass}. Improve the article based on this AI search review:`,
       JSON.stringify(review),
-      `Target outcome: the revised article should be strong enough to score at least ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore} in the next AI search traffic review.`,
+      revisionModeInstruction(pass, review, input),
+      `Target outcome: the revised article should be strong enough to score at least ${targetAiSearchScore(input)} in the next AI search traffic review, not merely clear the minimum ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore}.`,
+      "This is a hard quality contract for the returned article:",
+      highScoreArticleContract(input, context).join("\n"),
       "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
       "Treat revisionBrief and actionItems as a required checklist. Satisfy every acceptanceCheck that can be satisfied with the supplied evidence, and remove unrelated trend/news terms.",
       "Before returning, audit your own draft: if an actionItem asks for a section, table, FAQ, internal link, product fact box, comparison, or CTA, it must actually exist in bodyHtml.",
@@ -924,7 +930,7 @@ async function reviseArticleForSearchTraffic(
       "If currentArticle already contains an image figure or generated image URL, preserve it unless it is broken or irrelevant.",
       "For ecommerce product content, prefer concrete modules: verified facts table, variant/finish decision table, choose-this-if/skip-this-if section, contextual internal links, FAQ, and a complete buyer-facing conclusion.",
       `Aim for ${Math.max(900, Math.round(input.targetWordCount * 0.85))}-${Math.round(input.targetWordCount * 1.15)} words unless the targetWordCount is lower. Do not end with an unfinished FAQ, heading, list, or sentence.`,
-      "Do not repeat old title formulas or create another generic guide. Do not use the campaign/task name as the title.",
+      "Do not repeat old title formulas or create another generic guide. Do not start the title with 'How to Choose', 'Guide', 'Best', or the bare product keyword unless the review explicitly requires that exact query format. Do not use the campaign/task name as the title.",
       "Use semantic HTML sections with H2 headings and natural keyword placement.",
       JSON.stringify({
         sourceStrategy: articleForAiReview(pipelineResult.article),
@@ -1003,6 +1009,67 @@ function resolveAiSearchReviewConfig(generationConfig: GenerationConfig | undefi
     minTrafficScore: clampPercent(config?.minTrafficScore ?? 82),
     maxRevisionPasses: Math.max(0, Math.min(5, Math.round(config?.maxRevisionPasses ?? 3)))
   };
+}
+
+function targetAiSearchScore(input: ParsedGenerationInput): number {
+  const minimum = resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore;
+  return Math.min(96, Math.max(90, minimum + 8));
+}
+
+function highScoreArticleContract(input: ParsedGenerationInput, context: ContentSourceContext): string[] {
+  const minimum = resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore;
+  const target = targetAiSearchScore(input);
+  const product = context.product;
+  const collection = context.collection;
+  const configuredInternalLinkLimit = Math.max(0, context.generationConfig?.internalLinks?.maxLinks ?? 4);
+  const availableInternalLinks = mixInternalLinkCandidates(
+    [context.internalLinks ?? []],
+    configuredInternalLinkLimit
+  ).length;
+  const requiredInternalLinks =
+    context.generationConfig?.internalLinks?.enabled === false
+      ? 0
+      : Math.min(configuredInternalLinkLimit, availableInternalLinks);
+  const hasVariantOptions = Boolean(product?.options?.length || product?.variants?.length);
+  const sourceLabel = product?.title ?? collection?.title ?? input.topic ?? input.primaryKeyword ?? "the selected topic";
+
+  return [
+    `High-score target: write for ${target}+ AI search traffic score; ${minimum} is only the minimum gate.`,
+    `Primary source anchor: ${sourceLabel}. The article must feel built from this source, not from a reusable template.`,
+    "Hard requirements:",
+    "- Title: specific search intent + clear differentiator. Avoid formula starts like 'How to Choose', 'Guide', 'Best', or '[keyword]: ...' unless the exact query demands it.",
+    "- Intro: within the first 120 words, state who the article is for, the concrete buying/search question, the verified product/category anchor, and the decision the reader will be able to make.",
+    "- Evidence: include a compact verified-facts section or table using only synced product/category facts. Also include a 'not confirmed' note for important unknowns instead of guessing.",
+    hasVariantOptions
+      ? "- Decision depth: include a variant/finish/fit decision table using synced options or variants, with 'best for' guidance for each relevant option."
+      : "- Decision depth: include a concrete comparison table or decision matrix based on shopper fit, use case, styling, gifting, care, or category tradeoffs.",
+    "- Product/image specificity: reference visible product-image observations only when supported by supplied images or metadata; avoid generic material/protection claims.",
+    requiredInternalLinks > 0
+      ? `- Internal links: include at least ${requiredInternalLinks} contextual internal links with natural anchor text and a reason in the surrounding sentence.`
+      : "- Internal links: if no candidates are supplied, do not invent links.",
+    "- Usefulness: include choose-this-if / skip-this-if guidance, practical pre-purchase checks, and at least one concrete scenario a shopper would recognize.",
+    "- FAQ: include at least 5 non-generic FAQ items that answer search-intent questions about fit, variant choice, care, styling/gifting, and confirmed vs unknown details.",
+    "- Structure: every H2 must answer a real search or purchase decision. Avoid generic filler headings and avoid repeated paragraph rhythm.",
+    "- Completeness: no truncated sentence, unfinished FAQ, empty section, placeholder, or abrupt ending. End with a buyer-facing conclusion and a contextual CTA.",
+    "- Safety: no unsupported prices beyond synced variant data, no discounts, no testimonials, no fake rankings, no medical/legal claims, no unrelated trend terms."
+  ];
+}
+
+function revisionModeInstruction(pass: number, review: AiSearchReviewResult, input: ParsedGenerationInput): string {
+  const minimum = resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore;
+  if (pass >= 2 || review.score < minimum - 10) {
+    return [
+      "Revision mode: FULL REBUILD.",
+      "The current structure did not score high enough. You may replace the title, intro, section order, H2s, tables, FAQ, and conclusion.",
+      "Keep only accurate facts, useful links, and any valid image figure. Do not preserve weak structure just for continuity."
+    ].join(" ");
+  }
+
+  return [
+    "Revision mode: STRICT TARGETED REWRITE.",
+    "Apply all actionItems and revisionBrief items as concrete edits, not wording tweaks.",
+    "If the requested sections or tables are missing, add them now."
+  ].join(" ");
 }
 
 function normalizeAiSearchReview(value: unknown, generationConfig: GenerationConfig | undefined): AiSearchReviewResult {
