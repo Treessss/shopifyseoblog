@@ -16,6 +16,7 @@ import type {
   SeoCheck,
   SeoScorer,
   SeoScoreResult,
+  TopicAgentTrace,
   TopicCandidate,
   TopicSelectionResult
 } from "./types";
@@ -29,6 +30,8 @@ interface DraftAngle {
   trendTitle?: string;
   productTitle?: string;
   collectionTitle?: string;
+  selectedTopic?: string;
+  topicAgent?: TopicAgentTrace;
   theme: "trend" | "product_fit" | "comparison" | "care" | "faq";
 }
 
@@ -364,12 +367,15 @@ function resolveDraftAngle(
 ): DraftAngle {
   const locale = normalizeLocale(input.locale);
   const topic = context.topicSelection?.selected.topic ?? resolveTopic(input, context);
+  const topicAgent = context.topicSelection?.selected.agent;
   const productTitle = context.product?.title;
   const collectionTitle = context.collection?.title;
   const category = firstNonBlank(context.product?.productType, collectionTitle, keywords.primaryKeyword) ?? keywords.primaryKeyword;
-  const trendTitle = usableTrendSignals(context)[0]?.title;
+  const trendTitle = topicAgent?.trendConcept ?? usableTrendSignals(context)[0]?.title;
   const anchorLabel = firstNonBlank(productTitle, collectionTitle, category) ?? category;
-  const themes: DraftAngle["theme"][] = trendTitle
+  const themes: DraftAngle["theme"][] = topicAgent
+    ? [themeFromTopicAgent(topicAgent.angleKey)]
+    : trendTitle
     ? ["trend", "product_fit", "comparison", "care"]
     : context.product
       ? ["product_fit", "comparison", "care", "faq"]
@@ -385,11 +391,16 @@ function resolveDraftAngle(
     trendTitle,
     productTitle,
     collectionTitle,
+    selectedTopic: context.topicSelection?.selected.topic,
+    topicAgent,
     theme
   };
 }
 
 function buildEditorialTitle(locale: SupportedLocale, angle: DraftAngle): string {
+  const selectedTopicTitle = titleFromSelectedTopic(angle);
+  if (selectedTopicTitle) return selectedTopicTitle;
+
   if (locale === "zh-CN") {
     const titles: Record<DraftAngle["theme"], string> = {
       trend: `${compactTitle(angle.trendTitle ?? angle.topic)}之后，${angle.primaryKeyword}该怎么选？`,
@@ -409,6 +420,29 @@ function buildEditorialTitle(locale: SupportedLocale, angle: DraftAngle): string
     faq: `${angle.primaryKeyword} Questions Shoppers Should Ask First`
   };
   return titles[angle.theme];
+}
+
+function themeFromTopicAgent(angleKey: string): DraftAngle["theme"] {
+  if (angleKey.includes("comparison")) return "comparison";
+  if (angleKey.includes("mistake") || angleKey.includes("care")) return "care";
+  if (angleKey.includes("question") || angleKey.includes("faq")) return "faq";
+  if (angleKey.includes("trend")) return "trend";
+  return "product_fit";
+}
+
+function titleFromSelectedTopic(angle: DraftAngle): string | undefined {
+  const selected = angle.selectedTopic?.trim();
+  if (!selected) return undefined;
+  const title = selected
+    .replace(/^Shopify blog topic\s*[:：-]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!title) return undefined;
+  if (angle.locale !== "zh-CN" && title.length > 72) return undefined;
+  if (angle.locale === "zh-CN" && title.length > 42) return undefined;
+  const primaryCoverage = keywordTokenCoverage(title, angle.primaryKeyword);
+  if (title.toLowerCase().includes(angle.primaryKeyword.toLowerCase()) || primaryCoverage >= 0.58) return title;
+  return undefined;
 }
 
 function buildEditorialSummary(locale: SupportedLocale, angle: DraftAngle): string {
@@ -799,33 +833,21 @@ export function selectTopicCandidate(
       primaryKeyword: keyword,
       score: 92,
       reasons: ["manual topic supplied"],
-      evidence: evidence.slice(0, 6)
+      evidence: evidence.slice(0, 6),
+      agent: topicAgentTrace("manual_topic", "BOFU", "commercial", 82, 88, 80)
     });
   }
 
-  const trendCandidates = context.generationConfig?.topicDiscovery?.preferTrendSignals === false ? [] : usableTrendSignals(context);
-  for (const signal of trendCandidates.slice(0, maxCandidates)) {
-    const signalEvidence = evidence.filter((item) => item.type === "trend" && item.value === signal.title);
-    const topic =
-      locale === "zh-CN"
-        ? `${category}选题：${compactTitle(signal.title)}趋势下的选购与使用建议`
-        : `${category} angle: buying and usage ideas around ${compactTitle(signal.title)}`;
-    candidates.push({
-      topic,
-      primaryKeyword: keyword,
-      score: clampScore(68 + (signal.relevanceScore ?? 0) * 8 + trafficBoost(signal.traffic)),
-      reasons: ["trend matched to product/category", signal.traffic ? `trend traffic ${signal.traffic}` : "RSS trend signal"],
-      evidence: [...signalEvidence, ...evidence.filter((item) => item.type !== "trend").slice(0, 4)]
-    });
-  }
+  candidates.push(...topicAgentTrendCandidates(keyword, category, locale, context, evidence, usedTopics));
 
-  candidates.push(...evergreenTopicCandidates(keyword, category, locale, context, evidence));
+  candidates.push(...evergreenTopicCandidates(keyword, category, locale, context, evidence, usedTopics));
 
   const sorted = uniqueTopicCandidates(candidates)
+    .map((candidate) => applyTopicHistoryPenalty(candidate, usedTopics))
     .filter((candidate) => candidate.score >= (context.generationConfig?.topicDiscovery?.minEvidenceScore ?? 0))
     .sort((a, b) => b.score - a.score);
   const novel = sorted.filter((candidate) => !isRepeatedTopic(candidate.topic, usedTopics));
-  const visibleCandidates = novel.slice(0, maxCandidates);
+  const visibleCandidates = diverseTopicCandidates(novel, maxCandidates);
   const selected = visibleCandidates[0] ?? fallbackNovelTopic(input.topic, keyword, category, locale, usedTopics, evidence);
 
   return {
@@ -834,12 +856,181 @@ export function selectTopicCandidate(
   };
 }
 
+type TopicAngleContext = {
+  keyword: string;
+  categoryLabel: string;
+  trendConcept: string;
+  scenario: string;
+};
+
+type TopicAngleDefinition = {
+  key: string;
+  funnelStage: TopicAgentTrace["funnelStage"];
+  searchIntent: TopicAgentTrace["searchIntent"];
+  impactBoost: number;
+  confidenceBoost: number;
+  reason: string;
+  topic: (context: TopicAngleContext) => string;
+};
+
+function topicAgentTrendCandidates(
+  keyword: string,
+  category: string,
+  locale: SupportedLocale,
+  context: ContentSourceContext,
+  evidence: KeywordEvidenceItem[],
+  usedTopics: string[]
+): TopicCandidate[] {
+  if (context.generationConfig?.topicDiscovery?.preferTrendSignals === false) return [];
+
+  const signals = usableTrendSignals(context).slice(0, 6);
+  if (signals.length === 0) return [];
+
+  const scenarios = shopperScenarios(context, locale);
+  const categoryLabel = sameMeaningText(category, keyword) ? (locale === "zh-CN" ? "同类商品" : "similar options") : category;
+  const nonTrendEvidence = evidence.filter((item) => item.type !== "trend").slice(0, 4);
+  const angles = trendExpansionAngles(locale);
+  const candidates: TopicCandidate[] = [];
+
+  for (const signal of signals) {
+    const trendConcept = compactTrendConcept(signal, locale);
+    const signalEvidence = evidence.filter((item) => item.type === "trend" && item.value === signal.title);
+    const trendImpact = clampScore(72 + (signal.relevanceScore ?? 0) * 4 + trafficBoost(signal.traffic));
+    const trendConfidence = clampScore(62 + (signal.relevanceScore ?? 0) * 5 + trafficBoost(signal.traffic));
+
+    for (const angle of angles) {
+      const scenario = scenarios[Math.abs(hashString(`${trendConcept}:${angle.key}:${keyword}`)) % scenarios.length] ?? scenarios[0];
+      const topic = angle.topic({ keyword, categoryLabel, trendConcept, scenario });
+      const noveltyScore = topicNoveltyScore(topic, usedTopics, angle.key);
+      const impact = clampScore(trendImpact + angle.impactBoost);
+      const confidence = clampScore(trendConfidence + angle.confidenceBoost);
+
+      candidates.push({
+        topic,
+        primaryKeyword: keyword,
+        score: agentOpportunityScore(impact, confidence, noveltyScore, signal.traffic),
+        reasons: [
+          `SEO Topic Agent: ${angle.reason}`,
+          "expanded from Google Trends/news evidence",
+          signal.traffic ? `trend traffic ${signal.traffic}` : "RSS trend signal",
+          noveltyScore >= 78 ? "high topic novelty against recent history" : "topic history considered"
+        ],
+        evidence: [...signalEvidence, ...nonTrendEvidence],
+        agent: topicAgentTrace(angle.key, angle.funnelStage, angle.searchIntent, impact, confidence, noveltyScore, trendConcept)
+      });
+    }
+  }
+
+  return candidates;
+}
+
+function trendExpansionAngles(locale: SupportedLocale): TopicAngleDefinition[] {
+  if (locale === "zh-CN") {
+    return [
+      {
+        key: "trend_bridge",
+        funnelStage: "TOFU",
+        searchIntent: "informational",
+        impactBoost: 3,
+        confidenceBoost: 0,
+        reason: "trend-to-category bridge",
+        topic: ({ keyword, trendConcept }) => `${trendConcept}之后，${keyword}该怎么选？`
+      },
+      {
+        key: "scenario_fit",
+        funnelStage: "MOFU",
+        searchIntent: "commercial",
+        impactBoost: 6,
+        confidenceBoost: 3,
+        reason: "shopper scenario fit",
+        topic: ({ keyword, scenario }) => `${keyword}适合${scenario}吗？场景、风格和保护检查`
+      },
+      {
+        key: "comparison_decision",
+        funnelStage: "BOFU",
+        searchIntent: "commercial",
+        impactBoost: 8,
+        confidenceBoost: 4,
+        reason: "comparison decision angle",
+        topic: ({ keyword, categoryLabel, scenario }) => `${keyword}还是其他${categoryLabel}？按${scenario}做选择`
+      },
+      {
+        key: "mistake_avoidance",
+        funnelStage: "BOFU",
+        searchIntent: "commercial",
+        impactBoost: 7,
+        confidenceBoost: 5,
+        reason: "purchase risk and mistake avoidance",
+        topic: ({ keyword, trendConcept }) => `${keyword}购买前别只看外观：${trendConcept}带来的检查清单`
+      },
+      {
+        key: "gift_moment",
+        funnelStage: "MOFU",
+        searchIntent: "commercial",
+        impactBoost: 4,
+        confidenceBoost: 2,
+        reason: "gift and occasion expansion",
+        topic: ({ keyword, trendConcept }) => `${keyword}送礼怎么选：从${trendConcept}看风格和保护`
+      }
+    ];
+  }
+
+  return [
+    {
+      key: "trend_bridge",
+      funnelStage: "TOFU",
+      searchIntent: "informational",
+      impactBoost: 3,
+      confidenceBoost: 0,
+      reason: "trend-to-category bridge",
+      topic: ({ keyword, trendConcept }) => `What ${trendConcept} Means for ${keyword}`
+    },
+    {
+      key: "scenario_fit",
+      funnelStage: "MOFU",
+      searchIntent: "commercial",
+      impactBoost: 6,
+      confidenceBoost: 3,
+      reason: "shopper scenario fit",
+      topic: ({ keyword, scenario }) => `${keyword} for ${scenario}: Fit, Style, and Buying Checks`
+    },
+    {
+      key: "comparison_decision",
+      funnelStage: "BOFU",
+      searchIntent: "commercial",
+      impactBoost: 8,
+      confidenceBoost: 4,
+      reason: "comparison decision angle",
+      topic: ({ keyword, categoryLabel, scenario }) => `${keyword} vs. Other ${categoryLabel}: What Changes for ${scenario}`
+    },
+    {
+      key: "mistake_avoidance",
+      funnelStage: "BOFU",
+      searchIntent: "commercial",
+      impactBoost: 7,
+      confidenceBoost: 5,
+      reason: "purchase risk and mistake avoidance",
+      topic: ({ keyword, trendConcept }) => `Before Buying ${keyword}, Check These ${trendConcept} Details`
+    },
+    {
+      key: "gift_moment",
+      funnelStage: "MOFU",
+      searchIntent: "commercial",
+      impactBoost: 4,
+      confidenceBoost: 2,
+      reason: "gift and occasion expansion",
+      topic: ({ keyword, trendConcept }) => `${keyword} Gift Ideas Inspired by ${trendConcept}`
+    }
+  ];
+}
+
 function evergreenTopicCandidates(
   keyword: string,
   category: string,
   locale: SupportedLocale,
   context: ContentSourceContext,
-  evidence: KeywordEvidenceItem[]
+  evidence: KeywordEvidenceItem[],
+  usedTopics: string[]
 ): TopicCandidate[] {
   const baseScore = context.product || context.collection ? 74 : 62;
   const productTitle = context.product?.title;
@@ -849,39 +1040,173 @@ function evergreenTopicCandidates(
   const categoryLabel = sameMeaningText(category, keyword) ? (locale === "zh-CN" ? "同类商品" : "similar options") : category;
   const nonTrendEvidence = evidence.filter((item) => item.type !== "trend").slice(0, 6);
 
-  const variants =
+  const variants: Array<{
+    topic: string;
+    angleKey: string;
+    funnelStage: TopicAgentTrace["funnelStage"];
+    searchIntent: TopicAgentTrace["searchIntent"];
+    impactBoost: number;
+    confidenceBoost: number;
+  }> =
     locale === "zh-CN"
       ? [
-          `${keyword}购买前怎么选：场景、材质与搭配指南`,
-          `${keyword}适合谁：从${anchorLabel}看真实使用场景`,
-          `${keyword}搭配灵感：通勤、礼物和日常风格怎么选`,
-          `${keyword}和其他${categoryLabel}怎么比：保护、手感与外观差异`,
-          `${keyword}下单前检查清单：兼容性、维护和长期使用`,
-          `${categoryLabel}选购误区：什么时候${keyword}不是最佳选择`,
-          `${keyword}礼物选题：如何匹配风格、保护和个性`,
-          `${anchorLabel}细节拆解：哪些设计会影响长期体验`
+          {
+            topic: `${keyword}购买前怎么选：场景、材质与搭配指南`,
+            angleKey: "evergreen_buying_guide",
+            funnelStage: "MOFU",
+            searchIntent: "commercial",
+            impactBoost: 0,
+            confidenceBoost: 6
+          },
+          {
+            topic: `${keyword}适合谁：从${anchorLabel}看真实使用场景`,
+            angleKey: "scenario_fit",
+            funnelStage: "MOFU",
+            searchIntent: "commercial",
+            impactBoost: 2,
+            confidenceBoost: 4
+          },
+          {
+            topic: `${keyword}搭配灵感：通勤、礼物和日常风格怎么选`,
+            angleKey: "style_scenario",
+            funnelStage: "TOFU",
+            searchIntent: "informational",
+            impactBoost: 0,
+            confidenceBoost: 2
+          },
+          {
+            topic: `${keyword}和其他${categoryLabel}怎么比：保护、手感与外观差异`,
+            angleKey: "comparison_decision",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 5,
+            confidenceBoost: 5
+          },
+          {
+            topic: `${keyword}下单前检查清单：兼容性、维护和长期使用`,
+            angleKey: "mistake_avoidance",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 4,
+            confidenceBoost: 5
+          },
+          {
+            topic: `${categoryLabel}选购误区：什么时候${keyword}不是最佳选择`,
+            angleKey: "anti_fit",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 3,
+            confidenceBoost: 4
+          },
+          {
+            topic: `${keyword}礼物选题：如何匹配风格、保护和个性`,
+            angleKey: "gift_moment",
+            funnelStage: "MOFU",
+            searchIntent: "commercial",
+            impactBoost: 1,
+            confidenceBoost: 3
+          },
+          {
+            topic: `${anchorLabel}细节拆解：哪些设计会影响长期体验`,
+            angleKey: "detail_review",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 2,
+            confidenceBoost: 4
+          }
         ]
       : [
-          `How to choose ${keyword}: use cases, materials, and pairing ideas`,
-          `${keyword}: who ${anchorLabel} is really for`,
-          `${keyword} styling ideas for commuting, gifting, and everyday outfits`,
-          `${keyword} vs. other ${categoryLabel}: protection, feel, and design differences`,
-          `${keyword} pre-purchase checklist: compatibility, care, and daily use`,
-          `${categoryLabel} buying mistakes: when ${keyword} may not be the best fit`,
-          `${keyword} gift ideas: matching style, protection, and personality`,
-          `${anchorLabel} detail review: what shoppers should notice before buying`
+          {
+            topic: `How to choose ${keyword}: use cases, materials, and pairing ideas`,
+            angleKey: "evergreen_buying_guide",
+            funnelStage: "MOFU",
+            searchIntent: "commercial",
+            impactBoost: 0,
+            confidenceBoost: 6
+          },
+          {
+            topic: `${keyword}: who ${anchorLabel} is really for`,
+            angleKey: "scenario_fit",
+            funnelStage: "MOFU",
+            searchIntent: "commercial",
+            impactBoost: 2,
+            confidenceBoost: 4
+          },
+          {
+            topic: `${keyword} styling ideas for commuting, gifting, and everyday outfits`,
+            angleKey: "style_scenario",
+            funnelStage: "TOFU",
+            searchIntent: "informational",
+            impactBoost: 0,
+            confidenceBoost: 2
+          },
+          {
+            topic: `${keyword} vs. other ${categoryLabel}: protection, feel, and design differences`,
+            angleKey: "comparison_decision",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 5,
+            confidenceBoost: 5
+          },
+          {
+            topic: `${keyword} pre-purchase checklist: compatibility, care, and daily use`,
+            angleKey: "mistake_avoidance",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 4,
+            confidenceBoost: 5
+          },
+          {
+            topic: `${categoryLabel} buying mistakes: when ${keyword} may not be the best fit`,
+            angleKey: "anti_fit",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 3,
+            confidenceBoost: 4
+          },
+          {
+            topic: `${keyword} gift ideas: matching style, protection, and personality`,
+            angleKey: "gift_moment",
+            funnelStage: "MOFU",
+            searchIntent: "commercial",
+            impactBoost: 1,
+            confidenceBoost: 3
+          },
+          {
+            topic: `${anchorLabel} detail review: what shoppers should notice before buying`,
+            angleKey: "detail_review",
+            funnelStage: "BOFU",
+            searchIntent: "commercial",
+            impactBoost: 2,
+            confidenceBoost: 4
+          }
         ];
 
-  return variants.map((topic, index) => ({
-    topic,
-    primaryKeyword: keyword,
-    score: Math.max(50, baseScore - index),
-    reasons: [
-      index === 0 ? "stable product/category evergreen topic" : "fresh non-repeating evergreen angle",
-      "built from Shopify catalog context"
-    ],
-    evidence: index % 2 === 0 ? nonTrendEvidence : evidence.slice(0, 6)
-  }));
+  return variants.map((variant, index) => {
+    const noveltyScore = topicNoveltyScore(variant.topic, usedTopics, variant.angleKey);
+    const impact = clampScore(baseScore + variant.impactBoost + (context.internalLinks?.length ? 3 : 0));
+    const confidence = clampScore(72 + variant.confidenceBoost + (context.product || context.collection ? 8 : 0));
+
+    return {
+      topic: variant.topic,
+      primaryKeyword: keyword,
+      score: agentOpportunityScore(impact, confidence, noveltyScore),
+      reasons: [
+        index === 0 ? "stable product/category evergreen topic" : "fresh non-repeating evergreen angle",
+        "SEO Topic Agent: built from Shopify catalog context",
+        noveltyScore >= 78 ? "high topic novelty against recent history" : "topic history considered"
+      ],
+      evidence: index % 2 === 0 ? nonTrendEvidence : evidence.slice(0, 6),
+      agent: topicAgentTrace(
+        variant.angleKey,
+        variant.funnelStage,
+        variant.searchIntent,
+        impact,
+        confidence,
+        noveltyScore
+      )
+    };
+  });
 }
 
 function fallbackNovelTopic(
@@ -909,17 +1234,25 @@ function fallbackNovelTopic(
         primaryKeyword: keyword,
         score: 52,
         reasons: ["fallback fresh scenario angle", "avoids recently used topics"],
-        evidence: evidence.slice(0, 6)
+        evidence: evidence.slice(0, 6),
+        agent: topicAgentTrace("fallback_scenario", "MOFU", "commercial", 55, 68, topicNoveltyScore(topic, usedTopics, "fallback_scenario"))
       };
     }
   }
 
+  const defaultFallback =
+    inputTopic ?? (locale === "zh-CN" ? `${keyword}新选题：${categoryLabel}使用场景拆解` : `${keyword} fresh angle: ${categoryLabel} use-case breakdown`);
+  const fallbackTopic = isRepeatedTopic(defaultFallback, usedTopics)
+    ? uniqueFallbackTopic(keyword, categoryLabel, locale, usedTopics)
+    : defaultFallback;
+
   return {
-    topic: inputTopic ?? (locale === "zh-CN" ? `${keyword}新选题：${categoryLabel}使用场景拆解` : `${keyword} fresh angle: ${categoryLabel} use-case breakdown`),
+    topic: fallbackTopic,
     primaryKeyword: keyword,
     score: 50,
     reasons: ["fallback topic"],
-    evidence: evidence.slice(0, 6)
+    evidence: evidence.slice(0, 6),
+    agent: topicAgentTrace("fallback_topic", "MOFU", "commercial", 50, 62, topicNoveltyScore(fallbackTopic, usedTopics, "fallback_topic"))
   };
 }
 
@@ -1085,7 +1418,8 @@ function uniqueTopicCandidates(items: TopicCandidate[]): TopicCandidate[] {
   const seen = new Set<string>();
   const output: TopicCandidate[] = [];
   for (const item of items) {
-    const key = item.topic.toLowerCase();
+    const fingerprint = topicFingerprint(item.topic).normalized || item.topic.toLowerCase();
+    const key = fingerprint.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
     output.push(item);
@@ -1133,6 +1467,163 @@ function looksLikeProductListingSignal(title: string, summary?: string): boolean
   ].filter((term) => text.includes(term)).length;
   const commercePattern = /\b(?:case|cover|popsocket|popgrip)\s+(?:for|with)\b/.test(text) || /\bfor\s+(?:iphone|google pixel|samsung)\b/.test(text);
   return commercePattern && productSpecHits >= 2;
+}
+
+function applyTopicHistoryPenalty(candidate: TopicCandidate, usedTopics: string[]): TopicCandidate {
+  const maxSimilarity = maxTopicSimilarity(candidate.topic, usedTopics);
+  const angleRecentlyUsed = candidate.agent ? usedTopics.some((topic) => inferredTopicAngleKey(topic) === candidate.agent?.angleKey) : false;
+  const penalty = Math.round(maxSimilarity * 18) + (angleRecentlyUsed ? 8 : 0);
+  if (penalty <= 0) return candidate;
+
+  const score = clampScore(candidate.score - penalty);
+  const noveltyScore = clampScore((candidate.agent?.noveltyScore ?? 80) - penalty);
+
+  return {
+    ...candidate,
+    score,
+    reasons: [...candidate.reasons, "recent topic history reduced score"],
+    agent: candidate.agent
+      ? {
+          ...candidate.agent,
+          noveltyScore
+        }
+      : undefined
+  };
+}
+
+function diverseTopicCandidates(candidates: TopicCandidate[], limit: number): TopicCandidate[] {
+  const output: TopicCandidate[] = [];
+  const usedAngles = new Set<string>();
+  for (const candidate of candidates) {
+    const angleKey = candidate.agent?.angleKey;
+    if (angleKey && usedAngles.has(angleKey) && output.length < Math.min(limit, 3)) continue;
+    output.push(candidate);
+    if (angleKey) usedAngles.add(angleKey);
+    if (output.length >= limit) break;
+  }
+
+  if (output.length >= limit) return output;
+  for (const candidate of candidates) {
+    if (output.includes(candidate)) continue;
+    output.push(candidate);
+    if (output.length >= limit) break;
+  }
+
+  return output;
+}
+
+function topicAgentTrace(
+  angleKey: string,
+  funnelStage: TopicAgentTrace["funnelStage"],
+  searchIntent: TopicAgentTrace["searchIntent"],
+  impact: number,
+  confidence: number,
+  noveltyScore: number,
+  trendConcept?: string
+): TopicAgentTrace {
+  return {
+    role: "seo_topic_agent",
+    angleKey,
+    funnelStage,
+    searchIntent,
+    trendConcept,
+    impact: clampScore(impact),
+    confidence: clampScore(confidence),
+    noveltyScore: clampScore(noveltyScore)
+  };
+}
+
+function agentOpportunityScore(impact: number, confidence: number, noveltyScore: number, traffic?: string): number {
+  return clampScore(impact * 0.44 + confidence * 0.34 + noveltyScore * 0.22 + trafficBoost(traffic) * 0.45);
+}
+
+function topicNoveltyScore(topic: string, usedTopics: string[], angleKey?: string): number {
+  const similarity = maxTopicSimilarity(topic, usedTopics);
+  const anglePenalty = angleKey && usedTopics.some((used) => inferredTopicAngleKey(used) === angleKey) ? 10 : 0;
+  return clampScore(96 - similarity * 55 - anglePenalty);
+}
+
+function maxTopicSimilarity(topic: string, usedTopics: string[]): number {
+  const candidate = topicFingerprint(topic);
+  if (!candidate.normalized || usedTopics.length === 0) return 0;
+
+  return usedTopics.reduce((max, used) => {
+    const historical = topicFingerprint(used);
+    if (!historical.normalized) return max;
+    const normalizedMatch =
+      candidate.normalized === historical.normalized ||
+      candidate.normalized.includes(historical.normalized) ||
+      historical.normalized.includes(candidate.normalized)
+        ? 1
+        : 0;
+    return Math.max(max, normalizedMatch, tokenSimilarity(candidate.tokens, historical.tokens));
+  }, 0);
+}
+
+function inferredTopicAngleKey(topic: string): string | undefined {
+  const value = topic.toLowerCase();
+  if (/vs\.?|compare|comparison|other|其他|怎么比|还是/.test(value)) return "comparison_decision";
+  if (/checklist|before buying|pre-purchase|mistake|risk|检查|误区|购买前/.test(value)) return "mistake_avoidance";
+  if (/gift|occasion|送礼|礼物/.test(value)) return "gift_moment";
+  if (/commut|daily|style|outfit|scenario|场景|搭配|通勤/.test(value)) return "scenario_fit";
+  if (/trend|means|之后|趋势|热点/.test(value)) return "trend_bridge";
+  return undefined;
+}
+
+function shopperScenarios(context: ContentSourceContext, locale: SupportedLocale): string[] {
+  const productText = [context.product?.title, context.product?.productType, ...(context.product?.tags ?? [])].join(" ").toLowerCase();
+  const scenarioHints =
+    locale === "zh-CN"
+      ? [
+          { test: /gift|present|礼物|送礼/, value: "送礼场景" },
+          { test: /travel|trip|旅行/, value: "旅行出行" },
+          { test: /student|school|学生|校园/, value: "学生日常" },
+          { test: /magsafe|desk|office|办公|桌面/, value: "办公桌面" },
+          { test: /street|heart|cross|街头/, value: "街头穿搭" },
+          { test: /clear|minimal|透明|极简/, value: "极简搭配" }
+        ]
+      : [
+          { test: /gift|present/, value: "gift shoppers" },
+          { test: /travel|trip/, value: "travel days" },
+          { test: /student|school/, value: "student routines" },
+          { test: /magsafe|desk|office/, value: "desk setups" },
+          { test: /street|heart|cross/, value: "streetwear looks" },
+          { test: /clear|minimal/, value: "minimalist outfits" }
+        ];
+  const hinted = scenarioHints.filter((item) => item.test.test(productText)).map((item) => item.value);
+  const defaults =
+    locale === "zh-CN"
+      ? ["日常通勤", "送礼场景", "旅行出行", "学生日常", "办公桌面", "周末出行", "极简搭配", "街头穿搭"]
+      : ["daily commutes", "gift shoppers", "travel days", "student routines", "desk setups", "weekend plans", "minimalist outfits", "streetwear looks"];
+  return unique([...hinted, ...defaults]);
+}
+
+function compactTrendConcept(signal: NonNullable<ContentSourceContext["trendSignals"]>[number], locale: SupportedLocale): string {
+  const title = signal.title
+    .replace(/\s[-|–]\s.*$/u, "")
+    .replace(/\b(?:breaking|live updates?|latest|photos?|video)\b:?/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const tokens = tokenizeSignal(title)
+    .filter((token) => !trendConceptStopWords.has(token.toLowerCase()))
+    .slice(0, locale === "zh-CN" ? 8 : 6);
+  const compact = tokens.join(" ").trim();
+  return compact || compactTitle(signal.title);
+}
+
+function uniqueFallbackTopic(keyword: string, categoryLabel: string, locale: SupportedLocale, usedTopics: string[]): string {
+  for (let index = 1; index <= 20; index += 1) {
+    const suffix = hashString(`${keyword}:${categoryLabel}:${usedTopics.join("|")}:${index}`).toString(36).slice(0, 4);
+    const topic =
+      locale === "zh-CN"
+        ? `${keyword}新角度 ${suffix}：${categoryLabel}人群、场景和购买判断`
+        : `${keyword} fresh angle ${suffix}: ${categoryLabel} audiences, scenarios, and buying checks`;
+    if (!isRepeatedTopic(topic, usedTopics)) return topic;
+  }
+
+  return locale === "zh-CN"
+    ? `${keyword}未覆盖角度：${categoryLabel}搜索需求拆解`
+    : `${keyword} uncovered angle: ${categoryLabel} search demand breakdown`;
 }
 
 function dedupeInternalLinks(links: NonNullable<ContentSourceContext["internalLinks"]>) {
@@ -1286,6 +1777,34 @@ const topicStopWords = new Set([
   "使用",
   "建议",
   "常见问题"
+]);
+
+const trendConceptStopWords = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "after",
+  "before",
+  "how",
+  "what",
+  "why",
+  "new",
+  "latest",
+  "best",
+  "top",
+  "guide",
+  "review",
+  "reviews",
+  "buy",
+  "buying",
+  "shop",
+  "sale",
+  "price",
+  "deals",
+  "near",
+  "me"
 ]);
 
 function trafficBoost(traffic?: string): number {

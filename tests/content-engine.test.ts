@@ -4,6 +4,7 @@ import {
   defaultSeoScorer,
   defaultQualityGate,
   estimateWordCount,
+  discoverTrendSignals,
   generateArticle,
   runContentPipeline,
   selectTopicCandidate,
@@ -193,6 +194,80 @@ describe("content engine", () => {
     expect(result.article.imagePrompt).toContain("Apple-like clean editorial product photography");
   });
 
+  it("expands Google trend discovery into multiple product-aware query seeds", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock = (async (url: URL | RequestInfo) => {
+      const requestUrl = new URL(String(url));
+      requestedUrls.push(requestUrl.toString());
+      const query = requestUrl.searchParams.get("q") ?? "phone case trend";
+      const xml = `<rss><channel><item><title>${query} trend report</title><link>https://news.example.com/${requestedUrls.length}</link><description>${query} for phone case shoppers</description><pubDate>${new Date().toUTCString()}</pubDate></item></channel></rss>`;
+      return new Response(xml, { status: 200 });
+    }) as typeof fetch;
+
+    const signals = await discoverTrendSignals({
+      topic: "Phone Case Style",
+      locale: "en-US",
+      fetch: fetchMock,
+      generationConfig: {
+        hotNews: {
+          enabled: true,
+          sources: ["google_news"],
+          maxItems: 4,
+          lookbackDays: 30,
+          query: "phone case trends"
+        }
+      },
+      context: {
+        product: {
+          id: "gid://shopify/Product/5",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe", "desk"],
+          imageUrls: []
+        },
+        seedKeywords: ["clear phone case"]
+      }
+    });
+
+    const queries = requestedUrls.map((url) => new URL(url).searchParams.get("q") ?? "");
+    expect(requestedUrls.length).toBeGreaterThan(3);
+    expect(requestedUrls.length).toBeLessThanOrEqual(5);
+    expect(new Set(queries).size).toBe(queries.length);
+    expect(queries.some((query) => query.includes("desk setup"))).toBe(true);
+    expect(queries.some((query) => query.includes("gift ideas"))).toBe(true);
+    expect(signals.every((signal) => signal.query)).toBe(true);
+    expect(signals[0]?.relevanceScore).toBeGreaterThan(0);
+  });
+
+  it("keeps the Google News fallback query when trend discovery has no topic seed", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock = (async (url: URL | RequestInfo) => {
+      const requestUrl = new URL(String(url));
+      requestedUrls.push(requestUrl.toString());
+      return new Response(
+        `<rss><channel><item><title>ecommerce shopping trends</title><link>https://news.example.com/fallback</link><description>ecommerce shopping trends</description></item></channel></rss>`,
+        { status: 200 }
+      );
+    }) as typeof fetch;
+
+    await discoverTrendSignals({
+      topic: "",
+      locale: "en-US",
+      fetch: fetchMock,
+      generationConfig: {
+        hotNews: {
+          enabled: true,
+          sources: ["google_news"],
+          maxItems: 1
+        }
+      }
+    });
+
+    expect(requestedUrls).toHaveLength(1);
+    expect(new URL(requestedUrls[0]!).searchParams.get("q")).toBe("ecommerce shopping trends");
+  });
+
   it("does not fall back to generic guide title formulas for different product contexts", async () => {
     const first = await runContentPipeline(
       {
@@ -278,9 +353,58 @@ describe("content engine", () => {
       generationConfig: input.generationConfig
     });
 
-    expect(selection.selected.topic).toContain("手机配件轻薄化趋势升温");
+    expect(selection.selected.agent?.role).toBe("seo_topic_agent");
+    expect(selection.selected.agent?.trendConcept).toContain("手机配件轻薄化趋势升温");
+    expect(new Set(selection.candidates.map((candidate) => candidate.agent?.angleKey)).size).toBeGreaterThan(1);
     expect(selection.selected.score).toBeGreaterThanOrEqual(80);
     expect(selection.selected.evidence.some((item) => item.type === "trend" && item.metric?.includes("traffic 50K+"))).toBe(true);
+  });
+
+  it("uses the SEO Topic Agent selected topic as the generated article title", async () => {
+    const selected = {
+      topic: "clear phone case for desk setups: Fit and Buying Checks",
+      primaryKeyword: "clear phone case",
+      score: 91,
+      reasons: ["SEO Topic Agent: shopper scenario fit"],
+      evidence: [],
+      agent: {
+        role: "seo_topic_agent" as const,
+        angleKey: "scenario_fit",
+        funnelStage: "MOFU" as const,
+        searchIntent: "commercial" as const,
+        trendConcept: "desk setup accessories",
+        impact: 88,
+        confidence: 86,
+        noveltyScore: 92
+      }
+    };
+    const result = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: selected.topic,
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        primaryKeyword: selected.primaryKeyword
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/4",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe", "desk"],
+          imageUrls: []
+        },
+        topicSelection: {
+          selected,
+          candidates: [selected]
+        }
+      }
+    );
+
+    expect(result.article.title).toBe(selected.topic);
+    expect(result.artifacts.draft.title).toBe(selected.topic);
   });
 
   it("filters unrelated zero-relevance trends from keyword evidence and topic selection", async () => {
@@ -437,6 +561,103 @@ describe("content engine", () => {
     expect(usedTopics).not.toContain(selection.selected.topic);
     expect(selection.selected.topic).toContain("for daily commutes");
     expect(selection.selected.reasons).toContain("fallback fresh scenario angle");
+  });
+
+  it("still avoids repeats when evergreen topics and fallback scenarios are exhausted", () => {
+    const keyword = "cross heart iPhone case";
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: `${keyword} fresh angle: similar options use-case breakdown`,
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 4
+        }
+      }
+    };
+    const evergreenTopics = [
+      `How to choose ${keyword}: use cases, materials, and pairing ideas`,
+      `${keyword}: who this product is really for`,
+      `${keyword} styling ideas for commuting, gifting, and everyday outfits`,
+      `${keyword} vs. other similar options: protection, feel, and design differences`,
+      `${keyword} pre-purchase checklist: compatibility, care, and daily use`,
+      `similar options buying mistakes: when ${keyword} may not be the best fit`,
+      `${keyword} gift ideas: matching style, protection, and personality`,
+      `this product detail review: what shoppers should notice before buying`
+    ];
+    const scenarioTopics = [
+      `${keyword} for daily commutes: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for gift shoppers: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for travel days: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for student routines: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for desk setups: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for weekend plans: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for minimalist outfits: similar options details, tradeoffs, and styling checks`,
+      `${keyword} for streetwear looks: similar options details, tradeoffs, and styling checks`
+    ];
+    const usedTopics = [...evergreenTopics, ...scenarioTopics, input.topic!];
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/2",
+        title: keyword,
+        productType: "",
+        vendor: "Caseease",
+        tags: ["iphone", "heart"],
+        imageUrls: []
+      },
+      recentTopics: usedTopics.map((topic) => ({ topic })),
+      generationConfig: input.generationConfig
+    });
+
+    expect(usedTopics).not.toContain(selection.selected.topic);
+    expect(selection.selected.topic).toContain("fresh angle");
+  });
+
+  it("deduplicates candidates by topic even when agent metadata differs", () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Shopify blog topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 5,
+          preferTrendSignals: true
+        }
+      }
+    };
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/6",
+        title: "Clear MagSafe iPhone Case",
+        productType: "Phone Case",
+        vendor: "Caseease",
+        tags: ["clear", "magsafe"],
+        imageUrls: []
+      },
+      trendSignals: [
+        {
+          title: "desk setup accessories trend",
+          source: "Google News",
+          relevanceScore: 4
+        },
+        {
+          title: "desk setup accessories trend",
+          source: "Google Trends",
+          relevanceScore: 5,
+          traffic: "20K+"
+        }
+      ],
+      generationConfig: input.generationConfig
+    });
+
+    const topics = selection.candidates.map((candidate) => candidate.topic.toLowerCase());
+    expect(new Set(topics).size).toBe(topics.length);
   });
 
   it("derives a search-friendly primary keyword from long catalog product names", async () => {

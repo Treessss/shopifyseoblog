@@ -30,6 +30,8 @@ export interface CollectionContext {
 export interface TrendSignal {
   title: string;
   source: string;
+  query?: string;
+  trendType?: "news" | "regional_trending";
   url?: string;
   summary?: string;
   publishedAt?: string;
@@ -65,12 +67,24 @@ export interface KeywordEvidenceItem {
   confidence: number;
 }
 
+export interface TopicAgentTrace {
+  role: "seo_topic_agent";
+  angleKey: string;
+  funnelStage: "TOFU" | "MOFU" | "BOFU";
+  searchIntent: "informational" | "commercial" | "transactional" | "navigational";
+  trendConcept?: string;
+  impact: number;
+  confidence: number;
+  noveltyScore: number;
+}
+
 export interface TopicCandidate {
   topic: string;
   primaryKeyword: string;
   score: number;
   reasons: string[];
   evidence: KeywordEvidenceItem[];
+  agent?: TopicAgentTrace;
 }
 
 export interface TopicSelectionResult {

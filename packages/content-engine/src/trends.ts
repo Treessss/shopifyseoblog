@@ -20,46 +20,79 @@ export async function discoverTrendSignals(input: DiscoverTrendSignalsInput): Pr
 
   const fetchImpl = input.fetch ?? fetch;
   const maxItems = config.maxItems ?? 5;
+  if (maxItems <= 0) return [];
   const sources = config.sources?.length ? config.sources : ["google_news", "google_trends"];
-  const query = buildTrendQuery(input.topic, input.context, config.query);
+  const queryLimit = Math.min(5, Math.max(2, maxItems + 1));
+  const queries = buildTrendQueries(input.topic, input.context, config.query).slice(0, queryLimit);
   const collected: TrendSignal[] = [];
 
   for (const source of sources) {
-    try {
-      const url = source === "google_trends" ? googleTrendsRssUrl(config.geo) : googleNewsRssUrl(query, input.locale, config.geo);
-      const response = await fetchImpl(url, {
-        headers: {
-          accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
-          "user-agent": "shopify-ai-blog-trend-scout/0.1"
-        }
-      });
-      if (!response.ok) continue;
-      const xml = await response.text();
-      collected.push(...parseRssItems(xml, source));
-    } catch {
-      continue;
+    const urls =
+      source === "google_trends"
+        ? [{ url: googleTrendsRssUrl(config.geo), query: "regional trending searches", trendType: "regional_trending" as const }]
+        : queries.map((query) => ({ url: googleNewsRssUrl(query, input.locale, config.geo), query, trendType: "news" as const }));
+
+    for (const item of urls) {
+      try {
+        const response = await fetchImpl(item.url, {
+          headers: {
+            accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+            "user-agent": "shopify-ai-blog-trend-scout/0.1"
+          }
+        });
+        if (!response.ok) continue;
+        const xml = await response.text();
+        collected.push(...parseRssItems(xml, source, item.query, item.trendType));
+      } catch {
+        continue;
+      }
     }
   }
 
-  return rankTrendSignals(collected, query, input.context)
+  return rankTrendSignals(collected, queries.join(" "), input.context)
     .filter((signal) => withinLookback(signal.publishedAt, config.lookbackDays ?? 7))
     .filter((signal) => passesRelevanceGate(signal, input.context))
     .slice(0, maxItems);
 }
 
-function buildTrendQuery(topic: string, context: ContentSourceContext | undefined, configured?: string) {
-  return [
+function buildTrendQueries(topic: string, context: ContentSourceContext | undefined, configured?: string) {
+  const base = [
     configured,
     topic,
+    context?.seedKeywords?.[0],
     context?.product?.productType,
     context?.product?.title,
     context?.collection?.title,
-    context?.seedKeywords?.slice(0, 3).join(" ")
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .replace(/\s+/g, " ")
-    .trim();
+    context?.seedKeywords?.slice(1, 3).join(" ")
+  ];
+  const primary = normalizeQuery(base.filter(Boolean).join(" "));
+  const anchor = normalizeQuery(
+    [
+      configured,
+      context?.seedKeywords?.[0],
+      context?.product?.productType,
+      context?.collection?.title,
+      topic
+    ]
+      .filter(Boolean)
+      .join(" ")
+  );
+  const product = normalizeQuery([context?.product?.title, context?.product?.productType].filter(Boolean).join(" "));
+  const category = normalizeQuery([context?.product?.productType, context?.collection?.title, context?.seedKeywords?.[0]].filter(Boolean).join(" "));
+  const modifierBase = category || anchor || normalizeQuery(topic);
+  const scenarios = topicQueryModifiers(topic, context);
+
+  const queries = uniqueQueries([
+    primary,
+    anchor,
+    product,
+    category,
+    ...(modifierBase ? scenarios.map((modifier) => normalizeQuery([modifierBase, modifier].filter(Boolean).join(" "))) : []),
+    configured,
+    topic
+  ]).filter(Boolean);
+
+  return queries.length ? queries : ["ecommerce shopping trends"];
 }
 
 function googleNewsRssUrl(query: string, locale?: string, geo = "US") {
@@ -79,7 +112,7 @@ function googleTrendsRssUrl(geo = "US") {
   return url;
 }
 
-function parseRssItems(xml: string, source: string): TrendSignal[] {
+function parseRssItems(xml: string, source: string, query?: string, trendType?: TrendSignal["trendType"]): TrendSignal[] {
   return xml
     .split(/<item\b/i)
     .slice(1)
@@ -91,7 +124,9 @@ function parseRssItems(xml: string, source: string): TrendSignal[] {
       publishedAt: readXmlTag(chunk, "pubDate"),
       traffic: readXmlTag(chunk, "ht:approx_traffic") || readXmlTag(chunk, "approx_traffic"),
       imageUrl: readXmlTag(chunk, "ht:picture") || readXmlAttribute(chunk, "media:content", "url"),
-      source: SOURCE_LABELS[source] ?? source
+      source: SOURCE_LABELS[source] ?? source,
+      query,
+      trendType
     }))
     .filter((item) => item.title);
 }
@@ -142,14 +177,63 @@ function rankTrendSignals(signals: TrendSignal[], query: string, context?: Conte
     const key = signal.url || signal.title.toLowerCase();
     if (unique.has(key)) continue;
     const signalTerms = tokenSet(`${signal.title} ${signal.summary ?? ""}`);
+    const queryTerms = tokenSet(signal.query ?? "");
     const overlap = Array.from(terms).filter((term) => signalTerms.has(term)).length;
+    const queryOverlap = Array.from(queryTerms).filter((term) => signalTerms.has(term)).length;
     unique.set(key, {
       ...signal,
-      relevanceScore: overlap
+      relevanceScore: overlap + Math.min(3, queryOverlap)
     });
   }
 
   return Array.from(unique.values()).sort((left, right) => (right.relevanceScore ?? 0) - (left.relevanceScore ?? 0));
+}
+
+function normalizeQuery(value: string | undefined) {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function uniqueQueries(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  const tokenHistory: string[][] = [];
+  for (const value of values) {
+    const normalized = normalizeQuery(value);
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    const tokens = Array.from(tokenSet(normalized));
+    if (tokens.length > 0 && tokenHistory.some((existing) => queryOverlap(tokens, existing) >= 0.86)) continue;
+    seen.add(key);
+    tokenHistory.push(tokens);
+    output.push(normalized);
+  }
+  return output;
+}
+
+function queryOverlap(left: string[], right: string[]): number {
+  if (left.length === 0 || right.length === 0) return 0;
+  const rightSet = new Set(right);
+  const hits = left.filter((token) => rightSet.has(token)).length;
+  return hits / Math.min(left.length, right.length);
+}
+
+function topicQueryModifiers(topic: string, context?: ContentSourceContext): string[] {
+  const text = [
+    topic,
+    context?.product?.title,
+    context?.product?.productType,
+    context?.product?.tags?.join(" "),
+    context?.collection?.title
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const phoneCase = /\b(?:phone|iphone|pixel|samsung)\b.*\bcase\b|\bcase\b.*\b(?:phone|iphone|pixel|samsung)\b/.test(text);
+  if (phoneCase) {
+    return ["style trend", "gift ideas", "desk setup", "streetwear", "magsafe", "protective accessories"];
+  }
+  return ["trend", "shopping intent", "buying guide", "gift ideas", "style ideas"];
 }
 
 function tokenSet(value: string) {
