@@ -43,6 +43,7 @@ export interface ShopifyArticle {
   summary?: string;
   tags: string[];
   isPublished?: boolean;
+  publishedAt?: string | null;
   author?: {
     name?: string;
   };
@@ -81,6 +82,7 @@ const ARTICLE_FIELDS = /* GraphQL */ `
   summary
   tags
   isPublished
+  publishedAt
   author {
     name
   }
@@ -111,8 +113,8 @@ const ARTICLE_CREATE_MUTATION = /* GraphQL */ `
 `;
 
 const ARTICLE_UPDATE_MUTATION = /* GraphQL */ `
-  mutation ShopifyArticleUpdate($id: ID!, $article: ArticleUpdateInput!, $redirectNewHandle: Boolean) {
-    articleUpdate(id: $id, article: $article, redirectNewHandle: $redirectNewHandle) {
+  mutation ShopifyArticleUpdate($id: ID!, $article: ArticleUpdateInput!) {
+    articleUpdate(id: $id, article: $article) {
       article {
         ${ARTICLE_FIELDS}
       }
@@ -127,7 +129,7 @@ const ARTICLE_UPDATE_MUTATION = /* GraphQL */ `
 
 export async function articleCreate(client: ShopifyGraphQLClient, input: ShopifyArticleCreateInput): Promise<ShopifyArticle> {
   const data = await client.request<{ articleCreate: ShopifyArticlePayload }>(ARTICLE_CREATE_MUTATION, {
-    article: normalizeArticleInput(input, true)
+    article: normalizeArticleInput(input, "create")
   });
 
   return unwrapArticlePayload("articleCreate", data.articleCreate);
@@ -150,8 +152,7 @@ export async function articleUpdate(
 
   const data = await client.request<{ articleUpdate: ShopifyArticlePayload }>(ARTICLE_UPDATE_MUTATION, {
     id,
-    article: normalizeArticleInput(articleInput, false),
-    redirectNewHandle: "redirectNewHandle" in articleInput ? articleInput.redirectNewHandle : undefined
+    article: normalizeArticleInput(articleInput, "update")
   });
 
   return unwrapArticlePayload("articleUpdate", data.articleUpdate);
@@ -165,12 +166,14 @@ export async function updateArticle(
   return articleUpdate(client, idOrInput, input);
 }
 
-function normalizeArticleInput(input: ShopifyArticleWriteInput, requireTitle: boolean): Record<string, unknown> {
-  if (requireTitle && !input.title) {
+function normalizeArticleInput(input: ShopifyArticleWriteInput, mode: "create" | "update"): Record<string, unknown> {
+  if (mode === "create" && !input.title) {
     throw new ShopifyError("articleCreate requires title.");
   }
 
   const author = typeof input.author === "string" ? { name: input.author } : input.author;
+  const publishDate = input.isPublished === true ? undefined : input.publishDate;
+  const redirectNewHandle = mode === "update" && "redirectNewHandle" in input ? input.redirectNewHandle : undefined;
   return removeUndefined({
     blogId: input.blogId,
     title: input.title,
@@ -179,7 +182,8 @@ function normalizeArticleInput(input: ShopifyArticleWriteInput, requireTitle: bo
     body: input.body ?? input.bodyHtml,
     summary: input.summary,
     isPublished: input.isPublished,
-    publishDate: input.publishDate,
+    publishDate,
+    redirectNewHandle,
     tags: input.tags,
     image: input.image,
     metafields: input.metafields,

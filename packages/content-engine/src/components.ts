@@ -139,10 +139,13 @@ export const defaultHtmlAssembler: HtmlAssembler = {
     const bodyHtml = [
       `<p>${escapeHtml(draft.intro)}</p>`,
       sections,
+      verifiedFactsHtml(context, input.locale),
+      decisionMatrixHtml(context, keywords, input.locale),
       context.product?.imageUrls?.[0]
         ? `<figure><img src="${escapeHtml(context.product.imageUrls[0])}" alt="${escapeHtml(draft.imageAlt ?? draft.title)}" /></figure>`
         : "",
       relatedLinksHtml(context, input.locale),
+      faqHtml(keywords, context, input.locale),
       `<p>${escapeHtml(draft.conclusion)}</p>`
     ].join("");
 
@@ -170,15 +173,22 @@ export const defaultSeoScorer: SeoScorer = {
     const secondaryHits = keywords.secondaryKeywords.filter((keyword) => body.includes(keyword.toLowerCase())).length;
     const titlePrimaryPassed = title.includes(primary) || keywordTokenCoverage(article.title, keywords.primaryKeyword) >= 0.58;
 
+    const targetDepth = Math.max(360, Math.floor(input.targetWordCount * 0.45));
+    const hasDecisionSupport = /<table\b/i.test(article.bodyHtml) || /choose|skip|适合|不适合|对比|比较|faq|常见问题/i.test(bodyText);
+    const hasEvidenceSupport = /verified|confirmed|not confirmed|facts|已确认|未确认|事实|规格/i.test(bodyText);
+    const contextualLinks = countMatches(article.bodyHtml, /<a\b/gi);
     const checks: SeoCheck[] = [
-      check("title-primary", "Primary keyword in title", titlePrimaryPassed, 20),
-      check("summary-primary", "Primary keyword in summary", summary.includes(primary), 12),
-      check("body-primary", "Primary keyword in body", body.includes(primary), 18),
-      check("heading-depth", "At least three H2 sections", headingCount >= 3, 12),
-      check("target-depth", "Draft has useful depth", wordCount >= Math.max(120, Math.floor(input.targetWordCount * 0.25)), 14),
-      check("title-length", "Title is scannable", article.title.length >= 8 && article.title.length <= 72, 8),
-      check("secondary-coverage", "Secondary keyword coverage", secondaryHits >= Math.min(2, keywords.secondaryKeywords.length), 10),
-      check("html-structure", "HTML has semantic sections", article.bodyHtml.includes("<section>") && article.bodyHtml.includes("</section>"), 6)
+      check("title-primary", "Primary keyword in title", titlePrimaryPassed, 16),
+      check("summary-primary", "Primary keyword in summary", summary.includes(primary), 10),
+      check("body-primary", "Primary keyword in body", body.includes(primary), 14),
+      check("heading-depth", "At least three H2 sections", headingCount >= 3, 10),
+      check("target-depth", "Draft has useful depth", wordCount >= targetDepth, 16),
+      check("decision-support", "Article helps the shopper make a decision", hasDecisionSupport, 12),
+      check("evidence-support", "Article separates facts from unknowns", hasEvidenceSupport, 10),
+      check("title-length", "Title is scannable", article.title.length >= 8 && article.title.length <= 72, 6),
+      check("secondary-coverage", "Secondary keyword coverage", secondaryHits >= Math.min(2, keywords.secondaryKeywords.length), 8),
+      check("internal-context", "Contextual internal links are present when available", contextualLinks > 0 || input.sourceType === "manual_topic", 4),
+      check("html-structure", "HTML has semantic sections", article.bodyHtml.includes("<section>") && article.bodyHtml.includes("</section>"), 4)
     ];
 
     const score = Math.min(100, checks.reduce((total, item) => total + item.points, 0));
@@ -193,9 +203,9 @@ export const defaultSeoScorer: SeoScorer = {
 export const defaultQualityGate: QualityGate = {
   evaluate(article, seo, input, context) {
     const qualityConfig = context.generationConfig?.qualityGate;
-    const minSeoScore = qualityConfig?.minSeoScore ?? 72;
+    const minSeoScore = qualityConfig?.minSeoScore ?? 78;
     const wordCount = estimateWordCount(stripHtml(article.bodyHtml), input.locale);
-    const minWords = Math.max(120, Math.floor(input.targetWordCount * 0.25));
+    const minWords = Math.max(360, Math.floor(input.targetWordCount * 0.45));
     const body = stripHtml(article.bodyHtml).toLowerCase();
     const bannedWords = context.brandVoice?.bannedWords ?? [];
     const blockedWords = bannedWords.filter((word) => word && body.includes(word.toLowerCase()));
@@ -206,8 +216,9 @@ export const defaultQualityGate: QualityGate = {
     if (seo.score < minSeoScore) reasons.push(`SEO score ${seo.score} is below ${minSeoScore}.`);
     if (wordCount < minWords) reasons.push(`Estimated word count ${wordCount} is below ${minWords}.`);
     if (blockedWords.length > 0) reasons.push(`Banned words found: ${blockedWords.join(", ")}.`);
-    if (qualityConfig?.enabled !== false && editorial.score < (qualityConfig?.minEditorialScore ?? 0)) {
-      reasons.push(`Editorial quality score ${editorial.score} is below ${qualityConfig?.minEditorialScore ?? 0}.`);
+    const minEditorialScore = qualityConfig?.minEditorialScore ?? 72;
+    if (qualityConfig?.enabled !== false && editorial.score < minEditorialScore) {
+      reasons.push(`Editorial quality score ${editorial.score} is below ${minEditorialScore}.`);
     }
     if (qualityConfig?.requireTrendEvidence && !context.trendSignals?.length) {
       const hasEvergreenEvidence = Boolean(
@@ -224,7 +235,7 @@ export const defaultQualityGate: QualityGate = {
     if (qualityConfig?.rejectTemplatePatterns !== false && editorial.signals.some((signal) => signal.includes("template"))) {
       reasons.push("Template-like writing patterns were detected.");
     }
-    if (!article.summary) warnings.push("Missing article summary.");
+    if (!article.summary) reasons.push("Missing article summary.");
     if (!article.imageAlt) warnings.push("Missing image alt text.");
     if (context.generationConfig?.internalLinks?.enabled && !article.bodyHtml.includes("<a ")) {
       warnings.push("Internal links were requested but no anchor tag was found.");
@@ -306,6 +317,13 @@ export function evaluateEditorialQuality(article: HtmlAssemblyResult, locale: Su
     score -= 12;
     signals.push("low sentence-length variation");
     recommendations.push("Mix short and longer explanatory sentences.");
+  }
+
+  const informationGain = informationGainSignals(article, text, locale);
+  if (informationGain.length < 3) {
+    score -= 16;
+    signals.push(`low information gain: ${informationGain.join(", ") || "no strong source-specific signals"}`);
+    recommendations.push("Add verified product facts, comparison tables, caveats, contextual links, or concrete shopper scenarios.");
   }
 
   return {
@@ -843,7 +861,7 @@ export function selectTopicCandidate(
   candidates.push(...evergreenTopicCandidates(keyword, category, locale, context, evidence, usedTopics));
 
   const sorted = uniqueTopicCandidates(candidates)
-    .map((candidate) => applyTopicHistoryPenalty(candidate, usedTopics))
+    .map((candidate) => applyTopicHistoryPenalty(candidate, usedTopics, context))
     .filter((candidate) => candidate.score >= (context.generationConfig?.topicDiscovery?.minEvidenceScore ?? 0))
     .sort((a, b) => b.score - a.score);
   const novel = sorted.filter((candidate) => !isRepeatedTopic(candidate.topic, usedTopics));
@@ -1271,6 +1289,71 @@ function relatedLinksHtml(context: ContentSourceContext, locale: SupportedLocale
   return `<section><h2>${heading}</h2><ul>${items}</ul></section>`;
 }
 
+function verifiedFactsHtml(context: ContentSourceContext, locale: SupportedLocale): string {
+  const facts = [
+    context.product?.title ? [locale === "zh-CN" ? "已确认商品" : "Confirmed product", context.product.title] : undefined,
+    context.product?.productType ? [locale === "zh-CN" ? "品类" : "Category", context.product.productType] : undefined,
+    context.product?.vendor ? [locale === "zh-CN" ? "供应商" : "Vendor", context.product.vendor] : undefined,
+    context.product?.tags?.length ? [locale === "zh-CN" ? "同步标签" : "Synced tags", context.product.tags.slice(0, 6).join(", ")] : undefined,
+    context.product?.imageUrls?.length
+      ? [locale === "zh-CN" ? "商品图片" : "Product images", `${context.product.imageUrls.length}`]
+      : undefined,
+    context.collection?.title ? [locale === "zh-CN" ? "已确认系列" : "Confirmed collection", context.collection.title] : undefined
+  ].filter((item): item is string[] => Boolean(item));
+
+  if (facts.length === 0) return "";
+  const heading = locale === "zh-CN" ? "已确认事实和未确认信息" : "Verified facts and not-confirmed details";
+  const rows = facts.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join("");
+  const unknown =
+    locale === "zh-CN"
+      ? "材质、跌落保护、适配范围或促销信息未在同步数据中确认时，不应在正文里猜测。"
+      : "Material, drop protection, compatibility scope, and promotions should stay unclaimed when they are not confirmed in synced data.";
+
+  return `<section><h2>${heading}</h2><table><tbody>${rows}</tbody></table><p>${escapeHtml(unknown)}</p></section>`;
+}
+
+function decisionMatrixHtml(context: ContentSourceContext, keywords: KeywordPlan, locale: SupportedLocale): string {
+  const heading = locale === "zh-CN" ? `${keywords.primaryKeyword}选择和跳过判断` : `${keywords.primaryKeyword} decision matrix`;
+  const rows =
+    locale === "zh-CN"
+      ? [
+          ["适合", "想要围绕真实商品信息、图片和使用场景做购买判断的读者。"],
+          ["可以跳过", "如果你需要未同步的保护等级、材质认证或具体促销承诺，先查看商品页。"],
+          ["下一步", context.internalLinks?.[0] ? `继续看：${context.internalLinks[0].anchor ?? context.internalLinks[0].title}` : "对照商品页里的规格、变体和图片。"]
+        ]
+      : [
+          ["Choose this if", "You want a decision based on synced product facts, images, and realistic use cases."],
+          ["Skip this if", "You need unconfirmed protection ratings, material certifications, or promotion claims before deciding."],
+          ["Next step", context.internalLinks?.[0] ? `Continue with ${context.internalLinks[0].anchor ?? context.internalLinks[0].title}` : "Check the product page for specs, variants, and images."]
+        ];
+  const body = rows.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join("");
+  return `<section><h2>${escapeHtml(heading)}</h2><table><tbody>${body}</tbody></table></section>`;
+}
+
+function faqHtml(keywords: KeywordPlan, context: ContentSourceContext, locale: SupportedLocale): string {
+  const heading = locale === "zh-CN" ? "常见问题" : "FAQ";
+  const product = context.product?.title ?? keywords.primaryKeyword;
+  const items =
+    locale === "zh-CN"
+      ? [
+          [`${keywords.primaryKeyword}适合日常使用吗？`, `如果${product}的图片、标签和商品页信息符合你的使用场景，它更适合日常轻量决策；未确认的保护等级不要默认假设。`],
+          [`购买前要看哪些已确认信息？`, "先看商品标题、品类、标签、图片、变体和商品页描述，再判断材质、兼容性或维护要求是否已经明确。"],
+          [`什么时候不建议只看这篇文章下单？`, "当你需要精确型号、保护认证、促销价格或发货承诺时，应该回到商品页核对最新信息。"],
+          [`内链应该怎么用？`, "内链只应该把读者带到相关商品、系列或延伸文章，而不是为了数量硬塞链接。"],
+          [`这类内容为什么要写未确认信息？`, "把未知项说清楚能减少夸大承诺，也让搜索用户更快知道下一步该查什么。"]
+        ]
+      : [
+          [`Is ${keywords.primaryKeyword} good for daily use?`, `It can be, if ${product} matches the shopper's use case in the synced images, tags, and product-page facts. Do not assume unconfirmed protection ratings.`],
+          ["What should I check before buying?", "Check the title, category, tags, images, variants, and product description before relying on material, compatibility, or care assumptions."],
+          ["When should I not buy from this article alone?", "Go back to the product page when you need exact model fit, certification details, current pricing, shipping promises, or promotions."],
+          ["How should the internal links help?", "Internal links should move the reader to a related product, collection, or article that helps the next decision."],
+          ["Why mention not-confirmed details?", "Clear unknowns prevent inflated claims and tell search visitors exactly what to verify next."]
+        ];
+  return `<section><h2>${heading}</h2>${items
+    .map(([question, answer]) => `<h3>${escapeHtml(question)}</h3><p>${escapeHtml(answer)}</p>`)
+    .join("")}</section>`;
+}
+
 function buildDetailedImagePrompt(
   input: NormalizedContentPipelineInput,
   context: ContentSourceContext,
@@ -1361,6 +1444,23 @@ function sectionParagraph(heading: string, intent: string, keywords: KeywordPlan
     "purchase-check": `The closing check should rule out poor fits as clearly as it supports good ones. Keep ${keywords.primaryKeyword} advice concrete and avoid absolute promises.`
   };
   return escapeHtml(paragraphs[intent] ?? `${heading} should connect ${keywords.primaryKeyword} with a concrete shopper situation instead of repeating a fixed article template.`);
+}
+
+function informationGainSignals(article: HtmlAssemblyResult, text: string, locale: SupportedLocale): string[] {
+  const signals: string[] = [];
+  if (/<table\b/i.test(article.bodyHtml)) signals.push("table");
+  if (/<a\b/i.test(article.bodyHtml)) signals.push("contextual link");
+  if (/\d/.test(text)) signals.push("specific numbers");
+  if (locale === "zh-CN") {
+    if (/已确认|未确认|事实|规格|变体|价格|库存|标签/.test(text)) signals.push("verified facts");
+    if (/适合|不适合|跳过|下单前|购买前|场景/.test(text)) signals.push("decision guidance");
+    if (/常见问题|FAQ|[？?]/i.test(text)) signals.push("faq");
+  } else {
+    if (/verified|confirmed|not confirmed|not listed|specs|variant|price|stock|tag/i.test(text)) signals.push("verified facts");
+    if (/choose this if|skip this if|before you buy|pre-purchase|use case|best for/i.test(text)) signals.push("decision guidance");
+    if (/FAQ|question|\?/i.test(text)) signals.push("faq");
+  }
+  return signals;
 }
 
 function check(id: string, label: string, passed: boolean, maxPoints: number): SeoCheck {
@@ -1469,10 +1569,11 @@ function looksLikeProductListingSignal(title: string, summary?: string): boolean
   return commercePattern && productSpecHits >= 2;
 }
 
-function applyTopicHistoryPenalty(candidate: TopicCandidate, usedTopics: string[]): TopicCandidate {
+function applyTopicHistoryPenalty(candidate: TopicCandidate, usedTopics: string[], context: ContentSourceContext): TopicCandidate {
   const maxSimilarity = maxTopicSimilarity(candidate.topic, usedTopics);
   const angleRecentlyUsed = candidate.agent ? usedTopics.some((topic) => inferredTopicAngleKey(topic) === candidate.agent?.angleKey) : false;
-  const penalty = Math.round(maxSimilarity * 18) + (angleRecentlyUsed ? 8 : 0);
+  const memoryPenalty = agentMemoryPenalty(candidate, context);
+  const penalty = Math.round(maxSimilarity * 18) + (angleRecentlyUsed ? 8 : 0) + memoryPenalty;
   if (penalty <= 0) return candidate;
 
   const score = clampScore(candidate.score - penalty);
@@ -1481,7 +1582,7 @@ function applyTopicHistoryPenalty(candidate: TopicCandidate, usedTopics: string[
   return {
     ...candidate,
     score,
-    reasons: [...candidate.reasons, "recent topic history reduced score"],
+    reasons: [...candidate.reasons, memoryPenalty > 0 ? "agent memory reduced score" : "recent topic history reduced score"],
     agent: candidate.agent
       ? {
           ...candidate.agent,
@@ -1489,6 +1590,18 @@ function applyTopicHistoryPenalty(candidate: TopicCandidate, usedTopics: string[
         }
       : undefined
   };
+}
+
+function agentMemoryPenalty(candidate: TopicCandidate, context: ContentSourceContext): number {
+  let penalty = 0;
+  for (const memory of context.agentMemories ?? []) {
+    const activeAvoid = memory.avoidUntil && new Date(memory.avoidUntil).getTime() > Date.now();
+    if (activeAvoid && memory.angleKey && candidate.agent?.angleKey === memory.angleKey) penalty += 16;
+    if (memory.outcome === "failed" && memory.keyword && keywordTokenCoverage(candidate.primaryKeyword, memory.keyword) >= 0.7) {
+      penalty += 10;
+    }
+  }
+  return Math.min(26, penalty);
 }
 
 function diverseTopicCandidates(candidates: TopicCandidate[], limit: number): TopicCandidate[] {

@@ -322,6 +322,7 @@ describe("content engine", () => {
     expect(requestedUrls.length).toBeLessThanOrEqual(3);
     expect(result.artifacts.agentRun.mode).toBe("commercial");
     expect(result.stages.map((stage) => stage.stage)).toEqual([
+      "tool_planning",
       "research",
       "keyword_strategy",
       "topic_selection",
@@ -329,12 +330,57 @@ describe("content engine", () => {
       "draft_generation",
       "quality_reflection"
     ]);
+    expect(result.artifacts.agentRun.toolPlan.length).toBeGreaterThan(3);
+    expect(result.artifacts.agentRun.toolCalls.some((call) => call.toolName === "trend_discovery")).toBe(true);
+    expect(result.artifacts.agentRun.skillDoctrine.sources.map((source) => source.name)).toContain("superseo write-content");
+    expect(result.artifacts.agentRun.stages.every((stage) => stage.agentRole)).toBe(true);
     expect(result.artifacts.research.trendSignals.length).toBeGreaterThan(0);
     expect(result.artifacts.keywordStrategy.primaryKeyword).toBe("clear phone case");
     expect(result.artifacts.topicSelectionV2.selected.scoring.opportunity).toBeGreaterThan(0);
     expect(result.artifacts.contentBrief.internalLinkPlan[0]?.url).toContain("caseease.com");
     expect(result.article.bodyHtml).toContain("https://www.caseease.com/collections/clear-cases");
     expect(result.artifacts.reflection.publishDecision).toMatch(/ready|revise|reject/);
+  });
+
+  it("uses long-term agent memories as warnings in topic selection", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Style",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["clear phone case"],
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", minOpportunityScore: 50 },
+          topicDiscovery: { enabled: true, maxCandidates: 3 }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/8",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe"],
+          imageUrls: []
+        },
+        agentMemories: [
+          {
+            keyword: "clear phone case",
+            angleKey: "scenario_fit",
+            outcome: "failed",
+            confidence: 88,
+            learnedRule: "Avoid another scenario-fit clear phone case article until the structure changes.",
+            avoidUntil: new Date(Date.now() + 86400000).toISOString()
+          }
+        ]
+      }
+    );
+
+    expect(result.artifacts.agentRun.memory.learnedRules.join(" ")).toContain("Avoid another scenario-fit");
+    expect(result.artifacts.agentRun.memory.performanceSignals[0]?.outcome).toBe("failed");
+    expect(result.artifacts.agentRun.toolCalls.some((call) => call.toolName === "topic_opportunity_ranker")).toBe(true);
   });
 
   it("enforces the configured minimum topic opportunity score in the SEO agent", async () => {

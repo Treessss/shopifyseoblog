@@ -40,6 +40,11 @@ export default async function ArticleReviewPage({ params }: PageProps) {
   const aiSearchScore = numberValue(aiSearchFinal.score);
   const aiSearchRevisions = recordArray(aiSearchReview.revisions);
   const aiSearchActionItems = recordArray(aiSearchFinal.actionItems);
+  const seoAgent = asRecord(generationMetadata.seoAgent);
+  const agentStages = recordArray(seoAgent.stages);
+  const agentToolCalls = recordArray(seoAgent.toolCalls);
+  const agentReflectionTasks = recordArray(seoAgent.reflectionTasks);
+  const agentMemory = asRecord(seoAgent.memory);
   const topicSelection = generationMetadata.topicSelection;
   const keywordEvidence = generationMetadata.keywordEvidence;
   const evidenceSummary =
@@ -285,6 +290,42 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                   <JsonBlock value={qualityReport} empty="暂无质检报告" />
                 </Panel>
 
+                <Panel title="AI Agent 轨迹" compact>
+                  {agentStages.length > 0 ? (
+                    <div className="stack">
+                      <dl className="detail-list">
+                        <div>
+                          <dt>Agent 版本</dt>
+                          <dd className="code">{stringValue(seoAgent.agentVersion) ?? "未记录"}</dd>
+                        </div>
+                        <div>
+                          <dt>运行状态</dt>
+                          <dd>{stringValue(seoAgent.status) ?? "未记录"}</dd>
+                        </div>
+                        <div>
+                          <dt>工具调用</dt>
+                          <dd>{agentToolCalls.length}</dd>
+                        </div>
+                        <div>
+                          <dt>反思任务</dt>
+                          <dd>{agentReflectionTasks.length}</dd>
+                        </div>
+                      </dl>
+                      <AgentTimeline stages={agentStages} />
+                      <TextList
+                        title="记忆规则"
+                        items={stringArray(agentMemory.learnedRules).concat(
+                          stringArray(agentMemory.blockedAngles).map((angle) => `避开角度：${angle}`)
+                        )}
+                      />
+                      <ActionItemList title="Agent 反思任务" items={agentReflectionTasks} />
+                      <JsonBlock value={{ toolCalls: agentToolCalls.slice(0, 8), memory: agentMemory }} empty="暂无 Agent 运行数据" />
+                    </div>
+                  ) : (
+                    <EmptyState title="暂无 Agent 轨迹" description="商业级 SEO Agent 运行后会展示阶段、工具、反思任务和记忆命中。" />
+                  )}
+                </Panel>
+
                 <Panel title="生成信息" compact>
                   <dl className="detail-list">
                     <div>
@@ -365,6 +406,28 @@ function TextList({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+function AgentTimeline({ stages }: { stages: Array<Record<string, unknown>> }) {
+  return (
+    <div className="json-block">
+      {stages.map((stage, index) => {
+        const name = stringValue(stage.stage) ?? `stage-${index + 1}`;
+        const role = stringValue(stage.agentRole) ?? "agent";
+        const status = stringValue(stage.status) ?? "unknown";
+        const decision = stringValue(stage.decision);
+
+        return (
+          <div key={`${name}-${index}`} className="stack">
+            <strong>
+              {index + 1}. {name} · {role} · {status}
+            </strong>
+            {decision ? <div>{decision}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ActionItemList({ title, items }: { title: string; items: Array<Record<string, unknown>> }) {
   if (items.length === 0) return null;
 
@@ -374,9 +437,9 @@ function ActionItemList({ title, items }: { title: string; items: Array<Record<s
       <div className="json-block">
         {items.map((item, index) => {
           const priority = stringValue(item.priority) ?? "high";
-          const area = stringValue(item.area) ?? "文章";
-          const issue = stringValue(item.issue) ?? "暂无问题说明";
-          const concreteEdit = stringValue(item.concreteEdit) ?? "暂无具体改法";
+          const area = stringValue(item.area) ?? stringValue(item.agentRole) ?? "文章";
+          const issue = stringValue(item.issue) ?? stringValue(item.status) ?? "待处理";
+          const concreteEdit = stringValue(item.concreteEdit) ?? stringValue(item.instruction) ?? "暂无具体改法";
           const acceptanceCheck = stringValue(item.acceptanceCheck) ?? "确认修改已经落地。";
 
           return (

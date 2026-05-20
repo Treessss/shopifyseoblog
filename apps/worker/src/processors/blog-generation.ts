@@ -8,6 +8,8 @@ import {
   runAgentContentPipeline,
   runContentPipeline,
   type AgentContentPipelineResult,
+  buildCommercialSkillDoctrine,
+  type AgentMemorySignal,
   type ContentPipelineResult,
   type ContentSourceContext,
   type HtmlAssemblyResult,
@@ -387,6 +389,9 @@ async function generateBlogArticle(
         sourceId: generationInput.sourceId,
         generationConfig: generationInput.generationConfig,
         pipelineResult: agentPipelineResult,
+        qualityPassed: generated.qualityPassed,
+        finalSeoScore: generated.seoScore,
+        finalTrafficScore: aiResult.aiSearchReview?.final.score,
         publishJobId: publishJob.id
       });
     }
@@ -734,6 +739,8 @@ async function runAiSearchReviewWorkflow(
   );
   let currentArticle = article;
   let currentReview = initial;
+  let bestArticle = article;
+  let bestReview = initial;
   const revisions: AiSearchRevisionPass[] = [];
 
   for (let pass = 1; pass <= config.maxRevisionPasses; pass += 1) {
@@ -757,6 +764,10 @@ async function runAiSearchReviewWorkflow(
     });
     currentArticle = revisedArticle;
     currentReview = revisedReview;
+    if (revisedReview.score >= bestReview.score) {
+      bestArticle = revisedArticle;
+      bestReview = revisedReview;
+    }
   }
 
   return {
@@ -765,10 +776,10 @@ async function runAiSearchReviewWorkflow(
       minTrafficScore: config.minTrafficScore,
       maxRevisionPasses: config.maxRevisionPasses,
       initial,
-      final: currentReview,
+      final: bestReview,
       revisions
     },
-    revisedArticle: revisions.length > 0 ? currentArticle : undefined
+    revisedArticle: revisions.length > 0 && bestArticle !== article ? bestArticle : undefined
   };
 }
 
@@ -789,6 +800,8 @@ async function finalizeAiSearchReviewWorkflow(
     evaluateHighScoreArticleStructure(currentArticle, input, context),
     input
   );
+  let bestArticle = currentArticle;
+  let bestReview = currentReview;
   const revisions = result.workflow.revisions.map((revision, index, allRevisions) =>
     index === allRevisions.length - 1 ? { ...revision, afterScore: currentReview.score } : revision
   );
@@ -820,16 +833,20 @@ async function finalizeAiSearchReviewWorkflow(
       changes: revisedReview.strengths
     });
     currentReview = revisedReview;
+    if (revisedReview.score >= bestReview.score) {
+      bestArticle = currentArticle;
+      bestReview = revisedReview;
+    }
   }
 
   return {
     ...result,
     workflow: {
       ...result.workflow,
-      final: currentReview,
+      final: bestReview,
       revisions
     },
-    revisedArticle: currentArticle !== finalArticle ? currentArticle : result.revisedArticle
+    revisedArticle: bestArticle !== finalArticle ? bestArticle : result.revisedArticle
   };
 }
 
@@ -1065,6 +1082,7 @@ function targetAiSearchScore(input: ParsedGenerationInput): number {
 function highScoreArticleContract(input: ParsedGenerationInput, context: ContentSourceContext): string[] {
   const minimum = resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore;
   const target = targetAiSearchScore(input);
+  const doctrine = buildCommercialSkillDoctrine(input.locale);
   const product = context.product;
   const collection = context.collection;
   const configuredInternalLinkLimit = Math.max(0, context.generationConfig?.internalLinks?.maxLinks ?? 4);
@@ -1082,6 +1100,10 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
   return [
     `High-score target: write for ${target}+ AI search traffic score; ${minimum} is only the minimum gate.`,
     `Primary source anchor: ${sourceLabel}. The article must feel built from this source, not from a reusable template.`,
+    `Skill doctrine ${doctrine.version}: apply lessons from ${doctrine.sources.map((source) => source.name).join(", ")}.`,
+    `Required modules: ${doctrine.requiredArticleModules.join(" | ")}.`,
+    `Anti-slop rules: ${doctrine.antiSlopRules.join(" ")}`,
+    `Scoring rubric: ${doctrine.scoringRubric.map((item) => `${item.dimension} ${item.weight}% - ${item.passSignal}`).join(" ; ")}`,
     "Hard requirements:",
     "- Title: specific search intent + clear differentiator. Avoid formula starts like 'How to Choose', 'Guide', 'Best', or '[keyword]: ...' unless the exact query demands it.",
     "- Intro: within the first 120 words, state who the article is for, the concrete buying/search question, the verified product/category anchor, and the decision the reader will be able to make.",
@@ -1316,7 +1338,12 @@ function estimateReviewWordCount(text: string, locale: SupportedLocale): number 
 function normalizeAiSearchReview(value: unknown, generationConfig: GenerationConfig | undefined): AiSearchReviewResult {
   const record = isRecord(value) ? value : {};
   const minTrafficScore = resolveAiSearchReviewConfig(generationConfig).minTrafficScore;
-  const score = clampPercent(numberValue(record.score) ?? averageReviewDimensions(record));
+  const rawScore = clampPercent(numberValue(record.score) ?? averageReviewDimensions(record));
+  const actionItems = normalizeAiSearchActionItems(record.actionItems, record.recommendations, record.revisionBrief).slice(0, 10);
+  const dimensionAverage = averageReviewDimensions(record);
+  const missingActionItemCap = rawScore < minTrafficScore && actionItems.length < 5 ? minTrafficScore - 1 : rawScore;
+  const dimensionCap = dimensionAverage > 0 ? Math.min(missingActionItemCap, Math.max(dimensionAverage + 8, minTrafficScore - 18)) : missingActionItemCap;
+  const score = clampPercent(dimensionCap);
 
   return {
     score,
@@ -1331,7 +1358,7 @@ function normalizeAiSearchReview(value: unknown, generationConfig: GenerationCon
     strengths: stringArray(record.strengths).slice(0, 8),
     recommendations: stringArray(record.recommendations).slice(0, 10),
     revisionBrief: stringArray(record.revisionBrief).slice(0, 10),
-    actionItems: normalizeAiSearchActionItems(record.actionItems, record.recommendations, record.revisionBrief).slice(0, 10)
+    actionItems
   };
 }
 
@@ -1970,8 +1997,22 @@ async function publishArticle(
       apiVersion: store.apiVersion
     });
     const storefrontHost = await resolveStorefrontHostForStore(store, "publish", client);
-    const published = await publishToShopify(client, article, shopifyBlogId, job.data.publishAt);
-    const publishedAt = new Date();
+    const published = await publishToShopify(client, article, shopifyBlogId);
+    if (published.isPublished === false) {
+      throw domainError(
+        "SHOPIFY_ARTICLE_NOT_PUBLISHED",
+        "Shopify accepted the article but returned it as not published. Check blog permissions, publication settings, and article visibility.",
+        {
+          retryable: false,
+          details: {
+            shopifyArticleId: published.id,
+            shopifyBlogId,
+            handle: published.handle
+          }
+        }
+      );
+    }
+    const publishedAt = dateValue(published.publishedAt) ?? new Date();
 
     await prisma.blogArticle.update({
       where: { id: article.id },
@@ -2417,10 +2458,11 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
   const sourceId = campaign?.sourceId ?? article?.sourceId ?? data.sourceId;
   const generationConfig = resolveGenerationConfig(data.generationConfig, campaign?.metadata);
   const initialTopic = firstNonBlank(campaign?.topic, article?.title, data.topic);
-  const [brandVoice, requestedSourceContext, recentTopics] = await Promise.all([
+  const [brandVoice, requestedSourceContext, recentTopics, agentMemories] = await Promise.all([
     loadBrandVoice(data.organizationId, data.storeId, locale, campaign?.brandVoice),
     loadSourceContext(data.storeId, sourceType, sourceId),
-    loadRecentTopicHistory(data.organizationId, data.storeId, locale, campaign?.id ?? data.campaignId)
+    loadRecentTopicHistory(data.organizationId, data.storeId, locale, campaign?.id ?? data.campaignId),
+    loadAgentMemories(data.organizationId, data.storeId, locale, sourceType, sourceId)
   ]);
   const baseSourceContext =
     shouldAutoDiscoverTopic(generationConfig, initialTopic) && !hasCatalogContext(requestedSourceContext)
@@ -2444,6 +2486,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     topic: topicSeed,
     seedKeywords,
     recentTopics,
+    agentMemories,
     generationConfig
   } satisfies ContentSourceContext;
   const [trendSignals, internalLinks, imageReferences] = await Promise.all([
@@ -2609,6 +2652,44 @@ async function loadRecentTopicHistory(
       createdAt: article.createdAt.toISOString()
     }))
   ]).slice(0, 60);
+}
+
+async function loadAgentMemories(
+  organizationId: string,
+  storeId: string,
+  locale: string,
+  sourceType: SourceType,
+  sourceId: string | null | undefined
+): Promise<AgentMemorySignal[]> {
+  const memoryFilters: Array<{ sourceId?: string | null; sourceType?: SourceType; avoidUntil?: { gt: Date } }> = [
+    { sourceId: null },
+    { sourceType },
+    { avoidUntil: { gt: new Date() } }
+  ];
+  if (sourceId) memoryFilters.unshift({ sourceId });
+  const memories = await prisma.agentMemory.findMany({
+    where: {
+      organizationId,
+      storeId,
+      locale,
+      OR: memoryFilters
+    },
+    orderBy: [{ confidence: "desc" }, { lastUsedAt: "desc" }],
+    take: 30
+  });
+
+  return memories.map((memory) => ({
+    keyword: memory.keyword ?? undefined,
+    topic: memory.topicFingerprint ?? undefined,
+    angleKey: memory.angleKey ?? undefined,
+    outcome: memory.outcome,
+    confidence: memory.confidence,
+    qualityScore: memory.qualityScore ?? undefined,
+    trafficScore: memory.trafficScore ?? undefined,
+    learnedRule: memory.learnedRule ?? undefined,
+    avoidUntil: memory.avoidUntil?.toISOString(),
+    lastUsedAt: memory.lastUsedAt.toISOString()
+  }));
 }
 
 function dedupeTopicHistory(items: TopicHistoryItem[]): TopicHistoryItem[] {
@@ -3290,6 +3371,9 @@ async function persistSeoAgentRun(input: {
   sourceId?: string;
   generationConfig?: GenerationConfig;
   pipelineResult: AgentContentPipelineResult;
+  qualityPassed?: boolean;
+  finalSeoScore?: number;
+  finalTrafficScore?: number;
   publishJobId?: string;
 }) {
   const agentRun = input.pipelineResult.artifacts.agentRun;
@@ -3374,6 +3458,22 @@ async function persistSeoAgentRun(input: {
         data: { selectedCandidateId: selectedCandidate.id }
       });
     }
+
+    await persistAgentRuntimeArtifacts({
+      runId: run.id,
+      agentRunId: agentRun.runId,
+      articleId: input.articleId,
+      campaignId: input.campaignId,
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      locale: input.locale,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      qualityPassed: input.qualityPassed,
+      finalSeoScore: input.finalSeoScore,
+      finalTrafficScore: input.finalTrafficScore,
+      agentRun
+    });
   } catch (error) {
     try {
       await writePublishLog({
@@ -3390,6 +3490,208 @@ async function persistSeoAgentRun(input: {
       // Structured SEO Agent persistence is non-critical once article JSON metadata is saved.
     }
   }
+}
+
+async function persistAgentRuntimeArtifacts(input: {
+  runId: string;
+  agentRunId: string;
+  articleId: string;
+  campaignId?: string;
+  organizationId: string;
+  storeId: string;
+  locale: SupportedLocale;
+  sourceType: SourceType;
+  sourceId?: string;
+  qualityPassed?: boolean;
+  finalSeoScore?: number;
+  finalTrafficScore?: number;
+  agentRun: AgentContentPipelineResult["artifacts"]["agentRun"];
+}) {
+  await Promise.all([
+    prisma.agentToolCall.deleteMany({ where: { topicRunId: input.runId } }),
+    prisma.agentReflectionTask.deleteMany({ where: { topicRunId: input.runId } })
+  ]);
+
+  if (input.agentRun.toolCalls.length > 0) {
+    await prisma.agentToolCall.createMany({
+      data: input.agentRun.toolCalls.map((call) => ({
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        topicRunId: input.runId,
+        campaignId: input.campaignId,
+        articleId: input.articleId,
+        runId: input.agentRunId,
+        stage: call.stage,
+        agentRole: call.agentRole,
+        toolName: call.toolName,
+        purpose: call.purpose,
+        status: call.status,
+        input: toPrismaJson(call.input ?? null),
+        output: toPrismaJson(call.output ?? null),
+        evidence: toPrismaJson(call.evidence),
+        warnings: call.warnings,
+        startedAt: dateValue(call.startedAt),
+        completedAt: dateValue(call.finishedAt),
+        latencyMs: call.latencyMs,
+        metadata: toPrismaJson({ planId: call.planId })
+      }))
+    });
+  }
+
+  if (input.agentRun.reflectionTasks.length > 0) {
+    await prisma.agentReflectionTask.createMany({
+      data: input.agentRun.reflectionTasks.map((task) => ({
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        topicRunId: input.runId,
+        campaignId: input.campaignId,
+        articleId: input.articleId,
+        priority: task.priority,
+        agentRole: task.agentRole,
+        instruction: task.instruction,
+        acceptanceCheck: task.acceptanceCheck,
+        status: task.status,
+        evidenceIds: task.evidenceIds,
+        metadata: toPrismaJson({ source: "seo_agent_reflection" })
+      }))
+    });
+  }
+
+  await Promise.all(
+    collectAgentEvidence(input.agentRun).map((evidence) =>
+      prisma.agentEvidence.upsert({
+        where: {
+          storeId_dedupeHash: {
+            storeId: input.storeId,
+            dedupeHash: agentEvidenceHash(input.locale, evidence)
+          }
+        },
+        update: {
+          topicRunId: input.runId,
+          campaignId: input.campaignId,
+          articleId: input.articleId,
+          confidence: evidence.confidence,
+          relevanceScore: evidence.relevanceScore,
+          metric: evidence.metric,
+          metadata: toPrismaJson(evidence),
+          expiresAt: agentEvidenceExpiresAt(evidence)
+        },
+        create: {
+          organizationId: input.organizationId,
+          storeId: input.storeId,
+          topicRunId: input.runId,
+          campaignId: input.campaignId,
+          articleId: input.articleId,
+          locale: input.locale,
+          evidenceType: evidence.type,
+          source: evidence.source,
+          normalizedKeyword: normalizeAgentKeyword(evidence.value),
+          value: evidence.value,
+          url: evidence.url,
+          query: evidence.label,
+          publishedAt: dateValue(evidence.publishedAt),
+          metric: evidence.metric,
+          relevanceScore: evidence.relevanceScore,
+          confidence: evidence.confidence,
+          expiresAt: agentEvidenceExpiresAt(evidence),
+          dedupeHash: agentEvidenceHash(input.locale, evidence),
+          metadata: toPrismaJson(evidence)
+        }
+      })
+    )
+  );
+
+  await prisma.agentMemory.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      campaignId: input.campaignId,
+      articleId: input.articleId,
+      locale: input.locale,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      keyword: input.agentRun.keywordStrategy.primaryKeyword,
+      angleKey: input.agentRun.topicSelection.selected.agent?.angleKey,
+      topicFingerprint: normalizeAgentKeyword(input.agentRun.topicSelection.selected.topic),
+      outcome: input.qualityPassed ? "success" : input.agentRun.status === "failed" ? "failed" : "warning",
+      confidence: input.qualityPassed ? 86 : 62,
+      qualityScore: input.finalSeoScore,
+      trafficScore: input.finalTrafficScore,
+      learnedRule: buildAgentLearnedRule(input),
+      avoidUntil: input.qualityPassed ? undefined : daysFromNow(21),
+      evidence: toPrismaJson(input.agentRun.topicSelection.selected.evidence),
+      metadata: toPrismaJson({
+        runId: input.agentRunId,
+        selectedTopic: input.agentRun.topicSelection.selected.topic,
+        reflectionDecision: input.agentRun.reflection.publishDecision,
+        memorySnapshot: input.agentRun.memory
+      })
+    }
+  });
+}
+
+function collectAgentEvidence(agentRun: AgentContentPipelineResult["artifacts"]["agentRun"]): KeywordEvidenceItem[] {
+  const all = [
+    ...agentRun.research.evidence,
+    ...(agentRun.keywordStrategy.evidenceItems ?? []),
+    ...agentRun.topicSelection.selected.evidence
+  ];
+  const seen = new Set<string>();
+  const output: KeywordEvidenceItem[] = [];
+  for (const evidence of all) {
+    const key = agentEvidenceHash(agentRun.keywordStrategy.locale, evidence);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(evidence);
+  }
+  return output.slice(0, 80);
+}
+
+function agentEvidenceHash(locale: string, evidence: KeywordEvidenceItem): string {
+  return hashString([locale, evidence.type, evidence.source, evidence.value, evidence.url ?? ""].join("|")).toString(36);
+}
+
+function agentEvidenceExpiresAt(evidence: KeywordEvidenceItem): Date | undefined {
+  if (evidence.type === "trend") return daysFromNow(30);
+  if (evidence.type === "internal_link") return daysFromNow(90);
+  return undefined;
+}
+
+function buildAgentLearnedRule(input: {
+  qualityPassed?: boolean;
+  finalTrafficScore?: number;
+  agentRun: AgentContentPipelineResult["artifacts"]["agentRun"];
+}): string {
+  const angle = input.agentRun.topicSelection.selected.agent?.angleKey ?? "selected angle";
+  const keyword = input.agentRun.keywordStrategy.primaryKeyword;
+  if (input.qualityPassed) {
+    return `Reuse ${angle} for ${keyword} only when fresh evidence and a non-repeating title are available.`;
+  }
+  return `Avoid repeating ${angle} for ${keyword} until the reflection tasks are resolved and the AI search score improves above ${input.finalTrafficScore ?? "the target"}.`;
+}
+
+function normalizeAgentKeyword(value: string | null | undefined): string | undefined {
+  const normalized = value
+    ?.toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 160);
+  return normalized || undefined;
+}
+
+function daysFromNow(days: number): Date {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date;
+}
+
+function hashString(value: string): number {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function isAgentPipelineResult(result: ContentPipelineResult | AgentContentPipelineResult): result is AgentContentPipelineResult {
@@ -3464,8 +3766,7 @@ async function markArticleFailed(articleId: string | undefined, failureReason: s
 async function publishToShopify(
   client: ShopifyGraphQLClient,
   article: PublishableArticleRow,
-  shopifyBlogId: string,
-  publishAt: string | undefined
+  shopifyBlogId: string
 ): Promise<ShopifyArticle> {
   const input = {
     blogId: shopifyBlogId,
@@ -3474,7 +3775,6 @@ async function publishToShopify(
     bodyHtml: article.bodyHtml ?? "",
     summary: article.summary ?? undefined,
     isPublished: true,
-    publishDate: publishAt,
     tags: article.tags ?? []
   };
 

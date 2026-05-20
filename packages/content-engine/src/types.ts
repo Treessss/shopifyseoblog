@@ -105,6 +105,19 @@ export interface TopicHistoryItem {
   createdAt?: string;
 }
 
+export interface AgentMemorySignal {
+  keyword?: string;
+  topic?: string;
+  angleKey?: string;
+  outcome: "success" | "warning" | "failed" | "published" | "rejected";
+  confidence: number;
+  qualityScore?: number;
+  trafficScore?: number;
+  learnedRule?: string;
+  avoidUntil?: string;
+  lastUsedAt?: string;
+}
+
 export interface ContentSourceContext {
   product?: ProductContext;
   collection?: CollectionContext;
@@ -118,6 +131,7 @@ export interface ContentSourceContext {
   keywordEvidence?: KeywordEvidenceItem[];
   topicSelection?: TopicSelectionResult;
   recentTopics?: TopicHistoryItem[];
+  agentMemories?: AgentMemorySignal[];
   generationConfig?: GenerationConfig;
 }
 
@@ -251,6 +265,7 @@ export interface ContentPipelineResult {
 }
 
 export type AgentStageName =
+  | "tool_planning"
   | "research"
   | "keyword_strategy"
   | "topic_selection"
@@ -259,18 +274,69 @@ export type AgentStageName =
   | "quality_reflection";
 
 export type AgentStageStatus = "passed" | "warning" | "failed" | "skipped";
+export type AgentRole = "researcher" | "keyword_planner" | "topic_strategist" | "writer" | "seo_editor" | "publisher_guard";
+
+export interface AgentToolPlan {
+  id: string;
+  stage: AgentStageName;
+  agentRole: AgentRole;
+  toolName: string;
+  purpose: string;
+  required: boolean;
+  inputRefs: string[];
+  expectedOutput: string;
+}
+
+export interface AgentToolCallTrace {
+  id: string;
+  planId?: string;
+  stage: AgentStageName;
+  agentRole: AgentRole;
+  toolName: string;
+  purpose: string;
+  status: AgentStageStatus;
+  input?: unknown;
+  output?: unknown;
+  evidence: KeywordEvidenceItem[];
+  warnings: string[];
+  startedAt: string;
+  finishedAt: string;
+  latencyMs: number;
+}
+
+export interface AgentReflectionTaskDraft {
+  priority: "P0" | "P1" | "P2";
+  agentRole: AgentRole;
+  instruction: string;
+  acceptanceCheck: string;
+  evidenceIds: string[];
+  status: "open" | "resolved";
+}
 
 export interface AgentRunStage<TInput = unknown, TOutput = unknown> {
   id: string;
   stage: AgentStageName;
+  agentRole: AgentRole;
   status: AgentStageStatus;
   input: TInput;
   output?: TOutput;
   evidence: KeywordEvidenceItem[];
   warnings: string[];
+  decision?: string;
+  inputRefs?: string[];
+  outputRefs?: string[];
+  toolCallIds?: string[];
   startedAt: string;
   finishedAt: string;
   agentVersion: string;
+}
+
+export interface SkillDoctrine {
+  version: string;
+  sources: Array<{ name: string; url: string; lesson: string }>;
+  requiredArticleModules: string[];
+  antiSlopRules: string[];
+  scoringRubric: Array<{ dimension: string; weight: number; passSignal: string }>;
 }
 
 export interface MarketInsight {
@@ -358,6 +424,9 @@ export interface TopicMemorySnapshot {
   repeatedTopicCount: number;
   avoidedAngles: string[];
   lastTopics: string[];
+  learnedRules: string[];
+  blockedAngles: string[];
+  performanceSignals: Array<{ keyword?: string; angleKey?: string; outcome: AgentMemorySignal["outcome"]; confidence: number }>;
 }
 
 export interface SeoAgentRun {
@@ -369,6 +438,10 @@ export interface SeoAgentRun {
   finishedAt: string;
   status: AgentStageStatus;
   stages: AgentRunStage[];
+  toolPlan: AgentToolPlan[];
+  toolCalls: AgentToolCallTrace[];
+  reflectionTasks: AgentReflectionTaskDraft[];
+  skillDoctrine: SkillDoctrine;
   research: ResearchBrief;
   keywordStrategy: KeywordStrategy;
   topicSelection: TopicSelectionResultV2;

@@ -130,6 +130,30 @@ enum SeoSearchIntent {
   navigational
 }
 
+enum AgentRole {
+  researcher
+  keyword_planner
+  topic_strategist
+  writer
+  seo_editor
+  publisher_guard
+}
+
+enum AgentToolCallStatus {
+  passed
+  warning
+  failed
+  skipped
+}
+
+enum AgentMemoryOutcome {
+  success
+  warning
+  failed
+  published
+  rejected
+}
+
 enum PublishEvent {
   queued
   started
@@ -171,21 +195,25 @@ model Organization {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  memberships         Membership[]
-  stores              ShopifyStore[]
-  localeConfigs       LocaleConfig[]
-  aiProviderConfigs   AiProviderConfig[]
-  brandVoices         BrandVoice[]
-  campaigns           BlogCampaign[]
-  articles            BlogArticle[]
-  articleTranslations ArticleTranslation[]
-  generatedAssets     GeneratedAsset[]
-  publishJobs         PublishJob[]
-  publishLogs         PublishLog[]
-  auditLogs           AuditLog[]
-  productSnapshots    ProductSnapshot[]
-  collectionSnapshots CollectionSnapshot[]
-  seoTopicRuns        SeoTopicRun[]
+  memberships          Membership[]
+  stores               ShopifyStore[]
+  localeConfigs        LocaleConfig[]
+  aiProviderConfigs    AiProviderConfig[]
+  brandVoices          BrandVoice[]
+  campaigns            BlogCampaign[]
+  articles             BlogArticle[]
+  articleTranslations  ArticleTranslation[]
+  generatedAssets      GeneratedAsset[]
+  publishJobs          PublishJob[]
+  publishLogs          PublishLog[]
+  auditLogs            AuditLog[]
+  productSnapshots     ProductSnapshot[]
+  collectionSnapshots  CollectionSnapshot[]
+  seoTopicRuns         SeoTopicRun[]
+  agentMemories        AgentMemory[]
+  agentToolCalls       AgentToolCall[]
+  agentReflectionTasks AgentReflectionTask[]
+  agentEvidence        AgentEvidence[]
 
   @@index([status])
 }
@@ -249,20 +277,24 @@ model ShopifyStore {
   createdAt                    DateTime    @default(now())
   updatedAt                    DateTime    @updatedAt
 
-  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  localeConfigs       LocaleConfig[]
-  aiProviderConfigs   AiProviderConfig[]
-  brandVoices         BrandVoice[]
-  campaigns           BlogCampaign[]
-  articles            BlogArticle[]
-  articleTranslations ArticleTranslation[]
-  generatedAssets     GeneratedAsset[]
-  publishJobs         PublishJob[]
-  publishLogs         PublishLog[]
-  auditLogs           AuditLog[]
-  productSnapshots    ProductSnapshot[]
-  collectionSnapshots CollectionSnapshot[]
-  seoTopicRuns        SeoTopicRun[]
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  localeConfigs        LocaleConfig[]
+  aiProviderConfigs    AiProviderConfig[]
+  brandVoices          BrandVoice[]
+  campaigns            BlogCampaign[]
+  articles             BlogArticle[]
+  articleTranslations  ArticleTranslation[]
+  generatedAssets      GeneratedAsset[]
+  publishJobs          PublishJob[]
+  publishLogs          PublishLog[]
+  auditLogs            AuditLog[]
+  productSnapshots     ProductSnapshot[]
+  collectionSnapshots  CollectionSnapshot[]
+  seoTopicRuns         SeoTopicRun[]
+  agentMemories        AgentMemory[]
+  agentToolCalls       AgentToolCall[]
+  agentReflectionTasks AgentReflectionTask[]
+  agentEvidence        AgentEvidence[]
 
   @@index([organizationId, status])
 }
@@ -362,11 +394,15 @@ model BlogCampaign {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 
-  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  brandVoice   BrandVoice?   @relation(fields: [brandVoiceId], references: [id], onDelete: SetNull)
-  articles     BlogArticle[]
-  seoTopicRuns SeoTopicRun[]
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store                ShopifyStore          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  brandVoice           BrandVoice?           @relation(fields: [brandVoiceId], references: [id], onDelete: SetNull)
+  articles             BlogArticle[]
+  seoTopicRuns         SeoTopicRun[]
+  agentMemories        AgentMemory[]
+  agentToolCalls       AgentToolCall[]
+  agentReflectionTasks AgentReflectionTask[]
+  agentEvidence        AgentEvidence[]
 
   @@index([organizationId, status])
   @@index([storeId, locale, status])
@@ -406,14 +442,18 @@ model BlogArticle {
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
-  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  store        ShopifyStore         @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  campaign     BlogCampaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  translations ArticleTranslation[]
-  assets       GeneratedAsset[]
-  publishJobs  PublishJob[]
-  publishLogs  PublishLog[]
-  seoTopicRuns SeoTopicRun[]
+  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store                ShopifyStore          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaign             BlogCampaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  translations         ArticleTranslation[]
+  assets               GeneratedAsset[]
+  publishJobs          PublishJob[]
+  publishLogs          PublishLog[]
+  seoTopicRuns         SeoTopicRun[]
+  agentMemories        AgentMemory[]
+  agentToolCalls       AgentToolCall[]
+  agentReflectionTasks AgentReflectionTask[]
+  agentEvidence        AgentEvidence[]
 
   @@unique([storeId, locale, handle])
   @@index([organizationId, status])
@@ -448,12 +488,15 @@ model SeoTopicRun {
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
 
-  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  store             ShopifyStore        @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  campaign          BlogCampaign?       @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  article           BlogArticle?        @relation(fields: [articleId], references: [id], onDelete: SetNull)
-  candidates        SeoTopicCandidate[] @relation("SeoTopicRunCandidates")
-  selectedCandidate SeoTopicCandidate?  @relation("SelectedSeoTopicCandidate", fields: [selectedCandidateId], references: [id], onDelete: SetNull)
+  organization      Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store             ShopifyStore          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaign          BlogCampaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article           BlogArticle?          @relation(fields: [articleId], references: [id], onDelete: SetNull)
+  candidates        SeoTopicCandidate[]   @relation("SeoTopicRunCandidates")
+  selectedCandidate SeoTopicCandidate?    @relation("SelectedSeoTopicCandidate", fields: [selectedCandidateId], references: [id], onDelete: SetNull)
+  toolCalls         AgentToolCall[]
+  reflectionTasks   AgentReflectionTask[]
+  evidenceItems     AgentEvidence[]
 
   @@index([organizationId, status, createdAt])
   @@index([storeId, locale, createdAt])
@@ -489,6 +532,141 @@ model SeoTopicCandidate {
   @@index([primaryKeyword])
   @@index([angleKey])
   @@index([searchIntent])
+}
+
+model AgentMemory {
+  id               String             @id @default(cuid())
+  organizationId   String
+  storeId          String
+  campaignId       String?
+  articleId        String?
+  locale           String
+  sourceType       SourceType?
+  sourceId         String?
+  keyword          String?
+  angleKey         String?
+  topicFingerprint String?
+  outcome          AgentMemoryOutcome
+  confidence       Float              @default(50)
+  qualityScore     Float?
+  trafficScore     Float?
+  learnedRule      String?            @db.Text
+  avoidUntil       DateTime?
+  evidence         Json?
+  metadata         Json?
+  lastUsedAt       DateTime           @default(now())
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaign     BlogCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article      BlogArticle?  @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@index([storeId, locale, lastUsedAt])
+  @@index([storeId, keyword])
+  @@index([storeId, angleKey])
+  @@index([outcome, confidence])
+}
+
+model AgentToolCall {
+  id             String              @id @default(cuid())
+  organizationId String
+  storeId        String
+  topicRunId     String?
+  campaignId     String?
+  articleId      String?
+  runId          String
+  stage          String
+  agentRole      AgentRole
+  toolName       String
+  purpose        String              @db.Text
+  status         AgentToolCallStatus @default(passed)
+  input          Json?
+  output         Json?
+  evidence       Json?
+  warnings       String[]            @default([])
+  error          String?             @db.Text
+  startedAt      DateTime?
+  completedAt    DateTime?
+  latencyMs      Int?
+  metadata       Json?
+  createdAt      DateTime            @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  topicRun     SeoTopicRun?  @relation(fields: [topicRunId], references: [id], onDelete: Cascade)
+  campaign     BlogCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article      BlogArticle?  @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@index([runId])
+  @@index([topicRunId, stage])
+  @@index([storeId, toolName, createdAt])
+}
+
+model AgentReflectionTask {
+  id              String    @id @default(cuid())
+  organizationId  String
+  storeId         String
+  topicRunId      String?
+  campaignId      String?
+  articleId       String?
+  priority        String
+  agentRole       AgentRole
+  instruction     String    @db.Text
+  acceptanceCheck String?   @db.Text
+  status          String    @default("open")
+  evidenceIds     String[]  @default([])
+  metadata        Json?
+  createdAt       DateTime  @default(now())
+  resolvedAt      DateTime?
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  topicRun     SeoTopicRun?  @relation(fields: [topicRunId], references: [id], onDelete: Cascade)
+  campaign     BlogCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article      BlogArticle?  @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@index([topicRunId, status])
+  @@index([articleId, priority])
+  @@index([storeId, status, createdAt])
+}
+
+model AgentEvidence {
+  id                String    @id @default(cuid())
+  organizationId    String
+  storeId           String
+  topicRunId        String?
+  campaignId        String?
+  articleId         String?
+  locale            String
+  evidenceType      String
+  source            String
+  normalizedKeyword String?
+  value             String    @db.Text
+  url               String?   @db.Text
+  query             String?
+  publishedAt       DateTime?
+  metric            String?
+  relevanceScore    Float?
+  confidence        Float
+  expiresAt         DateTime?
+  dedupeHash        String
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  topicRun     SeoTopicRun?  @relation(fields: [topicRunId], references: [id], onDelete: Cascade)
+  campaign     BlogCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article      BlogArticle?  @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@unique([storeId, dedupeHash])
+  @@index([topicRunId])
+  @@index([storeId, locale, evidenceType])
+  @@index([normalizedKeyword])
+  @@index([expiresAt])
 }
 
 model ArticleTranslation {

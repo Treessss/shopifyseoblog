@@ -3,20 +3,25 @@ import {
   buildKeywordEvidence,
   selectTopicCandidate
 } from "./components";
+import { buildTopicMemorySnapshot, memoryWarnings } from "./memory";
+import { planAgentTools } from "./planner";
 import { defaultContentPipelineRegistry, mergeInputSeedKeywords, normalizePipelineInput, runContentPipeline } from "./registry";
+import { buildCommercialSkillDoctrine } from "./skill-doctrine";
 import { discoverTrendSignals } from "./trends";
 import type {
   AgentContentPipelineArtifacts,
   AgentContentPipelineResult,
+  AgentReflectionTaskDraft,
+  AgentRole,
   AgentRunStage,
   AgentStageName,
   AgentStageStatus,
+  AgentToolCallTrace,
+  AgentToolPlan,
   ContentBrief,
   ContentPipelineInput,
   ContentPipelineRunOptions,
   ContentSourceContext,
-  ImageReference,
-  InternalLinkCandidate,
   KeywordEvidenceItem,
   KeywordPlan,
   KeywordPlanner,
@@ -27,13 +32,12 @@ import type {
   SeoAgentRun,
   TopicCandidate,
   TopicCandidateV2,
-  TopicMemorySnapshot,
   TopicSelectionResult,
   TopicSelectionResultV2,
   TrendSignal
 } from "./types";
 
-const SEO_AGENT_VERSION = "seo-agent-commercial-1.0.0";
+const SEO_AGENT_VERSION = "seo-agent-commercial-1.1.0";
 
 export async function runAgentContentPipeline(
   input: ContentPipelineInput,
@@ -44,8 +48,28 @@ export async function runAgentContentPipeline(
   const startedAt = nowIso();
   const runId = `seo-agent-${hashString(`${normalized.organizationId ?? ""}:${normalized.storeId ?? ""}:${normalized.topic}:${startedAt}`).toString(36)}`;
   const stages: AgentRunStage[] = [];
+  const toolCalls: AgentToolCallTrace[] = [];
   const baseContext = mergeInputSeedKeywords(input, context);
   const keywordPlanner = defaultContentPipelineRegistry.getKeywordPlanner(options.keywordPlanner);
+  const skillDoctrine = buildCommercialSkillDoctrine(normalized.locale);
+  const toolPlan = planAgentTools(normalized, baseContext);
+
+  const planningStageStart = nowIso();
+  stages.push(
+    stage(
+      "tool_planning",
+      "publisher_guard",
+      planningStageStart,
+      { objective: agentObjective(normalized), doctrineVersion: skillDoctrine.version },
+      { toolPlan, skillDoctrine },
+      [],
+      [],
+      undefined,
+      "Planned the specialist SEO agents, required tools, and commercial quality doctrine.",
+      [],
+      toolPlan.map((plan) => plan.id)
+    )
+  );
 
   const researchStageStart = nowIso();
   const researchResult = await buildResearchBrief(normalized, baseContext, options);
@@ -57,13 +81,76 @@ export async function runAgentContentPipeline(
     imageReferences: research.imageReferences,
     keywordEvidence: research.evidence
   } satisfies ContentSourceContext;
+  toolCalls.push(
+    traceToolCall(
+      findPlan(toolPlan, "shopify_context"),
+      researchStageStart,
+      { sourceType: normalized.sourceType, sourceId: normalized.sourceId },
+      {
+        product: Boolean(baseContext.product),
+        collection: Boolean(baseContext.collection),
+        internalLinkCount: research.internalLinks.length,
+        imageReferenceCount: research.imageReferences.length
+      },
+      research.evidence.filter((item) => item.type === "product" || item.type === "collection" || item.type === "internal_link"),
+      []
+    )
+  );
+  if (findPlan(toolPlan, "trend_discovery")) {
+    toolCalls.push(
+      traceToolCall(
+        findPlan(toolPlan, "trend_discovery"),
+        researchStageStart,
+        { topic: normalized.topic, hotNews: normalized.generationConfig?.hotNews },
+        { trendCount: research.trendSignals.length, riskFlags: research.riskFlags },
+        research.evidence.filter((item) => item.type === "trend"),
+        researchResult.warnings
+      )
+    );
+  }
   stages.push(
-    stage("research", researchStageStart, { topic: normalized.topic, sourceType: normalized.sourceType }, research, research.evidence, researchResult.warnings)
+    stage(
+      "research",
+      "researcher",
+      researchStageStart,
+      { topic: normalized.topic, sourceType: normalized.sourceType },
+      research,
+      research.evidence,
+      researchResult.warnings,
+      undefined,
+      "Collected catalog facts, trend/news evidence, internal links, and product image references.",
+      ["tool_planning"],
+      toolCalls.filter((call) => call.stage === "research").map((call) => call.id)
+    )
   );
 
   const keywordStageStart = nowIso();
   const keywordStrategy = await buildKeywordStrategy(normalized, researchContext, research, keywordPlanner);
-  stages.push(stage("keyword_strategy", keywordStageStart, { topic: normalized.topic }, keywordStrategy, keywordStrategy.evidenceItems ?? research.evidence));
+  toolCalls.push(
+    traceToolCall(
+      findPlan(toolPlan, "keyword_evidence_builder"),
+      keywordStageStart,
+      { topic: normalized.topic, evidenceCount: research.evidence.length },
+      { primaryKeyword: keywordStrategy.primaryKeyword, clusterCount: keywordStrategy.clusters.length },
+      keywordStrategy.evidenceItems ?? research.evidence,
+      []
+    )
+  );
+  stages.push(
+    stage(
+      "keyword_strategy",
+      "keyword_planner",
+      keywordStageStart,
+      { topic: normalized.topic },
+      keywordStrategy,
+      keywordStrategy.evidenceItems ?? research.evidence,
+      [],
+      undefined,
+      "Built keyword clusters and opportunity score from evidence, search intent, trends, and internal links.",
+      ["research"],
+      toolCalls.filter((call) => call.stage === "keyword_strategy").map((call) => call.id)
+    )
+  );
 
   const topicStageStart = nowIso();
   const topicSelection = context.topicSelection ?? selectTopicCandidate({ ...normalized, primaryKeyword: normalized.primaryKeyword ?? keywordStrategy.primaryKeyword }, researchContext);
@@ -73,27 +160,74 @@ export async function runAgentContentPipeline(
     topicSelectionV2.selected.scoring.opportunity < minOpportunityScore
       ? [`Selected topic opportunity score ${topicSelectionV2.selected.scoring.opportunity} is below configured minimum ${minOpportunityScore}.`]
       : [];
+  const topicWarnings = [...opportunityWarnings, ...memoryWarnings(baseContext.agentMemories, topicSelectionV2.selected)];
   const topicContext = {
     ...researchContext,
     topic: topicSelectionV2.selected.topic,
     topicSelection,
     keywordEvidence: topicSelectionV2.selected.evidence
   } satisfies ContentSourceContext;
+  toolCalls.push(
+    traceToolCall(
+      findPlan(toolPlan, "topic_opportunity_ranker"),
+      topicStageStart,
+      { candidateCount: topicSelection.candidates.length, minOpportunityScore },
+      {
+        selectedTopic: topicSelectionV2.selected.topic,
+        selectedAngle: topicSelectionV2.selected.agent?.angleKey,
+        opportunity: topicSelectionV2.selected.scoring.opportunity
+      },
+      topicSelectionV2.selected.evidence,
+      topicWarnings
+    )
+  );
   stages.push(
     stage(
       "topic_selection",
+      "topic_strategist",
       topicStageStart,
       { candidateCount: topicSelection.candidates.length, minOpportunityScore },
       topicSelectionV2,
       topicSelectionV2.selected.evidence,
-      opportunityWarnings,
-      opportunityWarnings.length ? "failed" : undefined
+      topicWarnings,
+      opportunityWarnings.length ? "failed" : undefined,
+      `Selected ${topicSelectionV2.selected.agent?.angleKey ?? "topic"} after scoring opportunity, novelty, commerce fit, and memory risk.`,
+      ["keyword_strategy", "research"],
+      toolCalls.filter((call) => call.stage === "topic_selection").map((call) => call.id)
     )
   );
 
   const briefStageStart = nowIso();
   const contentBrief = buildContentBrief(normalized, topicContext, keywordStrategy, topicSelectionV2, research);
-  stages.push(stage("content_brief", briefStageStart, { topic: topicSelectionV2.selected.topic }, contentBrief, topicSelectionV2.selected.evidence));
+  toolCalls.push(
+    traceToolCall(
+      findPlan(toolPlan, "content_brief_builder"),
+      briefStageStart,
+      { topic: topicSelectionV2.selected.topic, doctrineVersion: skillDoctrine.version },
+      {
+        outlineCount: contentBrief.outline.length,
+        internalLinkCount: contentBrief.internalLinkPlan.length,
+        requiredModules: skillDoctrine.requiredArticleModules
+      },
+      topicSelectionV2.selected.evidence,
+      []
+    )
+  );
+  stages.push(
+    stage(
+      "content_brief",
+      "writer",
+      briefStageStart,
+      { topic: topicSelectionV2.selected.topic },
+      contentBrief,
+      topicSelectionV2.selected.evidence,
+      [],
+      undefined,
+      "Converted the selected opportunity into an evidence-backed brief with required SEO modules.",
+      ["topic_selection", "keyword_strategy"],
+      toolCalls.filter((call) => call.stage === "content_brief").map((call) => call.id)
+    )
+  );
 
   const resolvedInput = {
     ...input,
@@ -103,9 +237,36 @@ export async function runAgentContentPipeline(
 
   const draftStageStart = nowIso();
   const pipelineResult = await runContentPipeline(resolvedInput, topicContext, options);
+  toolCalls.push(
+    traceToolCall(
+      findPlan(toolPlan, "article_generator"),
+      draftStageStart,
+      { topic: topicSelectionV2.selected.topic, primaryKeyword: topicSelectionV2.selected.primaryKeyword },
+      {
+        title: pipelineResult.article.title,
+        seoScore: pipelineResult.article.seoScore,
+        qualityPassed: pipelineResult.article.qualityPassed
+      },
+      pipelineResult.artifacts.keywordEvidence ?? topicSelectionV2.selected.evidence,
+      pipelineResult.article.qualityPassed ? [] : pipelineResult.artifacts.quality.reasons
+    )
+  );
+  if (findPlan(toolPlan, "image_prompt_director")) {
+    toolCalls.push(
+      traceToolCall(
+        findPlan(toolPlan, "image_prompt_director"),
+        draftStageStart,
+        { imageReferenceCount: topicContext.imageReferences?.length ?? 0 },
+        { imagePrompt: pipelineResult.article.imagePrompt, imageAlt: pipelineResult.article.imageAlt },
+        [],
+        pipelineResult.article.imagePrompt ? [] : ["Image prompt was not produced by the content engine."]
+      )
+    );
+  }
   stages.push(
     stage(
       "draft_generation",
+      "writer",
       draftStageStart,
       { topic: topicSelectionV2.selected.topic, primaryKeyword: topicSelectionV2.selected.primaryKeyword },
       {
@@ -115,26 +276,49 @@ export async function runAgentContentPipeline(
         qualityPassed: pipelineResult.article.qualityPassed
       },
       pipelineResult.artifacts.keywordEvidence ?? topicSelectionV2.selected.evidence,
-      pipelineResult.article.qualityPassed ? [] : pipelineResult.artifacts.quality.reasons
+      pipelineResult.article.qualityPassed ? [] : pipelineResult.artifacts.quality.reasons,
+      undefined,
+      "Generated the first Shopify HTML draft from the brief and quality doctrine.",
+      ["content_brief"],
+      toolCalls.filter((call) => call.stage === "draft_generation").map((call) => call.id)
     )
   );
 
   const reflectionStageStart = nowIso();
   const reflection = buildReflectionReport(pipelineResult, contentBrief, keywordStrategy, topicContext, topicSelectionV2, normalized);
+  const reflectionTasks = buildReflectionTasks(reflection, pipelineResult.artifacts.keywordEvidence ?? topicSelectionV2.selected.evidence);
+  toolCalls.push(
+    traceToolCall(
+      findPlan(toolPlan, "expert_panel_reflection"),
+      reflectionStageStart,
+      { minSeoScore: normalized.generationConfig?.qualityGate?.minSeoScore ?? 78 },
+      {
+        publishDecision: reflection.publishDecision,
+        revisionCount: reflection.revisions.length,
+        taskCount: reflectionTasks.length
+      },
+      pipelineResult.artifacts.keywordEvidence ?? topicSelectionV2.selected.evidence,
+      reflection.revisions.map((revision) => revision.instruction)
+    )
+  );
   stages.push(
     stage(
       "quality_reflection",
+      "seo_editor",
       reflectionStageStart,
       { minSeoScore: normalized.generationConfig?.qualityGate?.minSeoScore ?? 78 },
       reflection,
       pipelineResult.artifacts.keywordEvidence ?? topicSelectionV2.selected.evidence,
       reflection.revisions.map((revision) => revision.instruction),
-      reflection.publishDecision === "reject" ? "failed" : reflection.publishDecision === "revise" ? "warning" : "passed"
+      reflection.publishDecision === "reject" ? "failed" : reflection.publishDecision === "revise" ? "warning" : "passed",
+      `Quality gate decided ${reflection.publishDecision}; created ${reflectionTasks.length} reflection task(s).`,
+      ["draft_generation", "content_brief"],
+      toolCalls.filter((call) => call.stage === "quality_reflection").map((call) => call.id)
     )
   );
 
   const finishedAt = nowIso();
-  const memory = buildTopicMemory(topicContext, topicSelectionV2.selected);
+  const memory = buildTopicMemorySnapshot(baseContext, topicSelectionV2.selected);
   const agentRun: SeoAgentRun = {
     runId,
     agentVersion: SEO_AGENT_VERSION,
@@ -144,6 +328,10 @@ export async function runAgentContentPipeline(
     finishedAt,
     status: finalAgentStatus(stages),
     stages,
+    toolPlan,
+    toolCalls,
+    reflectionTasks,
+    skillDoctrine,
     research,
     keywordStrategy,
     topicSelection: topicSelectionV2,
@@ -431,37 +619,81 @@ function buildReflectionReport(
   };
 }
 
-function buildTopicMemory(context: ContentSourceContext, selected: TopicCandidateV2): TopicMemorySnapshot {
-  const lastTopics = (context.recentTopics ?? []).flatMap((item) => [item.topic, item.title]).filter((item): item is string => Boolean(item)).slice(0, 12);
-  return {
-    recentTopicCount: context.recentTopics?.length ?? 0,
-    repeatedTopicCount: lastTopics.filter((topic) => tokenOverlap(tokenize(topic), tokenize(selected.topic)) >= 0.72).length,
-    avoidedAngles: Array.from(new Set(lastTopics.map(inferAngleKey).filter((item): item is string => Boolean(item)))),
-    lastTopics
-  };
-}
-
 function stage<TInput, TOutput>(
   name: AgentStageName,
+  agentRole: AgentRole,
   startedAt: string,
   input: TInput,
   output: TOutput,
   evidence: KeywordEvidenceItem[] = [],
   warnings: string[] = [],
-  forcedStatus?: AgentStageStatus
+  forcedStatus?: AgentStageStatus,
+  decision?: string,
+  inputRefs: string[] = [],
+  toolCallIds: string[] = []
 ): AgentRunStage<TInput, TOutput> {
   return {
     id: `${name}-${hashString(`${name}:${startedAt}:${JSON.stringify(input).slice(0, 200)}`).toString(36)}`,
     stage: name,
+    agentRole,
     status: forcedStatus ?? (warnings.length ? "warning" : "passed"),
     input,
     output,
     evidence: evidence.slice(0, 12),
     warnings,
+    decision,
+    inputRefs,
+    outputRefs: [`${name}.output`],
+    toolCallIds,
     startedAt,
     finishedAt: nowIso(),
     agentVersion: SEO_AGENT_VERSION
   };
+}
+
+function traceToolCall(
+  plan: AgentToolPlan | undefined,
+  startedAt: string,
+  input: unknown,
+  output: unknown,
+  evidence: KeywordEvidenceItem[],
+  warnings: string[]
+): AgentToolCallTrace {
+  const finishedAt = nowIso();
+  return {
+    id: `tool-${hashString(`${plan?.id ?? "ad-hoc"}:${startedAt}:${JSON.stringify(input).slice(0, 200)}`).toString(36)}`,
+    planId: plan?.id,
+    stage: plan?.stage ?? "research",
+    agentRole: plan?.agentRole ?? "researcher",
+    toolName: plan?.toolName ?? "ad_hoc_tool",
+    purpose: plan?.purpose ?? "Ad-hoc agent tool execution.",
+    status: warnings.length ? "warning" : "passed",
+    input,
+    output,
+    evidence: evidence.slice(0, 12),
+    warnings,
+    startedAt,
+    finishedAt,
+    latencyMs: Math.max(0, new Date(finishedAt).getTime() - new Date(startedAt).getTime())
+  };
+}
+
+function findPlan(toolPlan: AgentToolPlan[], toolName: string): AgentToolPlan | undefined {
+  return toolPlan.find((plan) => plan.toolName === toolName);
+}
+
+function buildReflectionTasks(reflection: ReflectionReport, evidence: KeywordEvidenceItem[]): AgentReflectionTaskDraft[] {
+  return reflection.revisions.map((revision) => ({
+    priority: revision.priority,
+    agentRole: revision.priority === "P0" ? "seo_editor" : "writer",
+    instruction: revision.instruction,
+    acceptanceCheck:
+      revision.priority === "P0"
+        ? "The article is regenerated or revised and the next quality reflection no longer reports this P0 issue."
+        : "The requested edit is visible in the article and supported by supplied evidence.",
+    evidenceIds: evidence.slice(0, 6).map(evidenceId),
+    status: "open"
+  }));
 }
 
 function buildMarketInsights(signals: TrendSignal[], evidence: KeywordEvidenceItem[]) {
@@ -539,16 +771,6 @@ function inferCompetitorAngle(title: string): string {
   if (/gift|present/.test(value)) return "gift";
   if (/check|mistake|before/.test(value)) return "risk";
   return "editorial";
-}
-
-function inferAngleKey(topic: string): string | undefined {
-  const value = topic.toLowerCase();
-  if (/vs|compare|comparison|other/.test(value)) return "comparison_decision";
-  if (/gift|present/.test(value)) return "gift_moment";
-  if (/trend|means/.test(value)) return "trend_bridge";
-  if (/check|mistake|before/.test(value)) return "mistake_avoidance";
-  if (/style|commut|daily|scenario/.test(value)) return "scenario_fit";
-  return undefined;
 }
 
 function unsupportedClaimSignals(body: string, signals: TrendSignal[]): string[] {
