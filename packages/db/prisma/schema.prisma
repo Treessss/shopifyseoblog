@@ -110,6 +110,26 @@ enum JobStatus {
   retrying
 }
 
+enum SeoAgentRunStatus {
+  passed
+  warning
+  failed
+  skipped
+}
+
+enum SeoFunnelStage {
+  TOFU
+  MOFU
+  BOFU
+}
+
+enum SeoSearchIntent {
+  informational
+  commercial
+  transactional
+  navigational
+}
+
 enum PublishEvent {
   queued
   started
@@ -165,6 +185,7 @@ model Organization {
   auditLogs           AuditLog[]
   productSnapshots    ProductSnapshot[]
   collectionSnapshots CollectionSnapshot[]
+  seoTopicRuns        SeoTopicRun[]
 
   @@index([status])
 }
@@ -241,6 +262,7 @@ model ShopifyStore {
   auditLogs           AuditLog[]
   productSnapshots    ProductSnapshot[]
   collectionSnapshots CollectionSnapshot[]
+  seoTopicRuns        SeoTopicRun[]
 
   @@index([organizationId, status])
 }
@@ -344,6 +366,7 @@ model BlogCampaign {
   store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
   brandVoice   BrandVoice?   @relation(fields: [brandVoiceId], references: [id], onDelete: SetNull)
   articles     BlogArticle[]
+  seoTopicRuns SeoTopicRun[]
 
   @@index([organizationId, status])
   @@index([storeId, locale, status])
@@ -390,12 +413,82 @@ model BlogArticle {
   assets       GeneratedAsset[]
   publishJobs  PublishJob[]
   publishLogs  PublishLog[]
+  seoTopicRuns SeoTopicRun[]
 
   @@unique([storeId, locale, handle])
   @@index([organizationId, status])
   @@index([storeId, locale, status])
   @@index([campaignId])
   @@index([sourceType, sourceId])
+}
+
+model SeoTopicRun {
+  id                  String            @id @default(cuid())
+  runId               String            @unique
+  organizationId      String
+  storeId             String
+  campaignId          String?
+  articleId           String?
+  locale              String
+  sourceType          SourceType
+  sourceId            String?
+  status              SeoAgentRunStatus @default(passed)
+  strategy            String?
+  selectedCandidateId String?           @unique
+  selectedTopic       String?           @db.Text
+  objective           String?           @db.Text
+  agentVersion        String
+  configSnapshot      Json?
+  research            Json?
+  contentBrief        Json?
+  reflection          Json?
+  memory              Json?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store             ShopifyStore        @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaign          BlogCampaign?       @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article           BlogArticle?        @relation(fields: [articleId], references: [id], onDelete: SetNull)
+  candidates        SeoTopicCandidate[] @relation("SeoTopicRunCandidates")
+  selectedCandidate SeoTopicCandidate?  @relation("SelectedSeoTopicCandidate", fields: [selectedCandidateId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, createdAt])
+  @@index([storeId, locale, createdAt])
+  @@index([campaignId])
+  @@index([articleId])
+  @@index([sourceType, sourceId])
+}
+
+model SeoTopicCandidate {
+  id               String           @id @default(cuid())
+  topicRunId       String
+  topic            String           @db.Text
+  primaryKeyword   String?
+  score            Float
+  funnelStage      SeoFunnelStage?
+  searchIntent     SeoSearchIntent?
+  angleKey         String?
+  impactScore      Float?
+  confidenceScore  Float?
+  noveltyScore     Float?
+  commerceScore    Float?
+  opportunityScore Float?
+  selected         Boolean          @default(false)
+  rejectedReason   String?          @db.Text
+  evidence         Json?
+  metadata         Json?
+  createdAt        DateTime         @default(now())
+
+  topicRun       SeoTopicRun   @relation("SeoTopicRunCandidates", fields: [topicRunId], references: [id], onDelete: Cascade)
+  selectedByRuns SeoTopicRun[] @relation("SelectedSeoTopicCandidate")
+
+  @@index([topicRunId, selected])
+  @@index([primaryKeyword])
+  @@index([angleKey])
+  @@index([searchIntent])
 }
 
 model ArticleTranslation {

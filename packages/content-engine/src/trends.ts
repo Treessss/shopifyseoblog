@@ -22,7 +22,7 @@ export async function discoverTrendSignals(input: DiscoverTrendSignalsInput): Pr
   const maxItems = config.maxItems ?? 5;
   if (maxItems <= 0) return [];
   const sources = config.sources?.length ? config.sources : ["google_news", "google_trends"];
-  const queryLimit = Math.min(5, Math.max(2, maxItems + 1));
+  const queryLimit = Math.min(input.generationConfig?.seoAgent?.maxResearchQueries ?? 5, Math.max(2, maxItems + 1), 8);
   const queries = buildTrendQueries(input.topic, input.context, config.query).slice(0, queryLimit);
   const collected: TrendSignal[] = [];
 

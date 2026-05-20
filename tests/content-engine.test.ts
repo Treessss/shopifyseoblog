@@ -6,6 +6,7 @@ import {
   estimateWordCount,
   discoverTrendSignals,
   generateArticle,
+  runAgentContentPipeline,
   runContentPipeline,
   selectTopicCandidate,
   type NormalizedContentPipelineInput
@@ -266,6 +267,174 @@ describe("content engine", () => {
 
     expect(requestedUrls).toHaveLength(1);
     expect(new URL(requestedUrls[0]!).searchParams.get("q")).toBe("ecommerce shopping trends");
+  });
+
+  it("runs the commercial SEO agent pipeline with auditable stages and artifacts", async () => {
+    const requestedUrls: string[] = [];
+    const fetchMock = (async (url: URL | RequestInfo) => {
+      const requestUrl = new URL(String(url));
+      requestedUrls.push(requestUrl.toString());
+      const query = requestUrl.searchParams.get("q") ?? "phone case trends";
+      return new Response(
+        `<rss><channel><item><title>${query} demand rises</title><link>https://news.example.com/${requestedUrls.length}</link><description>${query} demand for shoppers</description><pubDate>${new Date().toUTCString()}</pubDate></item></channel></rss>`,
+        { status: 200 }
+      );
+    }) as typeof fetch;
+
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Style",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["clear phone case"],
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", maxResearchQueries: 3, minOpportunityScore: 65 },
+          hotNews: { enabled: true, sources: ["google_news"], maxItems: 3, lookbackDays: 30 },
+          topicDiscovery: { enabled: true, maxCandidates: 4, preferTrendSignals: true },
+          internalLinks: { enabled: true, maxLinks: 1 },
+          imageGeneration: { enabled: true, fusionMode: "single_product" }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/8",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe", "desk"],
+          imageUrls: ["https://cdn.example.com/clear-case.png"]
+        },
+        internalLinks: [
+          {
+            title: "Clear Cases",
+            url: "https://www.caseease.com/collections/clear-cases",
+            type: "collection"
+          }
+        ],
+        imageReferences: [{ url: "https://cdn.example.com/clear-case.png", source: "product", title: "Clear case" }]
+      },
+      { fetch: fetchMock }
+    );
+
+    expect(requestedUrls.length).toBeGreaterThan(1);
+    expect(requestedUrls.length).toBeLessThanOrEqual(3);
+    expect(result.artifacts.agentRun.mode).toBe("commercial");
+    expect(result.stages.map((stage) => stage.stage)).toEqual([
+      "research",
+      "keyword_strategy",
+      "topic_selection",
+      "content_brief",
+      "draft_generation",
+      "quality_reflection"
+    ]);
+    expect(result.artifacts.research.trendSignals.length).toBeGreaterThan(0);
+    expect(result.artifacts.keywordStrategy.primaryKeyword).toBe("clear phone case");
+    expect(result.artifacts.topicSelectionV2.selected.scoring.opportunity).toBeGreaterThan(0);
+    expect(result.artifacts.contentBrief.internalLinkPlan[0]?.url).toContain("caseease.com");
+    expect(result.article.bodyHtml).toContain("https://www.caseease.com/collections/clear-cases");
+    expect(result.artifacts.reflection.publishDecision).toMatch(/ready|revise|reject/);
+  });
+
+  it("enforces the configured minimum topic opportunity score in the SEO agent", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "manual_topic",
+        topic: "Unknown accessory notes",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", minOpportunityScore: 100 },
+          topicDiscovery: { enabled: true, maxCandidates: 2, preferTrendSignals: false }
+        }
+      },
+      {}
+    );
+
+    expect(result.artifacts.agentRun.status).toBe("failed");
+    expect(result.stages.find((stage) => stage.stage === "topic_selection")?.status).toBe("failed");
+    expect(result.artifacts.reflection.revisions.some((revision) => revision.priority === "P0")).toBe(true);
+  });
+
+  it("applies input generation config to the legacy content pipeline context", async () => {
+    const result = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Clear phone case desk setup",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        primaryKeyword: "clear phone case",
+        generationConfig: {
+          internalLinks: { enabled: true, maxLinks: 1 },
+          imageGeneration: { enabled: true, scenePrompt: "desk setup" }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/8",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe"],
+          imageUrls: []
+        },
+        internalLinks: [
+          {
+            title: "Clear Cases",
+            url: "https://www.caseease.com/collections/clear-cases",
+            type: "collection"
+          }
+        ]
+      }
+    );
+
+    expect(result.article.bodyHtml).toContain("https://www.caseease.com/collections/clear-cases");
+    expect(result.article.imagePrompt).toContain("desk setup");
+  });
+
+  it("does not refetch trends when the SEO agent receives supplied trend signals", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Style",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["clear phone case"],
+        generationConfig: {
+          hotNews: { enabled: true, sources: ["google_news"], maxItems: 2 },
+          topicDiscovery: { enabled: true, maxCandidates: 3 }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/8",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe"],
+          imageUrls: []
+        },
+        trendSignals: [
+          {
+            title: "Desk setup accessories trend",
+            source: "Google News",
+            relevanceScore: 4
+          }
+        ]
+      },
+      {
+        fetch: (async () => {
+          throw new Error("fetch should not be called");
+        }) as typeof fetch
+      }
+    );
+
+    expect(result.artifacts.research.trendSignals).toHaveLength(1);
+    expect(result.artifacts.agentRun.stages.find((stage) => stage.stage === "research")?.status).toBe("passed");
   });
 
   it("does not fall back to generic guide title formulas for different product contexts", async () => {

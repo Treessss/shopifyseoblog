@@ -312,6 +312,15 @@ function apiVersionValue(value: unknown) {
 
 function parseGenerationConfig(body: Record<string, unknown>) {
   return {
+    seoAgent: {
+      enabled: booleanValue(body.seoAgentEnabled, true),
+      agentMode: optionalEnum(body.seoAgentMode, ["standard", "commercial"] as const, "seoAgentMode") ?? "commercial",
+      targetOrganicGrowthPct: optionalInteger(body.targetOrganicGrowthPct, "targetOrganicGrowthPct", 1, 500),
+      memoryWindowDays: optionalInteger(body.seoAgentMemoryWindowDays, "seoAgentMemoryWindowDays", 7, 730) ?? 180,
+      minOpportunityScore: optionalInteger(body.minOpportunityScore, "minOpportunityScore", 0, 100) ?? 70,
+      maxResearchQueries: optionalInteger(body.maxResearchQueries, "maxResearchQueries", 1, 8) ?? 5,
+      requireEvidenceTrace: booleanValue(body.requireEvidenceTrace, true)
+    },
     topicDiscovery: {
       enabled: booleanValue(body.topicDiscoveryEnabled, true),
       strategy:

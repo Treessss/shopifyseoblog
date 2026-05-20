@@ -101,7 +101,18 @@ export interface AiSearchReviewConfig {
   maxRevisionPasses?: number;
 }
 
+export interface SeoAgentConfig {
+  enabled?: boolean;
+  agentMode?: "standard" | "commercial";
+  targetOrganicGrowthPct?: number;
+  memoryWindowDays?: number;
+  minOpportunityScore?: number;
+  maxResearchQueries?: number;
+  requireEvidenceTrace?: boolean;
+}
+
 export interface GenerationConfig {
+  seoAgent?: SeoAgentConfig;
   topicDiscovery?: TopicDiscoveryConfig;
   hotNews?: HotNewsConfig;
   internalLinks?: InternalLinksConfig;

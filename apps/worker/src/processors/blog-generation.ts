@@ -5,7 +5,10 @@ import {
   defaultQualityGate,
   defaultSeoScorer,
   discoverTrendSignals,
+  runAgentContentPipeline,
   runContentPipeline,
+  type AgentContentPipelineResult,
+  type ContentPipelineResult,
   type ContentSourceContext,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
@@ -321,7 +324,12 @@ async function generateBlogArticle(
 
     await markCampaignRunning(context.campaign?.id);
     await persistCampaignGenerationResolution(context.campaign?.id, context.sourceContext.topicSelection, context.resolvedSource);
-    const pipelineResult = await runContentPipeline(generationInput, context.sourceContext);
+    const pipelineResult: ContentPipelineResult | AgentContentPipelineResult =
+      generationInput.generationConfig?.seoAgent?.enabled === false
+        ? await runContentPipeline(generationInput, context.sourceContext)
+        : await runAgentContentPipeline(generationInput, context.sourceContext);
+    const agentPipelineResult = isAgentPipelineResult(pipelineResult) ? pipelineResult : null;
+    const seoAgentRun = agentPipelineResult?.artifacts.agentRun ?? null;
     const aiProvider = resolveAiProvider(context.aiProvider);
     const aiResult = await generateArticleWithAi(aiProvider, generationInput, context.sourceContext, pipelineResult);
     const generated = aiResult.article;
@@ -360,6 +368,7 @@ async function generateBlogArticle(
           finalSeo: aiResult.seo,
           aiSearchReview: aiResult.aiSearchReview
         },
+        seoAgent: seoAgentRun,
         queue: {
           bullJobId: job.id,
           correlationId: job.data.correlationId
@@ -367,6 +376,20 @@ async function generateBlogArticle(
       }
     });
     articleId = article.id;
+    if (agentPipelineResult) {
+      await persistSeoAgentRun({
+        articleId: article.id,
+        campaignId: context.campaign?.id ?? job.data.campaignId,
+        organizationId: job.data.organizationId,
+        storeId: job.data.storeId,
+        locale: generationInput.locale,
+        sourceType: generationInput.sourceType,
+        sourceId: generationInput.sourceId,
+        generationConfig: generationInput.generationConfig,
+        pipelineResult: agentPipelineResult,
+        publishJobId: publishJob.id
+      });
+    }
     if (aiResult.imageAsset) {
       await persistGeneratedImageAsset({
         organizationId: job.data.organizationId,
@@ -3257,6 +3280,122 @@ async function upsertGeneratedArticle(input: {
   });
 }
 
+async function persistSeoAgentRun(input: {
+  articleId: string;
+  campaignId?: string;
+  organizationId: string;
+  storeId: string;
+  locale: SupportedLocale;
+  sourceType: SourceType;
+  sourceId?: string;
+  generationConfig?: GenerationConfig;
+  pipelineResult: AgentContentPipelineResult;
+  publishJobId?: string;
+}) {
+  const agentRun = input.pipelineResult.artifacts.agentRun;
+  if (!agentRun) return;
+
+  try {
+    const run = await prisma.seoTopicRun.upsert({
+      where: { runId: agentRun.runId },
+      update: {
+        articleId: input.articleId,
+        campaignId: input.campaignId,
+        status: agentRun.status,
+        selectedTopic: agentRun.topicSelection.selected.topic,
+        objective: agentRun.objective,
+        configSnapshot: toPrismaJson(input.generationConfig ?? null),
+        research: toPrismaJson(agentRun.research),
+        contentBrief: toPrismaJson(agentRun.contentBrief),
+        reflection: toPrismaJson(agentRun.reflection),
+        memory: toPrismaJson(agentRun.memory),
+        completedAt: dateValue(agentRun.finishedAt)
+      },
+      create: {
+        runId: agentRun.runId,
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        campaignId: input.campaignId,
+        articleId: input.articleId,
+        locale: input.locale,
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        status: agentRun.status,
+        strategy: input.generationConfig?.topicDiscovery?.strategy ?? "seo_agent",
+        selectedTopic: agentRun.topicSelection.selected.topic,
+        objective: agentRun.objective,
+        agentVersion: agentRun.agentVersion,
+        configSnapshot: toPrismaJson(input.generationConfig ?? null),
+        research: toPrismaJson(agentRun.research),
+        contentBrief: toPrismaJson(agentRun.contentBrief),
+        reflection: toPrismaJson(agentRun.reflection),
+        memory: toPrismaJson(agentRun.memory),
+        startedAt: dateValue(agentRun.startedAt),
+        completedAt: dateValue(agentRun.finishedAt)
+      }
+    });
+
+    await prisma.seoTopicCandidate.deleteMany({ where: { topicRunId: run.id } });
+    const candidates = await Promise.all(
+      agentRun.topicSelection.candidates.map((candidate) =>
+        prisma.seoTopicCandidate.create({
+          data: {
+            topicRunId: run.id,
+            topic: candidate.topic,
+            primaryKeyword: candidate.primaryKeyword,
+            score: candidate.score,
+            funnelStage: candidate.agent?.funnelStage,
+            searchIntent: candidate.agent?.searchIntent,
+            angleKey: candidate.agent?.angleKey,
+            impactScore: candidate.scoring.impact,
+            confidenceScore: candidate.scoring.confidence,
+            noveltyScore: candidate.scoring.novelty,
+            commerceScore: candidate.scoring.commerceFit,
+            opportunityScore: candidate.scoring.opportunity,
+            selected: candidate.id === agentRun.topicSelection.selected.id,
+            rejectedReason: agentRun.topicSelection.rejected.find((item) => item.topic === candidate.topic)?.reason,
+            evidence: toPrismaJson(candidate.evidence),
+            metadata: toPrismaJson({
+              candidateId: candidate.id,
+              briefAngle: candidate.briefAngle,
+              audiencePromise: candidate.audiencePromise,
+              riskFlags: candidate.riskFlags,
+              reasons: candidate.reasons,
+              agent: candidate.agent
+            })
+          }
+        })
+      )
+    );
+    const selectedCandidate = candidates.find((candidate) => candidate.selected);
+    if (selectedCandidate) {
+      await prisma.seoTopicRun.update({
+        where: { id: run.id },
+        data: { selectedCandidateId: selectedCandidate.id }
+      });
+    }
+  } catch (error) {
+    try {
+      await writePublishLog({
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        jobId: input.publishJobId,
+        articleId: input.articleId,
+        event: "failed",
+        level: "warn",
+        message: "SEO Agent run metadata could not be persisted to structured tables; JSON article metadata was still saved.",
+        payload: { error: getErrorMessage(error), runId: agentRun.runId }
+      });
+    } catch {
+      // Structured SEO Agent persistence is non-critical once article JSON metadata is saved.
+    }
+  }
+}
+
+function isAgentPipelineResult(result: ContentPipelineResult | AgentContentPipelineResult): result is AgentContentPipelineResult {
+  return Boolean((result.artifacts as { agentRun?: unknown }).agentRun);
+}
+
 async function resolveUniqueArticleHandle(input: {
   articleId?: string;
   campaignId?: string;
@@ -3415,6 +3554,13 @@ function stringValue(value: unknown): string | undefined {
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
   return Number.isFinite(number) ? number : undefined;
+}
+
+function dateValue(value: unknown): Date | undefined {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
 function stringArray(value: unknown): string[] {

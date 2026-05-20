@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -38,6 +38,8 @@ describe("prisma schema", () => {
       "BrandVoice",
       "BlogCampaign",
       "BlogArticle",
+      "SeoTopicRun",
+      "SeoTopicCandidate",
       "ArticleTranslation",
       "GeneratedAsset",
       "PublishJob",
@@ -61,5 +63,15 @@ describe("prisma schema", () => {
     expect(schema).toContain("ready_to_publish");
     expect(schema).toContain("enum JobStatus");
     expect(schema).toContain("retrying");
+    expect(schema).toContain("enum SeoAgentRunStatus");
+    expect(schema).toMatch(/selectedCandidateId\s+String\?/);
+    expect(schema).toContain("selectedCandidate SeoTopicCandidate?");
+    expect(schema).toMatch(/opportunityScore\s+Float\?/);
+  });
+
+  it("ships a migration for structured SEO topic agent tables", () => {
+    expect(
+      existsSync(join(process.cwd(), "packages/db/prisma/migrations/20260520152000_add_seo_topic_agent/migration.sql"))
+    ).toBe(true);
   });
 });

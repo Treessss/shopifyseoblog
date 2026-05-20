@@ -19,6 +19,17 @@ export const aiProviderConfigSchema = z.object({
 });
 
 export const generationConfigSchema = z.object({
+  seoAgent: z
+    .object({
+      enabled: z.boolean().default(true),
+      agentMode: z.enum(["standard", "commercial"]).default("commercial"),
+      targetOrganicGrowthPct: z.number().int().min(1).max(500).optional(),
+      memoryWindowDays: z.number().int().min(7).max(730).default(180),
+      minOpportunityScore: z.number().int().min(0).max(100).default(70),
+      maxResearchQueries: z.number().int().min(1).max(8).default(5),
+      requireEvidenceTrace: z.boolean().default(true)
+    })
+    .optional(),
   topicDiscovery: z
     .object({
       enabled: z.boolean().default(true),

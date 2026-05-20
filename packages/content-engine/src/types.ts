@@ -69,6 +69,7 @@ export interface KeywordEvidenceItem {
 
 export interface TopicAgentTrace {
   role: "seo_topic_agent";
+  agentVersion?: string;
   angleKey: string;
   funnelStage: "TOFU" | "MOFU" | "BOFU";
   searchIntent: "informational" | "commercial" | "transactional" | "navigational";
@@ -76,6 +77,9 @@ export interface TopicAgentTrace {
   impact: number;
   confidence: number;
   noveltyScore: number;
+  commerceFit?: number;
+  scoringBreakdown?: Record<string, number>;
+  riskFlags?: string[];
 }
 
 export interface TopicCandidate {
@@ -246,6 +250,148 @@ export interface ContentPipelineResult {
   artifacts: ContentPipelineArtifacts;
 }
 
+export type AgentStageName =
+  | "research"
+  | "keyword_strategy"
+  | "topic_selection"
+  | "content_brief"
+  | "draft_generation"
+  | "quality_reflection";
+
+export type AgentStageStatus = "passed" | "warning" | "failed" | "skipped";
+
+export interface AgentRunStage<TInput = unknown, TOutput = unknown> {
+  id: string;
+  stage: AgentStageName;
+  status: AgentStageStatus;
+  input: TInput;
+  output?: TOutput;
+  evidence: KeywordEvidenceItem[];
+  warnings: string[];
+  startedAt: string;
+  finishedAt: string;
+  agentVersion: string;
+}
+
+export interface MarketInsight {
+  insight: string;
+  sourceIds: string[];
+  confidence: number;
+}
+
+export interface ResearchBrief {
+  sourceContext: Pick<ContentSourceContext, "product" | "collection" | "brandVoice" | "topic" | "seedKeywords">;
+  trendSignals: TrendSignal[];
+  marketInsights: MarketInsight[];
+  competitorAngles: Array<{ title: string; url?: string; angle: string }>;
+  internalLinks: InternalLinkCandidate[];
+  imageReferences: ImageReference[];
+  evidence: KeywordEvidenceItem[];
+  riskFlags: string[];
+  sourceSummary: {
+    trendCount: number;
+    internalLinkCount: number;
+    imageReferenceCount: number;
+    recentTopicCount: number;
+  };
+}
+
+export interface KeywordCluster {
+  name: string;
+  intent: KeywordPlan["searchIntent"];
+  keywords: string[];
+}
+
+export interface KeywordStrategy extends KeywordPlan {
+  clusters: KeywordCluster[];
+  serpIntentConfidence: number;
+  opportunityScore: number;
+  excludedKeywords: Array<{ keyword: string; reason: string }>;
+}
+
+export interface TopicCandidateV2 extends TopicCandidate {
+  id: string;
+  briefAngle: string;
+  audiencePromise: string;
+  scoring: {
+    impact: number;
+    confidence: number;
+    novelty: number;
+    commerceFit: number;
+    opportunity: number;
+  };
+  riskFlags: string[];
+}
+
+export interface TopicSelectionResultV2 {
+  selected: TopicCandidateV2;
+  candidates: TopicCandidateV2[];
+  rejected: Array<{ topic: string; reason: string; score: number }>;
+  decisionSummary: string;
+}
+
+export interface ContentBrief {
+  titleDirection: string;
+  primaryKeyword: string;
+  searchIntent: KeywordPlan["searchIntent"];
+  audienceNeed: string;
+  outline: OutlineSection[];
+  mustUseEvidenceIds: string[];
+  internalLinkPlan: Array<{ url: string; anchor: string; placement: string }>;
+  imageBrief?: { prompt: string; alt: string; references: ImageReference[] };
+  claimsPolicy: string[];
+}
+
+export interface ReflectionReport {
+  passed: boolean;
+  publishDecision: "ready" | "revise" | "reject";
+  seo: SeoScoreResult;
+  editorial?: EditorialQualityResult;
+  factuality: { passed: boolean; unsupportedClaims: string[] };
+  briefCompliance: { missingEvidenceIds: string[]; missingLinks: string[] };
+  revisions: Array<{ priority: "P0" | "P1" | "P2"; instruction: string }>;
+  summary: string;
+}
+
+export interface TopicMemorySnapshot {
+  recentTopicCount: number;
+  repeatedTopicCount: number;
+  avoidedAngles: string[];
+  lastTopics: string[];
+}
+
+export interface SeoAgentRun {
+  runId: string;
+  agentVersion: string;
+  mode: "standard" | "commercial";
+  objective: string;
+  startedAt: string;
+  finishedAt: string;
+  status: AgentStageStatus;
+  stages: AgentRunStage[];
+  research: ResearchBrief;
+  keywordStrategy: KeywordStrategy;
+  topicSelection: TopicSelectionResultV2;
+  contentBrief: ContentBrief;
+  reflection: ReflectionReport;
+  memory: TopicMemorySnapshot;
+}
+
+export interface AgentContentPipelineArtifacts extends ContentPipelineArtifacts {
+  agentRun: SeoAgentRun;
+  research: ResearchBrief;
+  keywordStrategy: KeywordStrategy;
+  topicSelectionV2: TopicSelectionResultV2;
+  contentBrief: ContentBrief;
+  reflection: ReflectionReport;
+}
+
+export interface AgentContentPipelineResult extends ContentPipelineResult {
+  runId: string;
+  stages: AgentRunStage[];
+  artifacts: AgentContentPipelineArtifacts;
+}
+
 export interface NormalizedContentPipelineInput {
   organizationId?: string;
   storeId?: string;
@@ -265,6 +411,7 @@ export interface ContentPipelineRunOptions {
   htmlAssembler?: string;
   seoScorer?: string;
   qualityGate?: string;
+  fetch?: typeof fetch;
 }
 
 export type MaybePromise<T> = T | Promise<T>;

@@ -650,6 +650,7 @@ function summarizeGenerationMetadata(metadata: unknown) {
   const keywords = asRecord(artifacts.keywords);
   const imageAsset = asRecord(record.imageAsset);
   const aiSearchReview = record.aiSearchReview ?? contentEngine.aiSearchReview ?? finalQuality.aiSearchReview ?? null;
+  const seoAgent = record.seoAgent ?? artifacts.agentRun ?? null;
 
   return {
     generator: stringValue(record.generator),
@@ -665,7 +666,11 @@ function summarizeGenerationMetadata(metadata: unknown) {
       usage: ai.usage ?? null
     },
     aiSearchReview,
+    seoAgent,
     topicSelection: artifacts.topicSelection ?? null,
+    topicSelectionV2: artifacts.topicSelectionV2 ?? null,
+    contentBrief: artifacts.contentBrief ?? null,
+    reflection: artifacts.reflection ?? null,
     keywordEvidence: artifacts.keywordEvidence ?? keywords.evidenceItems ?? keywords.evidence ?? null,
     image: Object.keys(imageAsset).length
       ? {

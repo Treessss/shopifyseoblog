@@ -90,18 +90,19 @@ export class ContentPipelineRegistry {
     options: ContentPipelineRunOptions = {}
   ): Promise<ContentPipelineResult> {
     const normalized = normalizePipelineInput(input, context);
+    const effectiveContext = mergeInputSeedKeywords(input, context);
     const keywordPlanner = this.getKeywordPlanner(options.keywordPlanner);
     const promptBuilder = this.getPromptBuilder(options.promptBuilder);
     const htmlAssembler = this.getHtmlAssembler(options.htmlAssembler);
     const seoScorer = this.getSeoScorer(options.seoScorer);
     const qualityGate = this.getQualityGate(options.qualityGate);
 
-    const keywords = await keywordPlanner.plan(normalized, context);
-    const prompts = await promptBuilder.build(normalized, context, keywords);
-    const draft = buildDefaultDraft(normalized, context, keywords);
-    const html = await htmlAssembler.assemble(normalized, context, keywords, draft);
+    const keywords = await keywordPlanner.plan(normalized, effectiveContext);
+    const prompts = await promptBuilder.build(normalized, effectiveContext, keywords);
+    const draft = buildDefaultDraft(normalized, effectiveContext, keywords);
+    const html = await htmlAssembler.assemble(normalized, effectiveContext, keywords, draft);
     const seo = await seoScorer.score(html, keywords, normalized);
-    const quality = await qualityGate.evaluate(html, seo, normalized, context);
+    const quality = await qualityGate.evaluate(html, seo, normalized, effectiveContext);
 
     const artifacts: ContentPipelineArtifacts = {
       keywords,
@@ -153,7 +154,7 @@ export async function generateArticle(
   return result.article;
 }
 
-function normalizePipelineInput(input: ContentPipelineInput, context: ContentSourceContext): NormalizedContentPipelineInput {
+export function normalizePipelineInput(input: ContentPipelineInput, context: ContentSourceContext): NormalizedContentPipelineInput {
   const locale = normalizePipelineLocale(input.locale);
   const topic = input.topic ?? context.topic ?? context.product?.title ?? context.collection?.title ?? "Shopify blog topic";
   const sourceType = input.sourceType ?? (context.product ? "product" : context.collection ? "collection" : "manual_topic");
@@ -170,6 +171,31 @@ function normalizePipelineInput(input: ContentPipelineInput, context: ContentSou
     primaryKeyword: input.primaryKeyword,
     generationConfig: input.generationConfig ?? context.generationConfig
   };
+}
+
+export function mergeInputSeedKeywords(input: ContentPipelineInput, context: ContentSourceContext): ContentSourceContext {
+  const seedKeywords = uniqueStrings([...(input.keywords ?? []), ...(context.seedKeywords ?? [])]);
+  const generationConfig = input.generationConfig ?? context.generationConfig;
+  if (seedKeywords.length === 0 && generationConfig === context.generationConfig) return context;
+  return {
+    ...context,
+    seedKeywords: seedKeywords.length ? seedKeywords : context.seedKeywords,
+    generationConfig
+  };
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (!normalized) continue;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(normalized);
+  }
+  return output;
 }
 
 function toGeneratedArticle(

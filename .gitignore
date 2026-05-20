@@ -13,7 +13,6 @@ coverage
 *.tsbuildinfo
 generated
 .codex-pets
-packages/db/prisma/migrations
 infra/docker/postgres-data
 infra/docker/redis-data
 infra/docker/minio-data
