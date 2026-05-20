@@ -40,8 +40,9 @@ export const defaultKeywordPlanner: KeywordPlanner = {
     const primaryKeyword = cleanKeyword(
       firstNonBlank(
         input.primaryKeyword,
-        context.topicSelection?.selected.primaryKeyword,
         context.seedKeywords?.[0],
+        searchKeywordFromCatalog(context, locale),
+        context.topicSelection?.selected.primaryKeyword,
         context.product?.productType,
         context.product?.title,
         context.collection?.title,
@@ -164,9 +165,10 @@ export const defaultSeoScorer: SeoScorer = {
     const body = bodyText.toLowerCase();
     const wordCount = estimateWordCount(bodyText, input.locale);
     const secondaryHits = keywords.secondaryKeywords.filter((keyword) => body.includes(keyword.toLowerCase())).length;
+    const titlePrimaryPassed = title.includes(primary) || keywordTokenCoverage(article.title, keywords.primaryKeyword) >= 0.58;
 
     const checks: SeoCheck[] = [
-      check("title-primary", "Primary keyword in title", title.includes(primary), 20),
+      check("title-primary", "Primary keyword in title", titlePrimaryPassed, 20),
       check("summary-primary", "Primary keyword in summary", summary.includes(primary), 12),
       check("body-primary", "Primary keyword in body", body.includes(primary), 18),
       check("heading-depth", "At least three H2 sections", headingCount >= 3, 12),
@@ -489,6 +491,91 @@ function cleanKeyword(keyword: string | null | undefined): string {
   return keyword?.trim().replace(/\s+/g, " ") ?? "";
 }
 
+function searchKeywordFromCatalog(context: ContentSourceContext, locale: SupportedLocale): string | undefined {
+  if (locale === "zh-CN") return firstNonBlank(context.product?.productType, context.collection?.title);
+  const product = context.product;
+  if (!product) return context.collection?.title;
+
+  const text = [product.title, product.productType, product.seoTitle, product.seoDescription, product.tags.join(" ")]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const productType = product.productType?.trim();
+  const isPhoneCase = /\b(?:phone|iphone|pixel|samsung)\b.*\bcase\b|\bcase\b.*\b(?:phone|iphone|pixel|samsung)\b/.test(text);
+  if (!isPhoneCase) return firstNonBlank(productType, product.title);
+
+  const colors = orderedMatches(text, [
+    "pink",
+    "green",
+    "black",
+    "white",
+    "clear",
+    "blue",
+    "purple",
+    "red",
+    "orange",
+    "yellow",
+    "brown",
+    "cream",
+    "silver",
+    "gold"
+  ]).slice(0, 2);
+  const styles = orderedMatches(text, [
+    "floral",
+    "flower",
+    "tropical leaf",
+    "leaf",
+    "cartoon",
+    "kawaii",
+    "lace",
+    "polka dot",
+    "heart",
+    "cross",
+    "streetwear",
+    "magsafe",
+    "matte",
+    "glossy",
+    "clear",
+    "shockproof"
+  ]).slice(0, 2);
+  const colorPhrase = colors.length === 2 ? `${colors[0]} and ${colors[1]}` : colors[0];
+  const descriptor = unique([colorPhrase, ...styles])
+    .filter((value) => value && value !== "flower")
+    .join(" ");
+  const device = /\biphone\b/.test(text) ? "iPhone" : "phone";
+  const keyword = cleanKeyword(`${descriptor ? `${descriptor} ` : ""}${device} case`);
+  return keyword.length > `${device} case`.length ? keyword : firstNonBlank(productType, product.title);
+}
+
+function orderedMatches(value: string, phrases: string[]): string[] {
+  const matches = phrases
+    .map((phrase) => ({ phrase, index: value.indexOf(phrase) }))
+    .filter((item) => item.index >= 0)
+    .sort((left, right) => left.index - right.index)
+    .map((item) => item.phrase);
+  return matches.filter((phrase, index) => !matches.slice(0, index).some((existing) => existing.includes(phrase)));
+}
+
+function keywordTokenCoverage(title: string, keyword: string): number {
+  const titleTokens = new Set(keywordTokens(title));
+  const keywordTokensValue = keywordTokens(keyword);
+  if (keywordTokensValue.length === 0) return 0;
+  const hits = keywordTokensValue.filter((token) => titleTokens.has(token)).length;
+  return hits / keywordTokensValue.length;
+}
+
+function keywordTokens(value: string): string[] {
+  return unique(
+    value
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s-]/gu, " ")
+      .split(/\s+/)
+      .filter((token) => token.length >= 3 && !keywordStopWords.has(token))
+  );
+}
+
+const keywordStopWords = new Set(["the", "and", "for", "with", "from", "design", "pattern", "style", "caseease"]);
+
 function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
   return values.find((value) => Boolean(value?.trim()))?.trim();
 }
@@ -694,6 +781,7 @@ export function selectTopicCandidate(
     firstNonBlank(
       input.primaryKeyword,
       context.seedKeywords?.[0],
+      searchKeywordFromCatalog(context, locale),
       context.product?.productType,
       context.product?.title,
       context.collection?.title,
@@ -1020,6 +1108,7 @@ function usableTrendSignals(context: ContentSourceContext) {
   for (const signal of context.trendSignals ?? []) {
     const relevance = signal.relevanceScore;
     if (hasCatalogAnchor && typeof relevance === "number" && relevance <= 0) continue;
+    if (looksLikeProductListingSignal(signal.title, signal.summary)) continue;
     const key = (signal.url || signal.title).toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -1027,6 +1116,23 @@ function usableTrendSignals(context: ContentSourceContext) {
   }
 
   return output;
+}
+
+function looksLikeProductListingSignal(title: string, summary?: string): boolean {
+  const text = `${title} ${summary ?? ""}`.toLowerCase();
+  const productSpecHits = [
+    "shockproof",
+    "bumper",
+    "protector",
+    "wireless charging",
+    "raised camera",
+    "adhesive",
+    "compatible",
+    "tpu",
+    "pc protection"
+  ].filter((term) => text.includes(term)).length;
+  const commercePattern = /\b(?:case|cover|popsocket|popgrip)\s+(?:for|with)\b/.test(text) || /\bfor\s+(?:iphone|google pixel|samsung)\b/.test(text);
+  return commercePattern && productSpecHits >= 2;
 }
 
 function dedupeInternalLinks(links: NonNullable<ContentSourceContext["internalLinks"]>) {

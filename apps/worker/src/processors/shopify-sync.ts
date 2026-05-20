@@ -2,12 +2,14 @@ import type { Job } from "bullmq";
 import { prisma, Prisma } from "@shopify-ai-blog/db";
 import {
   createShopifyGraphQLClient,
+  getShopInfo,
   listCollections,
   listProducts,
   type ShopifyCollection,
   type ShopifyConnection,
   type ShopifyGraphQLClient,
-  type ShopifyProduct
+  type ShopifyProduct,
+  type ShopifyShopInfo
 } from "@shopify-ai-blog/shopify";
 import {
   QUEUE_NAMES,
@@ -53,6 +55,7 @@ interface WorkerShopifyStore {
   scopes: string[];
   apiVersion: string;
   status: string;
+  metadata: Prisma.JsonValue | null;
 }
 
 export async function processShopifySyncJob(job: ShopifySyncJob): Promise<WorkerJobResult> {
@@ -111,7 +114,10 @@ async function syncProducts(
     });
 
     const client = await createStoreClient(loadedStore);
-    const result = await listAllProducts(client, job.data);
+    const [shop, result] = await Promise.all([
+      refreshShopDomainMetadata(client, loadedStore).catch(() => undefined),
+      listAllProducts(client, job.data)
+    ]);
     const products = result.connection.nodes;
     const syncedAt = new Date();
 
@@ -122,7 +128,9 @@ async function syncProducts(
 
       await tx.shopifyStore.update({
         where: { id: loadedStore.id },
-        data: { lastSyncedAt: syncedAt }
+        data: {
+          lastSyncedAt: syncedAt
+        }
       });
     });
 
@@ -226,7 +234,10 @@ async function syncCollections(
     });
 
     const client = await createStoreClient(loadedStore);
-    const result = await listAllCollections(client, job.data);
+    const [shop, result] = await Promise.all([
+      refreshShopDomainMetadata(client, loadedStore).catch(() => undefined),
+      listAllCollections(client, job.data)
+    ]);
     const collections = result.connection.nodes;
     const syncedAt = new Date();
 
@@ -237,7 +248,9 @@ async function syncCollections(
 
       await tx.shopifyStore.update({
         where: { id: loadedStore.id },
-        data: { lastSyncedAt: syncedAt }
+        data: {
+          lastSyncedAt: syncedAt
+        }
       });
     });
 
@@ -341,6 +354,30 @@ async function createStoreClient(store: WorkerShopifyStore): Promise<ShopifyGrap
     accessToken,
     apiVersion: store.apiVersion
   });
+}
+
+async function refreshShopDomainMetadata(
+  client: ShopifyGraphQLClient,
+  store: WorkerShopifyStore
+): Promise<ShopifyShopInfo | undefined> {
+  const shop = await getShopInfo(client);
+  if (!shop?.id) return undefined;
+
+  await prisma.shopifyStore.update({
+    where: { id: store.id },
+    data: {
+      name: shop.name || undefined,
+      shopifyShopGid: shop.id,
+      shopOwnerEmail: shop.email ?? undefined,
+      currencyCode: shop.currencyCode ?? undefined,
+      metadata: toPrismaJson({
+        ...(isRecord(store.metadata) ? store.metadata : {}),
+        ...shopDomainMetadata(shop)
+      })
+    }
+  });
+
+  return shop;
 }
 
 async function listAllProducts(
@@ -600,6 +637,44 @@ function fallbackHandle(prefix: string, shopifyId: string): string {
 
 function uniqueStrings(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))));
+}
+
+function shopDomainMetadata(shop: ShopifyShopInfo): Record<string, unknown> {
+  const primaryDomainHost = normalizeStorefrontHost(shop.primaryDomain?.host);
+  return {
+    primaryDomainHost,
+    primaryDomainUrl: primaryDomainHost ? `https://${primaryDomainHost}` : normalizeStorefrontUrl(shop.url),
+    shopUrl: normalizeStorefrontUrl(shop.url)
+  };
+}
+
+function normalizeStorefrontUrl(value: string | null | undefined): string | undefined {
+  const host = hostFromUrl(value) ?? normalizeStorefrontHost(value);
+  return host ? `https://${host}` : undefined;
+}
+
+function hostFromUrl(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return normalizeStorefrontHost(new URL(value).hostname);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStorefrontHost(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const host = value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+  if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(host)) return undefined;
+  return host;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isUniqueConstraintError(error: unknown): boolean {

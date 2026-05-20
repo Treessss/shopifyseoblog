@@ -1,5 +1,5 @@
 import { encryptSecret, prisma, Prisma } from "@shopify-ai-blog/db";
-import type { ShopifyBlog, ShopifyBlogArticle, ShopifyCollection, ShopifyProduct } from "@shopify-ai-blog/shopify";
+import type { ShopifyBlog, ShopifyBlogArticle, ShopifyCollection, ShopifyProduct, ShopifyShopInfo } from "@shopify-ai-blog/shopify";
 import type {
   AdminRequestContextInput,
   AuditLogCreateInput,
@@ -18,13 +18,7 @@ export type AdminDbClient = typeof prisma | any;
 
 interface ShopifyStoreSyncPersistenceInput {
   storeId: string;
-  shop: {
-    id: string;
-    name: string;
-    myshopifyDomain: string;
-    email?: string | null;
-    currencyCode?: string | null;
-  };
+  shop: ShopifyShopInfo;
   products?: ShopifyProduct[];
   productsCapped: boolean;
   collections?: ShopifyCollection[];
@@ -450,6 +444,14 @@ export async function persistShopifyStoreSync(
         throw new Error(`Store ${input.storeId} was not found.`);
       }
 
+      const storeForArticles = {
+        ...store,
+        metadata: {
+          ...(isRecord(store.metadata) ? store.metadata : {}),
+          ...shopDomainMetadata(input.shop)
+        }
+      };
+
       for (const product of input.products ?? []) {
         await upsertProductSnapshot(tx, organizationId, input.storeId, product, input.syncedAt);
       }
@@ -459,7 +461,7 @@ export async function persistShopifyStoreSync(
       }
 
       for (const article of input.blogArticles) {
-        await upsertShopifyBlogArticle(tx, organizationId, store, article, input.blogs, input.syncedAt);
+        await upsertShopifyBlogArticle(tx, organizationId, storeForArticles, article, input.blogs, input.syncedAt);
       }
 
       let blogMappingsUpdated = 0;
@@ -490,6 +492,7 @@ export async function persistShopifyStoreSync(
           lastSyncedAt: input.syncedAt,
           metadata: toPrismaJson({
             ...(isRecord(store.metadata) ? store.metadata : {}),
+            ...shopDomainMetadata(input.shop),
             lastConnectionVerifiedAt: input.syncedAt.toISOString(),
             lastSync: {
               products: input.products?.length ?? 0,
@@ -662,6 +665,7 @@ export async function upsertStoreCredentials(
         : null;
     const webhookSecret = input.webhookSecret ?? (input.connectionMode === "client_credentials" ? input.shopifyClientSecret : undefined);
     const metadata = compactJsonObject({
+      ...(existing && isRecord(existing.metadata) ? existing.metadata : {}),
       connectionMode: input.connectionMode,
       shopifyApiKey: shopifyClientId,
       defaultBlogHandle: input.shopifyBlogHandle,
@@ -1338,6 +1342,51 @@ function compactJsonObject(input: Record<string, unknown>): Record<string, unkno
   return output;
 }
 
+function shopDomainMetadata(shop: ShopifyShopInfo): Record<string, unknown> {
+  const primaryDomainHost = normalizeStorefrontHost(shop.primaryDomain?.host);
+  const storefrontUrl = primaryDomainHost ? `https://${primaryDomainHost}` : normalizeStorefrontUrl(shop.url);
+  return compactJsonObject({
+    primaryDomainHost,
+    primaryDomainUrl: storefrontUrl,
+    shopUrl: normalizeStorefrontUrl(shop.url)
+  });
+}
+
+function storefrontHostFromStore(store: { myshopifyDomain: string; metadata?: unknown }): string {
+  const metadata = isRecord(store.metadata) ? store.metadata : {};
+  return (
+    normalizeStorefrontHost(metadata.primaryDomainHost) ??
+    hostFromUrl(typeof metadata.primaryDomainUrl === "string" ? metadata.primaryDomainUrl : undefined) ??
+    hostFromUrl(typeof metadata.shopUrl === "string" ? metadata.shopUrl : undefined) ??
+    store.myshopifyDomain
+  );
+}
+
+function normalizeStorefrontUrl(value: string | null | undefined): string | undefined {
+  const host = hostFromUrl(value) ?? normalizeStorefrontHost(value);
+  return host ? `https://${host}` : undefined;
+}
+
+function hostFromUrl(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return normalizeStorefrontHost(new URL(value).hostname);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStorefrontHost(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const host = value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+  if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(host)) return undefined;
+  return host;
+}
+
 async function upsertProductSnapshot(
   tx: AdminDbClient,
   organizationId: string,
@@ -1453,6 +1502,7 @@ async function upsertShopifyBlogArticle(
   store: {
     id: string;
     myshopifyDomain: string;
+    metadata?: unknown;
     primaryLocale: string;
     localeConfigs: Array<{
       locale: string;
@@ -1469,6 +1519,7 @@ async function upsertShopifyBlogArticle(
   const locale = resolveArticleLocale(store, blog);
   const status = article.isPublished === false ? "draft" : "published";
   const publishedAt = parseOptionalDate(article.publishedAt);
+  const storefrontHost = storefrontHostFromStore(store);
   const snapshotData = {
     locale,
     sourceType: "manual_topic" as const,
@@ -1483,7 +1534,7 @@ async function upsertShopifyBlogArticle(
     qualityPassed: true,
     shopifyBlogId: blog?.id ?? article.blog?.id ?? null,
     shopifyArticleId: article.id,
-    canonicalUrl: blog?.handle ? `https://${store.myshopifyDomain}/blogs/${blog.handle}/${handle}` : null,
+    canonicalUrl: blog?.handle ? `https://${storefrontHost}/blogs/${blog.handle}/${handle}` : null,
     publishedAt: publishedAt ?? (status === "published" ? syncedAt : null),
     lastGeneratedAt: null,
     failureReason: null,

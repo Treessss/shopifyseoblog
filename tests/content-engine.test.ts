@@ -95,6 +95,38 @@ describe("content engine", () => {
     expect(estimateWordCount("one two three", "en-US")).toBe(3);
   });
 
+  it("credits title keyword coverage when product keywords are naturally reordered", async () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Floral phone case",
+      publishPolicy: "manual_review",
+      targetWordCount: 800
+    };
+
+    const seo = await defaultSeoScorer.score(
+      {
+        title: "Pink and Green Floral iPhone Case: Finish and MagSafe Options",
+        handle: "pink-green-floral-iphone-case",
+        summary: "Compare the Floral Pattern Phone Case with Pink and Green Design before buying.",
+        bodyHtml:
+          "<section><h2>Floral Pattern Phone Case with Pink and Green Design</h2><p>Floral Pattern Phone Case with Pink and Green Design details for shoppers.</p></section>",
+        tags: []
+      },
+      {
+        locale: "en-US",
+        primaryKeyword: "Floral Pattern Phone Case with Pink and Green Design",
+        secondaryKeywords: [],
+        longTailKeywords: [],
+        searchIntent: "commercial",
+        audienceNeed: "Choose a floral case"
+      },
+      input
+    );
+
+    expect(seo.checks.find((check) => check.id === "title-primary")?.passed).toBe(true);
+  });
+
   it("keeps generation config and uses trends, internal links, and product images as evidence", async () => {
     const parsed = blogCampaignInputSchema.parse({
       organizationId: "org_1",
@@ -322,8 +354,8 @@ describe("content engine", () => {
       generationConfig: input.generationConfig
     });
 
-    expect(selection.selected.primaryKeyword).toBe("Cross and Heart iPhone Phone Case");
-    expect(selection.selected.topic).toContain("Cross and Heart iPhone Phone Case");
+    expect(selection.selected.primaryKeyword).toBe("cross heart iPhone case");
+    expect(selection.selected.topic).toContain("cross heart iPhone case");
     expect(selection.selected.topic).not.toContain("How to choose :");
   });
 
@@ -342,7 +374,7 @@ describe("content engine", () => {
         }
       }
     };
-    const repeatedTopic = "How to choose Cross and Heart iPhone Phone Case: use cases, materials, and pairing ideas";
+    const repeatedTopic = "How to choose cross heart iPhone case: use cases, materials, and pairing ideas";
     const selection = selectTopicCandidate(input, {
       product: {
         id: "gid://shopify/Product/2",
@@ -354,7 +386,7 @@ describe("content engine", () => {
       },
       recentTopics: [
         { topic: repeatedTopic },
-        { title: "Cross and Heart iPhone Phone Case: Fit, Style, and Everyday Use" }
+        { title: "cross heart iPhone case: Fit, Style, and Everyday Use" }
       ],
       generationConfig: input.generationConfig
     });
@@ -365,7 +397,7 @@ describe("content engine", () => {
   });
 
   it("falls back to a fresh scenario when all evergreen angles were already used", () => {
-    const keyword = "Cross and Heart iPhone Phone Case";
+    const keyword = "cross heart iPhone case";
     const input: NormalizedContentPipelineInput = {
       locale: "en-US",
       sourceType: "product",
@@ -405,6 +437,96 @@ describe("content engine", () => {
     expect(usedTopics).not.toContain(selection.selected.topic);
     expect(selection.selected.topic).toContain("for daily commutes");
     expect(selection.selected.reasons).toContain("fallback fresh scenario angle");
+  });
+
+  it("derives a search-friendly primary keyword from long catalog product names", async () => {
+    const result = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        publishPolicy: "manual_review",
+        targetWordCount: 900
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/9",
+          title: "Floral Pattern Phone Case with Pink and Green Design",
+          productType: "",
+          vendor: "Caseease",
+          tags: ["floral", "pink", "green"],
+          imageUrls: [],
+          seoDescription: "Discover our Floral Pattern Phone Case featuring a lovely pink and green design."
+        }
+      }
+    );
+
+    expect(result.artifacts.keywords.primaryKeyword).toBe("pink and green floral phone case");
+    expect(result.article.primaryKeyword).toBe("pink and green floral phone case");
+  });
+
+  it("keeps explicit campaign seed keywords ahead of catalog-derived keywords", async () => {
+    const result = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["magsafe floral case"]
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/11",
+          title: "Floral Pattern Phone Case with Pink and Green Design",
+          productType: "",
+          vendor: "Caseease",
+          tags: ["floral", "pink", "green"],
+          imageUrls: [],
+          seoDescription: "Discover our Floral Pattern Phone Case featuring a lovely pink and green design."
+        },
+        seedKeywords: ["magsafe floral case"]
+      }
+    );
+
+    expect(result.artifacts.keywords.primaryKeyword).toBe("magsafe floral case");
+  });
+
+  it("does not use product listing RSS items as trend-backed topic evidence", () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Shopify blog topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        topicDiscovery: {
+          enabled: true,
+          maxCandidates: 3,
+          preferTrendSignals: true
+        }
+      }
+    };
+    const selection = selectTopicCandidate(input, {
+      product: {
+        id: "gid://shopify/Product/10",
+        title: "Floral Pattern Phone Case with Pink and Green Design",
+        productType: "",
+        vendor: "Caseease",
+        tags: ["floral", "pink", "green"],
+        imageUrls: []
+      },
+      trendSignals: [
+        {
+          title: "OOK Cute Floral Case For Google Pixel 9a | Pink Sunset Design, Shockproof TPU/PC Protection, Raised Camera Guard - example.com",
+          source: "Google News",
+          url: "https://news.example.com/rss/product-listing",
+          relevanceScore: 5
+        }
+      ],
+      generationConfig: input.generationConfig
+    });
+
+    expect(selection.selected.topic).not.toContain("OOK Cute Floral Case");
+    expect(selection.selected.reasons.join(" ")).toContain("evergreen");
   });
 
   it("flags repetitive template-like writing as an editorial quality risk", async () => {

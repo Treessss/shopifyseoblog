@@ -121,12 +121,40 @@ export interface ShopifyBlogArticle {
   } | null;
 }
 
+export interface ShopifyShopInfo {
+  id: string;
+  name: string;
+  myshopifyDomain: string;
+  email?: string | null;
+  currencyCode?: string | null;
+  url?: string | null;
+  primaryDomain?: {
+    host?: string | null;
+  } | null;
+}
+
 const PAGE_INFO_FIELDS = /* GraphQL */ `
   pageInfo {
     hasNextPage
     hasPreviousPage
     startCursor
     endCursor
+  }
+`;
+
+const SHOP_INFO_QUERY = /* GraphQL */ `
+  query ShopifyShopInfo {
+    shop {
+      id
+      name
+      myshopifyDomain
+      email
+      currencyCode
+      url
+      primaryDomain {
+        host
+      }
+    }
   }
 `;
 
@@ -277,6 +305,11 @@ export async function listProducts(
   return normalizeConnection(data.products);
 }
 
+export async function getShopInfo(client: ShopifyGraphQLClient): Promise<ShopifyShopInfo> {
+  const data = await client.request<{ shop: ShopifyShopInfo }>(SHOP_INFO_QUERY);
+  return data.shop;
+}
+
 export async function listCollections(
   client: ShopifyGraphQLClient,
   options: ShopifyListOptions = {}
@@ -314,6 +347,7 @@ export const products = listProducts;
 export const collections = listCollections;
 export const blogs = listBlogs;
 export const blogArticles = listBlogArticles;
+export const shopInfo = getShopInfo;
 
 interface ShopifyConnectionPayload<TNode> {
   edges?: Array<{

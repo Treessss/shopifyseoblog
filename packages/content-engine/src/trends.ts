@@ -163,9 +163,27 @@ function tokenSet(value: string) {
 }
 
 function passesRelevanceGate(signal: TrendSignal, context?: ContentSourceContext): boolean {
+  if (looksLikeProductListingSignal(signal.title, signal.summary)) return false;
   const hasCatalogAnchor = Boolean(context?.product || context?.collection || context?.seedKeywords?.length);
   if (!hasCatalogAnchor) return true;
   return (signal.relevanceScore ?? 0) > 0;
+}
+
+function looksLikeProductListingSignal(title: string, summary?: string): boolean {
+  const text = `${title} ${summary ?? ""}`.toLowerCase();
+  const productSpecHits = [
+    "shockproof",
+    "bumper",
+    "protector",
+    "wireless charging",
+    "raised camera",
+    "adhesive",
+    "compatible",
+    "tpu",
+    "pc protection"
+  ].filter((term) => text.includes(term)).length;
+  const commercePattern = /\b(?:case|cover|popsocket|popgrip)\s+(?:for|with)\b/.test(text) || /\bfor\s+(?:iphone|google pixel|samsung)\b/.test(text);
+  return commercePattern && productSpecHits >= 2;
 }
 
 const trendStopWords = new Set([

@@ -32,8 +32,10 @@ import {
   articleCreate,
   articleUpdate,
   createShopifyGraphQLClient,
+  getShopInfo,
   type ShopifyGraphQLClient,
-  type ShopifyArticle
+  type ShopifyArticle,
+  type ShopifyShopInfo
 } from "@shopify-ai-blog/shopify";
 import {
   BLOG_GENERATION_JOB_NAMES,
@@ -348,7 +350,8 @@ async function generateBlogArticle(
               sourceUrl: aiResult.imageAsset.sourceUrl,
               providerModel: aiResult.imageAsset.providerModel,
               error: aiResult.imageAsset.error,
-              referenceImageUrls: aiResult.imageAsset.referenceImageUrls
+              referenceImageUrls: aiResult.imageAsset.referenceImageUrls,
+              raw: aiResult.imageAsset.raw
             }
           : null,
         contentEngine: {
@@ -850,6 +853,7 @@ async function reviewArticleForSearchTraffic(
       "Use this high-score contract as the scoring rubric. Do not give 82+ unless the article substantially satisfies it:",
       highScoreArticleContract(input, context).join("\n"),
       "Use localStructureReport as a hard sanity check. If it has failed checks, the score must stay below the minimum and the failed checks must become actionItems.",
+      "Do not claim the article is truncated, missing FAQ, or missing a conclusion when article.metrics and localStructureReport show those elements are present. If bodyTextTruncated is false, treat bodyText as the complete article text.",
       `If the score is below ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore}, return at least 5 actionItems. Each actionItem must be section-specific, directly editable, and include an acceptanceCheck. Avoid vague advice like 'add more detail'.`,
       "Make revisionBrief an ordered checklist that an editor can apply immediately. Name the exact H2/table/FAQ/internal link/product fact to add or replace.",
       "Ignore low-relevance trend evidence. Penalize the article if unrelated news or trend terms appear in the copy.",
@@ -1368,6 +1372,9 @@ function averageReviewDimensions(record: Record<string, unknown>): number {
 }
 
 function articleForAiReview(article: GeneratedArticle) {
+  const bodyText = stripHtmlForReview(article.bodyHtml);
+  const bodyTextLimit = 22000;
+  const bodyHtmlLimit = 9000;
   return {
     title: article.title,
     handle: article.handle,
@@ -1376,8 +1383,20 @@ function articleForAiReview(article: GeneratedArticle) {
     secondaryKeywords: article.secondaryKeywords,
     tags: article.tags,
     locale: article.locale,
-    bodyText: stripHtmlForReview(article.bodyHtml).slice(0, 7000),
-    bodyHtmlPreview: article.bodyHtml.slice(0, 1800)
+    metrics: {
+      textChars: bodyText.length,
+      htmlChars: article.bodyHtml.length,
+      h2: matchCount(article.bodyHtml, /<h2\b/gi),
+      h3: matchCount(article.bodyHtml, /<h3\b/gi),
+      tables: matchCount(article.bodyHtml, /<table\b/gi),
+      links: matchCount(article.bodyHtml, /<a\b/gi),
+      images: matchCount(article.bodyHtml, /<img\b/gi),
+      questions: matchCount(bodyText, /[?？]/g)
+    },
+    bodyText: trimForPrompt(bodyText, bodyTextLimit),
+    bodyTextTruncated: bodyText.length > bodyTextLimit,
+    bodyHtmlPreview: trimForPrompt(article.bodyHtml, bodyHtmlLimit),
+    bodyHtmlPreviewTruncated: article.bodyHtml.length > bodyHtmlLimit
   };
 }
 
@@ -1582,6 +1601,10 @@ function trimForPrompt(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 3)}...`;
 }
 
+function matchCount(value: string, pattern: RegExp): number {
+  return value.match(pattern)?.length ?? 0;
+}
+
 function relevantTrendSignals(context: ContentSourceContext): TrendSignal[] {
   const hasCatalogAnchor = Boolean(context.product || context.collection || context.seedKeywords?.length);
   const seen = new Set<string>();
@@ -1733,12 +1756,15 @@ function imageToAssetDraft(
   const dataUrl = image.b64Json ? `data:image/png;base64,${image.b64Json}` : undefined;
 
   return {
-    prompt: image.revisedPrompt ?? prompt,
+    prompt,
     altText,
     publicUrl: image.url,
     sourceUrl: image.url ?? dataUrl,
     providerModel: image.model,
-    referenceImageUrls
+    referenceImageUrls,
+    raw: {
+      revisedPrompt: image.revisedPrompt
+    }
   };
 }
 
@@ -1836,6 +1862,7 @@ async function persistGeneratedImageAsset(input: {
       metadata: toPrismaJson({
         providerModel: input.asset.providerModel,
         referenceImageUrls: input.asset.referenceImageUrls,
+        raw: input.asset.raw,
         error: input.asset.error
       })
     }
@@ -1919,6 +1946,7 @@ async function publishArticle(
       accessToken,
       apiVersion: store.apiVersion
     });
+    const storefrontHost = await resolveStorefrontHostForStore(store, "publish", client);
     const published = await publishToShopify(client, article, shopifyBlogId, job.data.publishAt);
     const publishedAt = new Date();
 
@@ -1930,7 +1958,7 @@ async function publishArticle(
         shopifyArticleId: published.id,
         handle: published.handle ?? article.handle,
         title: published.title ?? article.title,
-        canonicalUrl: buildCanonicalUrl(store.myshopifyDomain, published),
+        canonicalUrl: buildCanonicalUrl(storefrontHost, published),
         publishedAt,
         failureReason: null
       }
@@ -2009,6 +2037,96 @@ async function loadStoreForJob(organizationId: string, storeId: string) {
   }
 
   return store;
+}
+
+async function resolveStorefrontHostForStore(
+  store: {
+    id: string;
+    myshopifyDomain: string;
+    metadata: unknown;
+    apiVersion: string;
+    adminAccessTokenEncrypted: string | null;
+    adminAccessTokenExpiresAt: Date | null;
+    shopifyClientId: string | null;
+    shopifyClientSecretEncrypted: string | null;
+    scopes: string[];
+    status: string;
+  },
+  action: "sync" | "publish",
+  client?: ShopifyGraphQLClient
+): Promise<string> {
+  const metadata = isRecord(store.metadata) ? store.metadata : {};
+
+  try {
+    const shopifyClient =
+      client ??
+      createShopifyGraphQLClient({
+        shopDomain: store.myshopifyDomain,
+        accessToken: await resolveFreshStoreAccessToken(store, action),
+        apiVersion: store.apiVersion
+      });
+    const shop = await getShopInfo(shopifyClient);
+    const domainMetadata = shopDomainMetadata(shop);
+    await prisma.shopifyStore.update({
+      where: { id: store.id },
+      data: {
+        name: shop.name || undefined,
+        shopifyShopGid: shop.id,
+        shopOwnerEmail: shop.email ?? undefined,
+        currencyCode: shop.currencyCode ?? undefined,
+        metadata: toPrismaJson({
+          ...metadata,
+          ...domainMetadata
+        })
+      }
+    });
+
+    return storefrontHostFromMetadata(domainMetadata) ?? store.myshopifyDomain;
+  } catch {
+    return storefrontHostFromMetadata(metadata) ?? store.myshopifyDomain;
+  }
+}
+
+function storefrontHostFromMetadata(metadata: Record<string, unknown>): string | undefined {
+  return (
+    normalizeStorefrontHost(metadata.primaryDomainHost) ??
+    hostFromUrl(typeof metadata.primaryDomainUrl === "string" ? metadata.primaryDomainUrl : undefined) ??
+    hostFromUrl(typeof metadata.shopUrl === "string" ? metadata.shopUrl : undefined)
+  );
+}
+
+function shopDomainMetadata(shop: ShopifyShopInfo): Record<string, unknown> {
+  const primaryDomainHost = normalizeStorefrontHost(shop.primaryDomain?.host);
+  return {
+    primaryDomainHost,
+    primaryDomainUrl: primaryDomainHost ? `https://${primaryDomainHost}` : normalizeStorefrontUrl(shop.url),
+    shopUrl: normalizeStorefrontUrl(shop.url)
+  };
+}
+
+function normalizeStorefrontUrl(value: string | null | undefined): string | undefined {
+  const host = hostFromUrl(value) ?? normalizeStorefrontHost(value);
+  return host ? `https://${host}` : undefined;
+}
+
+function hostFromUrl(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return normalizeStorefrontHost(new URL(value).hostname);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStorefrontHost(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const host = value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+  if (!/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(host)) return undefined;
+  return host;
 }
 
 async function resolveShopifyBlogId(
@@ -2270,6 +2388,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     throw new Error(`Store ${data.storeId} was not found for organization ${data.organizationId}.`);
   }
 
+  const storefrontHost = await resolveStorefrontHostForStore(store, "sync");
   const locale = normalizeLocale(campaign?.locale ?? article?.locale ?? data.locale);
   const sourceType = campaign?.sourceType ?? article?.sourceType ?? data.sourceType;
   const sourceId = campaign?.sourceId ?? article?.sourceId ?? data.sourceId;
@@ -2311,7 +2430,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
       generationConfig,
       context: sourceContextBase
     }),
-    loadInternalLinks(store.myshopifyDomain, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig, data.articleId),
+    loadInternalLinks(storefrontHost, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig, data.articleId),
     loadImageReferences(data.storeId, sourceContextBase, generationConfig)
   ]);
   const enrichedContextBase = {
@@ -2939,7 +3058,7 @@ async function loadInternalLinks(
     ? [
         {
           title: sourceProduct.title,
-          url: `https://${shopDomain}/products/${sourceProduct.handle}`,
+          url: storefrontUrl(shopDomain, `/products/${sourceProduct.handle}`),
           type: "product" as const,
           anchor: sourceProduct.seoTitle ?? sourceProduct.title,
           reason: sourceProduct.productType || "Primary product page"
@@ -2948,25 +3067,41 @@ async function loadInternalLinks(
     : [];
   const productLinks = products.map((product) => ({
     title: product.title,
-    url: `https://${shopDomain}/products/${product.handle}`,
+    url: storefrontUrl(shopDomain, `/products/${product.handle}`),
     type: "product" as const,
     anchor: product.seoTitle ?? product.title,
     reason: product.productType ?? undefined
   }));
   const collectionLinks = collections.map((collection) => ({
     title: collection.title,
-    url: `https://${shopDomain}/collections/${collection.handle}`,
+    url: storefrontUrl(shopDomain, `/collections/${collection.handle}`),
     type: "collection" as const,
     anchor: collection.title
   }));
   const articleLinks = articles.map((article) => ({
     title: article.title ?? "Related article",
-    url: article.canonicalUrl ?? `https://${shopDomain}/blogs/news/${article.handle}`,
+    url: rewriteUrlHost(article.canonicalUrl, shopDomain) ?? storefrontUrl(shopDomain, `/blogs/news/${article.handle}`),
     type: "article" as const,
     anchor: article.title ?? article.primaryKeyword ?? "Related article"
   }));
 
   return mixInternalLinkCandidates([sourceProductLinks, collectionLinks, articleLinks, productLinks], limit);
+}
+
+function storefrontUrl(host: string, path: string): string {
+  return `https://${host}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+function rewriteUrlHost(value: string | null | undefined, host: string): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    url.hostname = host;
+    url.protocol = "https:";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 function mixInternalLinkCandidates(groups: InternalLinkCandidate[][], limit: number): InternalLinkCandidate[] {

@@ -2,6 +2,7 @@ import { maybeDecryptSecret } from "@shopify-ai-blog/db";
 import {
   createShopifyGraphQLClient,
   exchangeShopifyClientCredentials,
+  getShopInfo,
   listBlogArticles,
   listBlogs,
   listCollections,
@@ -11,6 +12,7 @@ import {
   type ShopifyCollection,
   type ShopifyConnection,
   type ShopifyGraphQLClient,
+  type ShopifyShopInfo,
   type ShopifyProduct
 } from "@shopify-ai-blog/shopify";
 import type { AdminRequestContextInput, QueueStoreSyncInput } from "../contracts";
@@ -18,30 +20,6 @@ import { AdminApiError } from "../policies/errors";
 import * as repository from "../repository/admin-repository";
 
 type StoreForSync = NonNullable<Awaited<ReturnType<typeof repository.findStoreById>>>;
-
-interface ShopConnectionInfo {
-  id: string;
-  name: string;
-  myshopifyDomain: string;
-  email?: string | null;
-  currencyCode?: string | null;
-}
-
-interface ShopConnectionResponse {
-  shop: ShopConnectionInfo;
-}
-
-const SHOP_CONNECTION_QUERY = /* GraphQL */ `
-  query ShopifyConnectionCheck {
-    shop {
-      id
-      name
-      myshopifyDomain
-      email
-      currencyCode
-    }
-  }
-`;
 
 export async function syncShopifyStoreResources(
   organizationId: string,
@@ -181,16 +159,16 @@ function tokenExpiryDate(expiresInSeconds: number | undefined): Date | undefined
   return new Date(Date.now() + expiresInSeconds * 1000);
 }
 
-async function verifyShopifyConnection(client: ShopifyGraphQLClient, store: StoreForSync) {
+async function verifyShopifyConnection(client: ShopifyGraphQLClient, store: StoreForSync): Promise<ShopifyShopInfo> {
   try {
-    const data = await client.request<ShopConnectionResponse>(SHOP_CONNECTION_QUERY);
-    if (!data.shop?.id) {
+    const shop = await getShopInfo(client);
+    if (!shop?.id) {
       throw new AdminApiError(502, "SHOPIFY_CONNECTION_INVALID", "Shopify did not return shop identity.", {
         storeId: store.id,
         domain: store.myshopifyDomain
       });
     }
-    return data.shop;
+    return shop;
   } catch (error) {
     if (error instanceof AdminApiError) throw error;
     throw new AdminApiError(502, "SHOPIFY_CONNECTION_FAILED", "Unable to verify this store with Shopify Admin API.", {
