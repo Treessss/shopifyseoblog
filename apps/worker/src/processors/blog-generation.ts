@@ -196,6 +196,19 @@ interface AiSearchReviewWorkflow {
   warning?: string;
 }
 
+interface HighScoreStructureCheck {
+  key: string;
+  label: string;
+  passed: boolean;
+  detail?: string;
+}
+
+interface HighScoreStructureReport {
+  passed: boolean;
+  checks: HighScoreStructureCheck[];
+  issues: string[];
+}
+
 interface ResolvedCatalogSource {
   sourceType: Extract<SourceType, "product" | "collection">;
   sourceId: string;
@@ -532,7 +545,7 @@ async function generateArticleWithAi(
 ): Promise<{
   article: GeneratedArticle;
   seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>;
-  quality: QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow };
+  quality: QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow; highScoreStructure?: HighScoreStructureReport };
   imageAsset?: ImageAssetDraft;
   aiSearchReview?: AiSearchReviewWorkflow;
   metadata: {
@@ -655,7 +668,8 @@ async function generateArticleWithAi(
   const qualityInput = normalizeFinalQualityInput(input);
   const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
   const localQuality = await defaultQualityGate.evaluate(toHtmlAssembly(finalArticle), finalSeo, qualityInput, context);
-  const finalQuality = applyAiSearchReviewGate(localQuality, aiSearchReview.workflow);
+  const finalStructure = evaluateHighScoreArticleStructure(finalArticle, qualityInput, context);
+  const finalQuality = applyAiSearchReviewGate(localQuality, aiSearchReview.workflow, finalStructure);
 
   return {
     article: {
@@ -687,7 +701,11 @@ async function runAiSearchReviewWorkflow(
   const config = resolveAiSearchReviewConfig(input.generationConfig);
   if (!config.enabled) return {};
 
-  const initial = await reviewArticleForSearchTraffic(client, provider, article, input, context, pipelineResult, "initial");
+  const initial = applyHighScoreStructureReview(
+    await reviewArticleForSearchTraffic(client, provider, article, input, context, pipelineResult, "initial"),
+    evaluateHighScoreArticleStructure(article, input, context),
+    input
+  );
   let currentArticle = article;
   let currentReview = initial;
   const revisions: AiSearchRevisionPass[] = [];
@@ -695,17 +713,15 @@ async function runAiSearchReviewWorkflow(
   for (let pass = 1; pass <= config.maxRevisionPasses; pass += 1) {
     if (currentReview.score >= config.minTrafficScore) break;
 
-    const revisedArticle = await reviseArticleForSearchTraffic(
-      client,
-      provider,
-      currentArticle,
-      currentReview,
-      input,
-      context,
-      pipelineResult,
-      pass
+    const revisedArticle = enforceInternalLinks(
+      await reviseArticleForSearchTraffic(client, provider, currentArticle, currentReview, input, context, pipelineResult, pass),
+      context
     );
-    const revisedReview = await reviewArticleForSearchTraffic(client, provider, revisedArticle, input, context, pipelineResult, `revision-${pass}`);
+    const revisedReview = applyHighScoreStructureReview(
+      await reviewArticleForSearchTraffic(client, provider, revisedArticle, input, context, pipelineResult, `revision-${pass}`),
+      evaluateHighScoreArticleStructure(revisedArticle, input, context),
+      input
+    );
     revisions.push({
       pass,
       beforeScore: currentReview.score,
@@ -742,14 +758,10 @@ async function finalizeAiSearchReviewWorkflow(
   if (!result.workflow) return result;
 
   let currentArticle = finalArticle;
-  let currentReview = await reviewArticleForSearchTraffic(
-    client,
-    provider,
-    currentArticle,
-    input,
-    context,
-    pipelineResult,
-    "final-saved-article"
+  let currentReview = applyHighScoreStructureReview(
+    await reviewArticleForSearchTraffic(client, provider, currentArticle, input, context, pipelineResult, "final-saved-article"),
+    evaluateHighScoreArticleStructure(currentArticle, input, context),
+    input
   );
   const revisions = result.workflow.revisions.map((revision, index, allRevisions) =>
     index === allRevisions.length - 1 ? { ...revision, afterScore: currentReview.score } : revision
@@ -769,14 +781,10 @@ async function finalizeAiSearchReviewWorkflow(
       pass
     );
     currentArticle = enforceInternalLinks(revisedArticle, context);
-    const revisedReview = await reviewArticleForSearchTraffic(
-      client,
-      provider,
-      currentArticle,
-      input,
-      context,
-      pipelineResult,
-      `final-revision-${pass}`
+    const revisedReview = applyHighScoreStructureReview(
+      await reviewArticleForSearchTraffic(client, provider, currentArticle, input, context, pipelineResult, `final-revision-${pass}`),
+      evaluateHighScoreArticleStructure(currentArticle, input, context),
+      input
     );
     revisions.push({
       pass,
@@ -841,6 +849,7 @@ async function reviewArticleForSearchTraffic(
       "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, and weak product/category fit.",
       "Use this high-score contract as the scoring rubric. Do not give 82+ unless the article substantially satisfies it:",
       highScoreArticleContract(input, context).join("\n"),
+      "Use localStructureReport as a hard sanity check. If it has failed checks, the score must stay below the minimum and the failed checks must become actionItems.",
       `If the score is below ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore}, return at least 5 actionItems. Each actionItem must be section-specific, directly editable, and include an acceptanceCheck. Avoid vague advice like 'add more detail'.`,
       "Make revisionBrief an ordered checklist that an editor can apply immediately. Name the exact H2/table/FAQ/internal link/product fact to add or replace.",
       "Ignore low-relevance trend evidence. Penalize the article if unrelated news or trend terms appear in the copy.",
@@ -861,6 +870,7 @@ async function reviewArticleForSearchTraffic(
         product: compactProductContext(context.product),
         collection: compactCollectionContext(context.collection),
         recentTopics: context.recentTopics?.slice(0, 12),
+        localStructureReport: evaluateHighScoreArticleStructure(article, input, context),
         article: articleForAiReview(article)
       })
     ].join("\n\n"),
@@ -921,6 +931,7 @@ async function reviseArticleForSearchTraffic(
       `Target outcome: the revised article should be strong enough to score at least ${targetAiSearchScore(input)} in the next AI search traffic review, not merely clear the minimum ${resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore}.`,
       "This is a hard quality contract for the returned article:",
       highScoreArticleContract(input, context).join("\n"),
+      "The localStructureReport in the context is a non-negotiable validator. Repair every failed check before making style improvements.",
       "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
       "Treat revisionBrief and actionItems as a required checklist. Satisfy every acceptanceCheck that can be satisfied with the supplied evidence, and remove unrelated trend/news terms.",
       "Before returning, audit your own draft: if an actionItem asks for a section, table, FAQ, internal link, product fact box, comparison, or CTA, it must actually exist in bodyHtml.",
@@ -929,12 +940,13 @@ async function reviseArticleForSearchTraffic(
       "Use synced product options, variants, image context, SEO descriptions, and tags as facts. If important specs are missing, state that they are not confirmed and shift the angle to styling, gifting, cleaning, comparison, or shopper fit.",
       "If currentArticle already contains an image figure or generated image URL, preserve it unless it is broken or irrelevant.",
       "For ecommerce product content, prefer concrete modules: verified facts table, variant/finish decision table, choose-this-if/skip-this-if section, contextual internal links, FAQ, and a complete buyer-facing conclusion.",
-      `Aim for ${Math.max(900, Math.round(input.targetWordCount * 0.85))}-${Math.round(input.targetWordCount * 1.15)} words unless the targetWordCount is lower. Do not end with an unfinished FAQ, heading, list, or sentence.`,
+      `Aim for ${highScoreMinWordCount(input)}-${Math.round(input.targetWordCount * 1.15)} words. Do not end with an unfinished FAQ, heading, list, or sentence.`,
       "Do not repeat old title formulas or create another generic guide. Do not start the title with 'How to Choose', 'Guide', 'Best', or the bare product keyword unless the review explicitly requires that exact query format. Do not use the campaign/task name as the title.",
       "Use semantic HTML sections with H2 headings and natural keyword placement.",
       JSON.stringify({
         sourceStrategy: articleForAiReview(pipelineResult.article),
         sourceContext: contextForAiEditing(context),
+        localStructureReport: evaluateHighScoreArticleStructure(article, input, context),
         currentArticle: articleForAiRevision(article)
       })
     ].join("\n\n"),
@@ -972,18 +984,24 @@ async function reviseArticleForSearchTraffic(
 
 function applyAiSearchReviewGate(
   quality: QualityGateResult,
-  workflow: AiSearchReviewWorkflow | undefined
-): QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow } {
+  workflow: AiSearchReviewWorkflow | undefined,
+  structure?: HighScoreStructureReport
+): QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow; highScoreStructure?: HighScoreStructureReport } {
   if (!workflow?.enabled) return quality;
 
-  const searchPassed = !workflow.unavailable && workflow.final.score >= workflow.minTrafficScore;
+  const structurePassed = structure?.passed ?? true;
+  const scorePassed = !workflow.unavailable && workflow.final.score >= workflow.minTrafficScore;
+  const searchPassed = scorePassed && structurePassed;
   const reasons = [...quality.reasons];
   const warnings = [...quality.warnings];
   if (workflow.unavailable) {
     reasons.push(workflow.warning ?? "AI search traffic review was unavailable, so the article needs manual review.");
   }
-  if (!searchPassed) {
+  if (!scorePassed) {
     reasons.push(`AI search traffic score ${workflow.final.score} is below ${workflow.minTrafficScore}.`);
+  }
+  if (structure && !structure.passed) {
+    reasons.push(...structure.issues.slice(0, 6));
   }
   if (workflow.revisions.length > 0) {
     warnings.push(`AI revised and rescored this article ${workflow.revisions.length} time(s).`);
@@ -994,7 +1012,8 @@ function applyAiSearchReviewGate(
     passed: quality.passed && searchPassed,
     reasons,
     warnings,
-    aiSearchReview: workflow
+    aiSearchReview: workflow,
+    highScoreStructure: structure
   };
 }
 
@@ -1039,6 +1058,9 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
     "Hard requirements:",
     "- Title: specific search intent + clear differentiator. Avoid formula starts like 'How to Choose', 'Guide', 'Best', or '[keyword]: ...' unless the exact query demands it.",
     "- Intro: within the first 120 words, state who the article is for, the concrete buying/search question, the verified product/category anchor, and the decision the reader will be able to make.",
+    "- Direct answer: include a 40-60 word answer-first block near the top that could stand alone in a featured snippet or AI answer.",
+    "- Search intent: map the H2s to clear intent stages: quick answer, verified facts, comparison/decision, practical use, internal next step, FAQ.",
+    "- Keyword evidence: use primary, secondary, and long-tail terms because they match the topic and buyer intent; avoid forcing unrelated trend/news keywords.",
     "- Evidence: include a compact verified-facts section or table using only synced product/category facts. Also include a 'not confirmed' note for important unknowns instead of guessing.",
     hasVariantOptions
       ? "- Decision depth: include a variant/finish/fit decision table using synced options or variants, with 'best for' guidance for each relevant option."
@@ -1070,6 +1092,198 @@ function revisionModeInstruction(pass: number, review: AiSearchReviewResult, inp
     "Apply all actionItems and revisionBrief items as concrete edits, not wording tweaks.",
     "If the requested sections or tables are missing, add them now."
   ].join(" ");
+}
+
+function evaluateHighScoreArticleStructure(
+  article: GeneratedArticle,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext
+): HighScoreStructureReport {
+  const html = article.bodyHtml ?? "";
+  const text = stripHtmlForReview(html);
+  const locale = article.locale ?? input.locale;
+  const minWords = highScoreMinWordCount(input);
+  const wordCount = estimateReviewWordCount(text, locale);
+  const requiredInternalLinks = expectedInternalLinkCount(context);
+  const internalLinks = extractArticleLinkUrls(html).size;
+  const faqCount = countFaqQuestions(html, text, locale);
+  const checks: HighScoreStructureCheck[] = [
+    structureCheck(
+      "answer-first",
+      "40-60 word answer-first block near the top",
+      hasAnswerFirstBlock(html, text, locale),
+      "Add a labeled quick-answer block immediately after the intro."
+    ),
+    structureCheck(
+      "verified-facts",
+      "Verified facts table or compact fact box",
+      hasVerifiedFactsSection(html, text, locale),
+      "Add a verified facts table/fact box grounded only in synced product or collection data."
+    ),
+    structureCheck(
+      "decision-table",
+      "Comparison or decision table",
+      hasDecisionTable(html, text, locale),
+      "Add a table that compares variants, fit, finish, use case, care, or shopper tradeoffs."
+    ),
+    structureCheck(
+      "choose-skip",
+      "Choose-this-if / skip-this-if guidance",
+      hasChooseSkipGuidance(text, locale),
+      "Add a choose-this-if / skip-this-if section with concrete buyer guidance."
+    ),
+    structureCheck(
+      "faq-depth",
+      "At least five FAQ questions",
+      faqCount >= 5,
+      `Add enough non-generic FAQ items; detected ${faqCount}, expected at least 5.`
+    ),
+    structureCheck(
+      "internal-links",
+      "Required contextual internal links",
+      internalLinks >= requiredInternalLinks,
+      `Add ${Math.max(0, requiredInternalLinks - internalLinks)} more contextual internal link(s); detected ${internalLinks}, expected ${requiredInternalLinks}.`
+    ),
+    structureCheck(
+      "word-depth",
+      "Useful depth near target word count",
+      wordCount >= minWords,
+      `Expand specific sections; estimated ${wordCount} words, expected at least ${minWords}.`
+    ),
+    structureCheck(
+      "complete-ending",
+      "Complete buyer-facing ending",
+      !hasLikelyTruncatedEnding(html, text),
+      "Finish the last section with a complete sentence and buyer-facing conclusion; no unfinished heading/list/FAQ."
+    )
+  ];
+  const issues = checks.filter((check) => !check.passed).map((check) => `${check.label}: ${check.detail ?? "Not satisfied."}`);
+
+  return {
+    passed: issues.length === 0,
+    checks,
+    issues
+  };
+}
+
+function applyHighScoreStructureReview(
+  review: AiSearchReviewResult,
+  structure: HighScoreStructureReport,
+  input: ParsedGenerationInput
+): AiSearchReviewResult {
+  if (structure.passed) return review;
+
+  const minTrafficScore = resolveAiSearchReviewConfig(input.generationConfig).minTrafficScore;
+  const structuralScore = Math.min(review.score, Math.max(0, minTrafficScore - 24), Math.max(0, minTrafficScore - 1));
+  const structureItems: AiSearchActionItem[] = structure.issues.slice(0, 8).map((issue) => ({
+    priority: "critical",
+    area: "structure",
+    issue,
+    concreteEdit: issue,
+    acceptanceCheck: "Local high-score structure validation passes for this item."
+  }));
+
+  return {
+    ...review,
+    score: structuralScore,
+    passed: false,
+    contentDepthScore: Math.min(review.contentDepthScore, structuralScore),
+    conversionSupportScore: Math.min(review.conversionSupportScore, structuralScore),
+    summary: `${review.summary} Local high-score structure validation failed: ${structure.issues.slice(0, 3).join(" | ")}`,
+    recommendations: uniqueStrings([...structure.issues, ...review.recommendations]).slice(0, 10),
+    revisionBrief: uniqueStrings([
+      "Repair every local high-score structure failure before stylistic edits.",
+      ...structure.issues,
+      ...review.revisionBrief
+    ]).slice(0, 10),
+    actionItems: [...structureItems, ...review.actionItems].slice(0, 10)
+  };
+}
+
+function structureCheck(key: string, label: string, passed: boolean, detail: string): HighScoreStructureCheck {
+  return {
+    key,
+    label,
+    passed,
+    detail: passed ? undefined : detail
+  };
+}
+
+function expectedInternalLinkCount(context: ContentSourceContext): number {
+  const configuredInternalLinkLimit = Math.max(0, context.generationConfig?.internalLinks?.maxLinks ?? 4);
+  if (context.generationConfig?.internalLinks?.enabled === false || configuredInternalLinkLimit === 0) return 0;
+  return Math.min(configuredInternalLinkLimit, mixInternalLinkCandidates([context.internalLinks ?? []], configuredInternalLinkLimit).length);
+}
+
+function highScoreMinWordCount(input: ParsedGenerationInput): number {
+  const proportionalMinimum = Math.round(input.targetWordCount * 0.85);
+  if (input.targetWordCount < 900) return Math.max(450, proportionalMinimum);
+  return Math.max(900, proportionalMinimum);
+}
+
+function hasAnswerFirstBlock(html: string, text: string, locale: SupportedLocale): boolean {
+  const topHtml = html.slice(0, 1600);
+  const topText = text.slice(0, 900);
+  if (locale === "zh-CN") {
+    return /(快速答案|直接答案|结论先说|简短答案|一句话结论)/i.test(topHtml) || /^(?:[^。！？]*[。！？]){2,4}/.test(topText);
+  }
+
+  return /(quick answer|short answer|answer first|bottom line|the short version|quick take)/i.test(topHtml);
+}
+
+function hasVerifiedFactsSection(html: string, text: string, locale: SupportedLocale): boolean {
+  const hasFactsHeading =
+    locale === "zh-CN"
+      ? /(已确认|事实|商品信息|规格|未确认|不确定|未提供)/i.test(text)
+      : /(verified|confirmed|facts|specs|not confirmed|not listed|not provided|unknown)/i.test(text);
+  return hasFactsHeading && (/<table\b/i.test(html) || /<ul\b/i.test(html));
+}
+
+function hasDecisionTable(html: string, text: string, locale: SupportedLocale): boolean {
+  const decisionTerms =
+    locale === "zh-CN"
+      ? /(对比|比较|决策|选择|适合|不适合|场景|用途|取舍|版本|款式|颜色|材质|搭配|送礼)/
+      : /(compare|comparison|decision|matrix|choose|skip|best for|use case|variant|finish|fit|tradeoff|vs\.?|gift|style|care)/i;
+  const tables = Array.from(html.matchAll(/<table\b[\s\S]*?<\/table>/gi)).map((match) => stripHtmlForReview(match[0] ?? ""));
+  if (tables.some((tableText) => decisionTerms.test(tableText))) return true;
+
+  const tableNearDecisionHeading =
+    locale === "zh-CN"
+      ? /(对比|比较|决策|选择|适合|不适合|场景|用途|取舍)[\s\S]{0,900}<table\b/i.test(html)
+      : /(compare|comparison|decision|choose|skip|best for|use case|variant|finish|fit|tradeoff|vs\.?)[\s\S]{0,900}<table\b/i.test(html);
+  return tableNearDecisionHeading && decisionTerms.test(text);
+}
+
+function hasChooseSkipGuidance(text: string, locale: SupportedLocale): boolean {
+  if (locale === "zh-CN") return /(适合|不适合|选这个|可以跳过|不建议|购买前)/i.test(text);
+  return /(choose this if|skip this if|best for|avoid this if|buy it if|do not buy|pre-purchase|before you buy)/i.test(text);
+}
+
+function countFaqQuestions(html: string, text: string, locale: SupportedLocale): number {
+  const faqIndex = locale === "zh-CN" ? text.search(/常见问题|问答|FAQ/i) : text.search(/FAQ|frequently asked|questions/i);
+  const faqText = faqIndex >= 0 ? text.slice(faqIndex) : text;
+  const questionMarks = (faqText.match(/[?？]/g) ?? []).length;
+  const questionHeadings = Array.from(html.matchAll(/<h[23]\b[^>]*>([\s\S]*?)<\/h[23]>/gi)).filter((match) =>
+    /[?？]|^(?:Q[:：]|问[:：])|^(?:Can|Do|Does|Is|Are|Should|Which|What|When|Why|How)\b/i.test(stripHtmlForReview(match[1] ?? ""))
+  ).length;
+  return Math.max(questionMarks, questionHeadings);
+}
+
+function hasLikelyTruncatedEnding(html: string, text: string): boolean {
+  const trimmedHtml = html.trim();
+  const trimmedText = text.trim();
+  if (!trimmedHtml || !trimmedText) return true;
+  if (/<h[1-6]\b[^>]*>[\s\S]*?<\/h[1-6]>\s*$/i.test(trimmedHtml)) return true;
+  if (/<(?:ul|ol|table|tbody|thead|tr|section|p|li)\b[^>]*>\s*$/i.test(trimmedHtml)) return true;
+  if (/\b(?:and|or|with|for|to|because|including|such as|while|when|if|by|from|the|a|an)\s*$/i.test(trimmedText)) return true;
+  return !/[.!?。！？)"'”’]$/.test(trimmedText);
+}
+
+function estimateReviewWordCount(text: string, locale: SupportedLocale): number {
+  const latinWords = text.match(/[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*/g)?.length ?? 0;
+  if (locale !== "zh-CN") return latinWords;
+  const cjkChars = text.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  return latinWords + Math.ceil(cjkChars / 2);
 }
 
 function normalizeAiSearchReview(value: unknown, generationConfig: GenerationConfig | undefined): AiSearchReviewResult {

@@ -205,7 +205,16 @@ export const defaultQualityGate: QualityGate = {
       reasons.push(`Editorial quality score ${editorial.score} is below ${qualityConfig?.minEditorialScore ?? 0}.`);
     }
     if (qualityConfig?.requireTrendEvidence && !context.trendSignals?.length) {
-      reasons.push("Trend evidence was required but no relevant trend/news signals were found.");
+      const hasEvergreenEvidence = Boolean(
+        context.product ||
+          context.collection ||
+          context.keywordEvidence?.some((item) => item.type === "product" || item.type === "collection")
+      );
+      if (hasEvergreenEvidence) {
+        warnings.push("No relevant trend/news signals were found; evergreen product/category evidence was used instead.");
+      } else {
+        reasons.push("Trend evidence was required but no relevant trend/news signals were found.");
+      }
     }
     if (qualityConfig?.rejectTemplatePatterns !== false && editorial.signals.some((signal) => signal.includes("template"))) {
       reasons.push("Template-like writing patterns were detected.");

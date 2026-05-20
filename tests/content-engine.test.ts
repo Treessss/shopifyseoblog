@@ -451,4 +451,159 @@ describe("content engine", () => {
     expect(quality.passed).toBe(false);
     expect(quality.editorial?.signals.join(" ")).toContain("template");
   });
+
+  it("uses evergreen catalog evidence when required trend evidence is unavailable", async () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "product",
+      topic: "Matte phone case buying checks",
+      publishPolicy: "manual_review",
+      targetWordCount: 800,
+      generationConfig: {
+        qualityGate: {
+          enabled: true,
+          minSeoScore: 0,
+          minEditorialScore: 0,
+          requireTrendEvidence: true
+        }
+      }
+    };
+    const body = Array.from({ length: 140 }, (_, index) => `useful shopper detail ${index}`).join(" ");
+    const article = {
+      title: "Matte Phone Case Buying Checks",
+      handle: "matte-phone-case-buying-checks",
+      summary: "Matte phone case buying checks for shoppers.",
+      bodyHtml: `<section><h2>Matte phone case checks</h2><p>${body}</p></section>`,
+      tags: [],
+      imageAlt: "Matte phone case"
+    };
+    const seo = await defaultSeoScorer.score(
+      article,
+      {
+        locale: "en-US",
+        primaryKeyword: "matte phone case",
+        secondaryKeywords: [],
+        longTailKeywords: [],
+        searchIntent: "commercial",
+        audienceNeed: "Choose a matte phone case"
+      },
+      input
+    );
+    const quality = await defaultQualityGate.evaluate(article, seo, input, {
+      product: {
+        id: "gid://shopify/Product/1",
+        title: "Matte Phone Case",
+        productType: "Phone Case",
+        vendor: "Caseease",
+        tags: ["matte", "iphone"],
+        imageUrls: []
+      },
+      generationConfig: input.generationConfig
+    });
+
+    expect(quality.passed).toBe(true);
+    expect(quality.reasons.join(" ")).not.toContain("Trend evidence was required");
+    expect(quality.warnings.join(" ")).toContain("evergreen product/category evidence");
+  });
+
+  it("still fails required trend evidence when no trend or evergreen evidence exists", async () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "manual_topic",
+      topic: "Unknown topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 800,
+      generationConfig: {
+        qualityGate: {
+          enabled: true,
+          minSeoScore: 0,
+          minEditorialScore: 0,
+          requireTrendEvidence: true
+        }
+      }
+    };
+    const body = Array.from({ length: 140 }, (_, index) => `specific editorial detail ${index}`).join(" ");
+    const article = {
+      title: "Unknown Topic Checks",
+      handle: "unknown-topic-checks",
+      summary: "A neutral article summary.",
+      bodyHtml: `<section><h2>Checks</h2><p>${body}</p></section>`,
+      tags: [],
+      imageAlt: "Neutral article image"
+    };
+    const seo = await defaultSeoScorer.score(
+      article,
+      {
+        locale: "en-US",
+        primaryKeyword: "unknown topic",
+        secondaryKeywords: [],
+        longTailKeywords: [],
+        searchIntent: "informational",
+        audienceNeed: "Understand the topic"
+      },
+      input
+    );
+    const quality = await defaultQualityGate.evaluate(article, seo, input, {
+      generationConfig: input.generationConfig
+    });
+
+    expect(quality.passed).toBe(false);
+    expect(quality.reasons.join(" ")).toContain("Trend evidence was required");
+  });
+
+  it("does not treat seed keywords or internal links as evergreen catalog evidence", async () => {
+    const input: NormalizedContentPipelineInput = {
+      locale: "en-US",
+      sourceType: "manual_topic",
+      topic: "Seed-only topic",
+      publishPolicy: "manual_review",
+      targetWordCount: 800,
+      generationConfig: {
+        qualityGate: {
+          enabled: true,
+          minSeoScore: 0,
+          minEditorialScore: 0,
+          requireTrendEvidence: true
+        }
+      }
+    };
+    const body = Array.from({ length: 140 }, (_, index) => `specific editorial detail ${index}`).join(" ");
+    const article = {
+      title: "Seed-only Topic Checks",
+      handle: "seed-only-topic-checks",
+      summary: "A seed keyword article summary.",
+      bodyHtml: `<section><h2>Checks</h2><p>${body}</p></section>`,
+      tags: [],
+      imageAlt: "Seed keyword article image"
+    };
+    const seo = await defaultSeoScorer.score(
+      article,
+      {
+        locale: "en-US",
+        primaryKeyword: "seed-only topic",
+        secondaryKeywords: [],
+        longTailKeywords: [],
+        searchIntent: "informational",
+        audienceNeed: "Understand the topic"
+      },
+      input
+    );
+    const quality = await defaultQualityGate.evaluate(article, seo, input, {
+      seedKeywords: ["seed-only topic"],
+      keywordEvidence: [
+        {
+          type: "internal_link",
+          source: "shopify",
+          label: "Internal link",
+          value: "Related article",
+          confidence: 70
+        }
+      ],
+      generationConfig: input.generationConfig
+    });
+
+    expect(quality.passed).toBe(false);
+    expect(quality.reasons.join(" ")).toContain("Trend evidence was required");
+    expect(quality.warnings.join(" ")).not.toContain("evergreen product/category evidence");
+  });
 });
