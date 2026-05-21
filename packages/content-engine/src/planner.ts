@@ -42,6 +42,14 @@ export function planAgentTools(
       ["research.evidence"]
     ),
     toolPlan(
+      "research",
+      "researcher",
+      "external_citation_planner",
+      "Select approved external references from trend evidence and demand sources so every article cites real sources.",
+      true,
+      ["trendSignals", "keywordStrategy", "generationConfig.externalReferences"]
+    ),
+    toolPlan(
       "topic_selection",
       "topic_strategist",
       "topic_opportunity_ranker",

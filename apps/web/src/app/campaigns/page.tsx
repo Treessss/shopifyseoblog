@@ -253,6 +253,26 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
             />
             <Field label="内链数量" name="internalLinksMaxLinks" type="number" value={4} min={1} max={8} step={1} />
             <SelectField
+              label="外部引用"
+              name="externalReferencesEnabled"
+              value="true"
+              options={[
+                { label: "每篇引用外部来源", value: "true" },
+                { label: "不强制外部引用", value: "false" }
+              ]}
+            />
+            <Field label="最少外链引用" name="externalReferenceMinLinks" type="number" value={1} min={1} max={5} step={1} />
+            <Field label="最多外链引用" name="externalReferenceMaxLinks" type="number" value={3} min={1} max={8} step={1} />
+            <SelectField
+              label="引用硬性要求"
+              name="requireExternalReferences"
+              value="true"
+              options={[
+                { label: "缺少引用则不达标", value: "true" },
+                { label: "仅作为建议", value: "false" }
+              ]}
+            />
+            <SelectField
               label="自动配图"
               name="imageGenerationEnabled"
               value="true"
@@ -271,6 +291,7 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
                 { label: "首图 + 正文", value: "both" }
               ]}
             />
+            <Field label="生成图片数量" name="imageCount" type="number" value={3} min={1} max={4} step={1} />
             <SelectField
               label="产品图参考"
               name="productImageReferenceEnabled"

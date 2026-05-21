@@ -12,6 +12,7 @@ import {
   type AgentMemorySignal,
   type ContentPipelineResult,
   type ContentSourceContext,
+  type ExternalReferenceCandidate,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
   type KeywordEvidenceItem,
@@ -152,6 +153,8 @@ interface ParsedGenerationInput {
 interface ImageAssetDraft {
   prompt: string;
   altText: string;
+  placement?: "featured" | "inline";
+  index?: number;
   publicUrl?: string;
   sourceUrl?: string;
   providerModel?: string;
@@ -352,17 +355,9 @@ async function generateBlogArticle(
         provider: aiProvider.safeMetadata,
         ai: aiResult.metadata,
         aiSearchReview: aiResult.aiSearchReview,
+        imageAssets: aiResult.imageAssets?.map(serializeImageAssetDraft) ?? [],
         imageAsset: aiResult.imageAsset
-          ? {
-              prompt: aiResult.imageAsset.prompt,
-              altText: aiResult.imageAsset.altText,
-              publicUrl: aiResult.imageAsset.publicUrl,
-              sourceUrl: aiResult.imageAsset.sourceUrl,
-              providerModel: aiResult.imageAsset.providerModel,
-              error: aiResult.imageAsset.error,
-              referenceImageUrls: aiResult.imageAsset.referenceImageUrls,
-              raw: aiResult.imageAsset.raw
-            }
+          ? serializeImageAssetDraft(aiResult.imageAsset)
           : null,
         contentEngine: {
           artifacts: pipelineResult.artifacts,
@@ -395,13 +390,14 @@ async function generateBlogArticle(
         publishJobId: publishJob.id
       });
     }
-    if (aiResult.imageAsset) {
+    const generatedAssets = aiResult.imageAssets?.length ? aiResult.imageAssets : aiResult.imageAsset ? [aiResult.imageAsset] : [];
+    for (const imageAsset of generatedAssets) {
       await persistGeneratedImageAsset({
         organizationId: job.data.organizationId,
         storeId: job.data.storeId,
         articleId: article.id,
         provider: context.aiProvider?.provider ?? null,
-        asset: aiResult.imageAsset
+        asset: imageAsset
       });
     }
 
@@ -578,6 +574,7 @@ async function generateArticleWithAi(
   seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>;
   quality: QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow; highScoreStructure?: HighScoreStructureReport };
   imageAsset?: ImageAssetDraft;
+  imageAssets?: ImageAssetDraft[];
   aiSearchReview?: AiSearchReviewWorkflow;
   metadata: {
     id?: string;
@@ -661,40 +658,45 @@ async function generateArticleWithAi(
     });
   }
 
-  let finalArticle = enforceInternalLinks(article.data, context);
+  let finalArticle = enforceRequiredLinks(article.data, context);
   let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, finalArticle, input, context, pipelineResult).catch((error) =>
     recoverAiSearchReviewFailure(error, input, "initial-review")
   );
   if (aiSearchReview.revisedArticle) {
-    finalArticle = enforceInternalLinks(aiSearchReview.revisedArticle, context);
+    finalArticle = enforceRequiredLinks(aiSearchReview.revisedArticle, context);
   }
-  const imageAsset = await maybeGenerateArticleImage(provider, finalArticle, input, context);
-  if (imageAsset?.publicUrl) {
+  const imageAssets = await maybeGenerateArticleImages(provider, finalArticle, input, context);
+  const generatedImageAssets = imageAssets.filter((asset) => asset.publicUrl);
+  const primaryImageAsset = imageAssets[0];
+  if (generatedImageAssets.length > 0) {
     finalArticle = {
       ...finalArticle,
-      imagePrompt: imageAsset.prompt,
-      imageAlt: imageAsset.altText,
-      bodyHtml: injectImageFigure(finalArticle.bodyHtml, imageAsset.publicUrl, imageAsset.altText, input.generationConfig)
+      imagePrompt: primaryImageAsset?.prompt ?? finalArticle.imagePrompt,
+      imageAlt: primaryImageAsset?.altText ?? finalArticle.imageAlt,
+      bodyHtml: injectImageFigures(finalArticle.bodyHtml, generatedImageAssets, input.generationConfig)
     };
-  } else if (imageAsset?.prompt) {
+  } else if (primaryImageAsset?.prompt) {
     finalArticle = {
       ...finalArticle,
-      imagePrompt: imageAsset.prompt,
-      imageAlt: imageAsset.altText
+      imagePrompt: primaryImageAsset.prompt,
+      imageAlt: primaryImageAsset.altText
     };
   }
+  finalArticle = enforceRequiredLinks(finalArticle, context);
   aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult).catch((error) =>
     recoverAiSearchReviewFailure(error, input, "final-review", aiSearchReview)
   );
   if (aiSearchReview.revisedArticle) {
-    finalArticle = enforceInternalLinks(aiSearchReview.revisedArticle, context);
-    if (imageAsset?.publicUrl && !finalArticle.bodyHtml.includes(imageAsset.publicUrl)) {
+    finalArticle = enforceRequiredLinks(aiSearchReview.revisedArticle, context);
+    const missingImages = generatedImageAssets.filter((asset) => asset.publicUrl && !finalArticle.bodyHtml.includes(asset.publicUrl));
+    if (missingImages.length > 0) {
       finalArticle = {
         ...finalArticle,
-        bodyHtml: injectImageFigure(finalArticle.bodyHtml, imageAsset.publicUrl, imageAsset.altText, input.generationConfig)
+        bodyHtml: injectImageFigures(finalArticle.bodyHtml, missingImages, input.generationConfig)
       };
     }
   }
+  finalArticle = enforceRequiredLinks(finalArticle, context);
 
   const qualityInput = normalizeFinalQualityInput(input);
   const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
@@ -710,7 +712,8 @@ async function generateArticleWithAi(
     },
     seo: finalSeo,
     quality: finalQuality,
-    imageAsset,
+    imageAsset: primaryImageAsset,
+    imageAssets,
     aiSearchReview: aiSearchReview.workflow,
     metadata: {
       id: result.id,
@@ -746,7 +749,7 @@ async function runAiSearchReviewWorkflow(
   for (let pass = 1; pass <= config.maxRevisionPasses; pass += 1) {
     if (currentReview.score >= config.minTrafficScore) break;
 
-    const revisedArticle = enforceInternalLinks(
+    const revisedArticle = enforceRequiredLinks(
       await reviseArticleForSearchTraffic(client, provider, currentArticle, currentReview, input, context, pipelineResult, pass),
       context
     );
@@ -819,7 +822,7 @@ async function finalizeAiSearchReviewWorkflow(
       pipelineResult,
       pass
     );
-    currentArticle = enforceInternalLinks(revisedArticle, context);
+    currentArticle = enforceRequiredLinks(revisedArticle, context);
     const revisedReview = applyHighScoreStructureReview(
       await reviewArticleForSearchTraffic(client, provider, currentArticle, input, context, pipelineResult, `final-revision-${pass}`),
       evaluateHighScoreArticleStructure(currentArticle, input, context),
@@ -881,7 +884,7 @@ async function reviewArticleForSearchTraffic(
         actionItems: [
           {
             priority: "critical",
-            area: "title | intro | section | internal links | facts | FAQ | conversion",
+            area: "title | intro | section | internal links | external citations | facts | FAQ | conversion",
             issue: "what is weak right now",
             concreteEdit: "the exact section, table, paragraph, link, or FAQ to add/change",
             acceptanceCheck: "how to verify the edit is complete"
@@ -889,7 +892,7 @@ async function reviewArticleForSearchTraffic(
         ]
       }),
       "Score means likelihood to earn non-brand organic search traffic, not just keyword stuffing.",
-      "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, and weak product/category fit.",
+      "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, missing external citations, and weak product/category fit.",
       "Use this high-score contract as the scoring rubric. Do not give 82+ unless the article substantially satisfies it:",
       highScoreArticleContract(input, context).join("\n"),
       "Use localStructureReport as a hard sanity check. If it has failed checks, the score must stay below the minimum and the failed checks must become actionItems.",
@@ -911,6 +914,7 @@ async function reviewArticleForSearchTraffic(
           .map(compactKeywordEvidenceItem),
         trendSignals: relevantTrendSignals(context).slice(0, 6).map(compactTrendSignal),
         internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], 6).map(compactInternalLinkCandidate),
+        externalReferences: externalReferenceCandidates(context).slice(0, 6).map(compactExternalReferenceCandidate),
         product: compactProductContext(context.product),
         collection: compactCollectionContext(context.collection),
         recentTopics: context.recentTopics?.slice(0, 12),
@@ -977,12 +981,14 @@ async function reviseArticleForSearchTraffic(
       highScoreArticleContract(input, context).join("\n"),
       "The localStructureReport in the context is a non-negotiable validator. Repair every failed check before making style improvements.",
       "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
+      "Preserve or add required external citations from sourceContext.externalReferences. Do not remove the reference section unless citations are disabled.",
       "Treat revisionBrief and actionItems as a required checklist. Satisfy every acceptanceCheck that can be satisfied with the supplied evidence, and remove unrelated trend/news terms.",
       "Before returning, audit your own draft: if an actionItem asks for a section, table, FAQ, internal link, product fact box, comparison, or CTA, it must actually exist in bodyHtml.",
       "When score is low because the article is generic, restructure heavily instead of making small wording changes.",
       "Keep the article in the same locale. Do not invent product facts, prices, discounts, testimonials, rankings, medical/legal claims, or unsupported statistics.",
       "Use synced product options, variants, image context, SEO descriptions, and tags as facts. If important specs are missing, state that they are not confirmed and shift the angle to styling, gifting, cleaning, comparison, or shopper fit.",
       "If currentArticle already contains an image figure or generated image URL, preserve it unless it is broken or irrelevant.",
+      "If currentArticle already contains multiple generated image figures, keep the useful ones and place them where they support the surrounding search intent.",
       "For ecommerce product content, prefer concrete modules: verified facts table, variant/finish decision table, choose-this-if/skip-this-if section, contextual internal links, FAQ, and a complete buyer-facing conclusion.",
       `Aim for ${highScoreMinWordCount(input)}-${Math.round(input.targetWordCount * 1.15)} words. Do not end with an unfinished FAQ, heading, list, or sentence.`,
       "Do not repeat old title formulas or create another generic guide. Do not start the title with 'How to Choose', 'Guide', 'Best', or the bare product keyword unless the review explicitly requires that exact query format. Do not use the campaign/task name as the title.",
@@ -1094,6 +1100,7 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
     context.generationConfig?.internalLinks?.enabled === false
       ? 0
       : Math.min(configuredInternalLinkLimit, availableInternalLinks);
+  const requiredExternalLinks = expectedExternalReferenceCount(context);
   const hasVariantOptions = Boolean(product?.options?.length || product?.variants?.length);
   const sourceLabel = product?.title ?? collection?.title ?? input.topic ?? input.primaryKeyword ?? "the selected topic";
 
@@ -1109,6 +1116,7 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
     "- Intro: within the first 120 words, state who the article is for, the concrete buying/search question, the verified product/category anchor, and the decision the reader will be able to make.",
     "- Direct answer: include a 40-60 word answer-first block near the top that could stand alone in a featured snippet or AI answer.",
     "- Search intent: map the H2s to clear intent stages: quick answer, verified facts, comparison/decision, practical use, internal next step, FAQ.",
+    "- External citations: use approved external references to support search demand, trend context, or factual background. Never invent source URLs.",
     "- Keyword evidence: use primary, secondary, and long-tail terms because they match the topic and buyer intent; avoid forcing unrelated trend/news keywords.",
     "- Evidence: include a compact verified-facts section or table using only synced product/category facts. Also include a 'not confirmed' note for important unknowns instead of guessing.",
     hasVariantOptions
@@ -1118,6 +1126,9 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
     requiredInternalLinks > 0
       ? `- Internal links: include at least ${requiredInternalLinks} contextual internal links with natural anchor text and a reason in the surrounding sentence.`
       : "- Internal links: if no candidates are supplied, do not invent links.",
+    requiredExternalLinks > 0
+      ? `- External references: include at least ${requiredExternalLinks} cited external link(s) from sourceContext.externalReferences, with rel="nofollow noopener noreferrer" and a short reason.`
+      : "- External references: if references are disabled, do not add fabricated citations.",
     "- Usefulness: include choose-this-if / skip-this-if guidance, practical pre-purchase checks, and at least one concrete scenario a shopper would recognize.",
     "- FAQ: include at least 5 non-generic FAQ items that answer search-intent questions about fit, variant choice, care, styling/gifting, and confirmed vs unknown details.",
     "- Structure: every H2 must answer a real search or purchase decision. Avoid generic filler headings and avoid repeated paragraph rhythm.",
@@ -1154,7 +1165,9 @@ function evaluateHighScoreArticleStructure(
   const minWords = highScoreMinWordCount(input);
   const wordCount = estimateReviewWordCount(text, locale);
   const requiredInternalLinks = expectedInternalLinkCount(context);
-  const internalLinks = extractArticleLinkUrls(html).size;
+  const requiredExternalLinks = expectedExternalReferenceCount(context);
+  const internalLinks = extractInternalArticleLinks(html, context).size;
+  const externalLinks = extractExternalCitationUrls(html, context).size;
   const faqCount = countFaqQuestions(html, text, locale);
   const checks: HighScoreStructureCheck[] = [
     structureCheck(
@@ -1192,6 +1205,18 @@ function evaluateHighScoreArticleStructure(
       "Required contextual internal links",
       internalLinks >= requiredInternalLinks,
       `Add ${Math.max(0, requiredInternalLinks - internalLinks)} more contextual internal link(s); detected ${internalLinks}, expected ${requiredInternalLinks}.`
+    ),
+    structureCheck(
+      "external-citations",
+      "Required external cited references",
+      externalLinks >= requiredExternalLinks,
+      `Add ${Math.max(0, requiredExternalLinks - externalLinks)} approved external citation link(s); detected ${externalLinks}, expected ${requiredExternalLinks}.`
+    ),
+    structureCheck(
+      "search-intent-coverage",
+      "Search intent stages are visibly covered",
+      hasSearchIntentCoverage(html, text, locale),
+      "Add explicit quick answer, evidence/facts, decision guidance, practical use, references, and FAQ coverage."
     ),
     structureCheck(
       "word-depth",
@@ -1278,6 +1303,17 @@ function hasAnswerFirstBlock(html: string, text: string, locale: SupportedLocale
   }
 
   return /(quick answer|short answer|answer first|bottom line|the short version|quick take)/i.test(topHtml);
+}
+
+function hasSearchIntentCoverage(html: string, text: string, locale: SupportedLocale): boolean {
+  if (/search intent coverage|搜索意图覆盖/i.test(html)) return true;
+  const hasAnswer = hasAnswerFirstBlock(html, text, locale);
+  const hasFacts = hasVerifiedFactsSection(html, text, locale);
+  const hasDecision = hasDecisionTable(html, text, locale) || hasChooseSkipGuidance(text, locale);
+  const hasReferences =
+    locale === "zh-CN" ? /(参考来源|外部参考|来源|引用)/i.test(text) : /(external references|references|sources|cited)/i.test(text);
+  const hasFaq = countFaqQuestions(html, text, locale) >= 3;
+  return [hasAnswer, hasFacts, hasDecision, hasReferences, hasFaq].filter(Boolean).length >= 4;
 }
 
 function hasVerifiedFactsSection(html: string, text: string, locale: SupportedLocale): boolean {
@@ -1473,6 +1509,7 @@ function contextForAiEditing(context: ContentSourceContext): ContentSourceContex
     internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4).map(
       compactInternalLinkCandidate
     ),
+    externalReferences: externalReferenceCandidates(context).slice(0, 6).map(compactExternalReferenceCandidate),
     imageReferences: context.imageReferences?.slice(0, 6),
     keywordEvidence: filterKeywordEvidence(context.keywordEvidence)?.slice(0, 10).map(compactKeywordEvidenceItem),
     topicSelection: compactTopicSelection(context.topicSelection),
@@ -1562,6 +1599,16 @@ function compactInternalLinkCandidate(link: InternalLinkCandidate): InternalLink
     title: trimForPrompt(link.title, 180),
     anchor: link.anchor ? trimForPrompt(link.anchor, 120) : undefined,
     reason: link.reason ? trimForPrompt(link.reason, 180) : undefined
+  };
+}
+
+function compactExternalReferenceCandidate(reference: ExternalReferenceCandidate): ExternalReferenceCandidate {
+  return {
+    ...reference,
+    title: trimForPrompt(reference.title, 220),
+    source: trimForPrompt(reference.source, 120),
+    snippet: reference.snippet ? trimForPrompt(reference.snippet, 360) : undefined,
+    reason: reference.reason ? trimForPrompt(reference.reason, 180) : undefined
   };
 }
 
@@ -1695,6 +1742,10 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function enforceRequiredLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
+  return enforceExternalCitations(enforceInternalLinks(article, context), context);
+}
+
 function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
   const links = mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4);
   if (!context.generationConfig?.internalLinks?.enabled || links.length === 0) return article;
@@ -1719,6 +1770,57 @@ function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceC
   };
 }
 
+function enforceExternalCitations(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
+  const requiredCount = expectedExternalReferenceCount(context);
+  if (requiredCount <= 0) return article;
+
+  const references = externalReferenceCandidates(context);
+  if (references.length === 0) return article;
+
+  const existingUrls = extractExternalCitationUrls(article.bodyHtml, context);
+  const neededCount = Math.max(0, requiredCount - existingUrls.size);
+  if (neededCount === 0) return article;
+  const missing = references.filter((reference) => !existingUrls.has(normalizeExternalReferenceUrl(reference.url))).slice(0, neededCount);
+  if (missing.length === 0) return article;
+
+  const list = renderExternalReferenceItems(missing);
+  const bodyWithUpdatedReferences = appendLinksToReferenceSection(article.bodyHtml, list);
+  if (bodyWithUpdatedReferences !== article.bodyHtml) {
+    return {
+      ...article,
+      bodyHtml: bodyWithUpdatedReferences
+    };
+  }
+
+  const heading = article.locale === "zh-CN" ? "参考来源" : "External references";
+  const note =
+    article.locale === "zh-CN"
+      ? "这些来源用于交叉核对趋势、搜索需求或背景信息；商品细节仍以店铺同步数据为准。"
+      : "These references support trend, search demand, or background context; product details still come from synced store data.";
+
+  return {
+    ...article,
+    bodyHtml: `${article.bodyHtml}<section><h2>${heading}</h2><p>${escapeHtml(note)}</p><ul>${list}</ul></section>`
+  };
+}
+
+function renderExternalReferenceItems(references: ExternalReferenceCandidate[]): string {
+  return references
+    .map((reference) => {
+      const label = `${reference.title}${reference.source ? ` · ${reference.source}` : ""}`;
+      const reason = reference.reason ?? reference.snippet;
+      return `<li><a href="${escapeHtml(reference.url)}" rel="nofollow noopener noreferrer" target="_blank">${escapeHtml(label)}</a>${reason ? ` <span>${escapeHtml(reason)}</span>` : ""}</li>`;
+    })
+    .join("");
+}
+
+function appendLinksToReferenceSection(bodyHtml: string, listItems: string): string {
+  const pattern =
+    /(<section\b[^>]*>\s*<h2\b[^>]*>\s*(?:参考来源|外部参考|External references|References|Sources)\s*<\/h2>[\s\S]*?<ul\b[^>]*>)([\s\S]*?)(<\/ul>\s*<\/section>)/i;
+  if (!pattern.test(bodyHtml)) return bodyHtml;
+  return bodyHtml.replace(pattern, (_match, before: string, currentItems: string, after: string) => `${before}${currentItems}${listItems}${after}`);
+}
+
 function renderInternalLinkItems(links: InternalLinkCandidate[]): string {
   return links.map((link) => `<li><a href="${escapeHtml(link.url)}">${escapeHtml(link.anchor ?? link.title)}</a></li>`).join("");
 }
@@ -1740,93 +1842,302 @@ function extractArticleLinkUrls(bodyHtml: string): Set<string> {
   return urls;
 }
 
-async function maybeGenerateArticleImage(
+function extractInternalArticleLinks(bodyHtml: string, context: ContentSourceContext): Set<string> {
+  const allowedInternalUrls = new Set(
+    mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4).map((link) =>
+      normalizeInternalLinkUrl(link.url)
+    )
+  );
+  const urls = extractArticleLinkUrls(bodyHtml);
+  if (allowedInternalUrls.size === 0) return urls;
+  return new Set(Array.from(urls).filter((url) => allowedInternalUrls.has(url)));
+}
+
+function extractExternalCitationUrls(bodyHtml: string, context: ContentSourceContext): Set<string> {
+  const urls = new Set<string>();
+  const approved = new Set(externalReferenceCandidates(context).map((reference) => normalizeExternalReferenceUrl(reference.url)));
+  const internal = new Set((context.internalLinks ?? []).map((link) => normalizeInternalLinkUrl(link.url)));
+  const pattern = /<a\b([^>]*)\shref=["']([^"']+)["']([^>]*)>/gi;
+  for (const match of bodyHtml.matchAll(pattern)) {
+    const href = match[2] ?? "";
+    if (!isHttpUrl(href)) continue;
+    const externalKey = normalizeExternalReferenceUrl(href);
+    const internalKey = normalizeInternalLinkUrl(href);
+    const attrs = `${match[1] ?? ""} ${match[3] ?? ""}`.toLowerCase();
+    if (internal.has(internalKey)) continue;
+    if (approved.has(externalKey) || attrs.includes("nofollow") || attrs.includes("noopener")) {
+      urls.add(externalKey);
+    }
+  }
+  return urls;
+}
+
+function externalReferenceCandidates(context: ContentSourceContext): ExternalReferenceCandidate[] {
+  if (context.generationConfig?.externalReferences?.enabled === false) return [];
+
+  const maxLinks = context.generationConfig?.externalReferences?.maxLinks ?? 3;
+  const query =
+    firstNonBlank(
+      context.topic,
+      context.seedKeywords?.[0],
+      context.product?.productType,
+      context.collection?.title,
+      context.product?.title,
+      "Shopify ecommerce"
+    ) ?? "Shopify ecommerce";
+  const trendReferences = relevantTrendSignals(context)
+    .filter((signal) => Boolean(signal.url))
+    .map((signal) => ({
+      title: signal.title,
+      url: signal.url as string,
+      source: signal.source || "trend feed",
+      snippet: signal.summary,
+      publishedAt: signal.publishedAt,
+      reason: "trend/news context for this article angle",
+      relevanceScore: signal.relevanceScore
+    }));
+  const fallback: ExternalReferenceCandidate = {
+    title: `Google Trends for ${query}`,
+    url: `https://trends.google.com/trends/explore?q=${encodeURIComponent(query)}`,
+    source: "Google Trends",
+    reason: "search demand cross-check",
+    relevanceScore: 1
+  };
+
+  const seen = new Set<string>();
+  const output: ExternalReferenceCandidate[] = [];
+  for (const reference of [...(context.externalReferences ?? []), ...trendReferences, fallback]) {
+    if (!isHttpUrl(reference.url)) continue;
+    const key = normalizeExternalReferenceUrl(reference.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push({
+      ...reference,
+      title: reference.title || reference.source || reference.url,
+      source: reference.source || "External source"
+    });
+    if (output.length >= maxLinks) break;
+  }
+  return output;
+}
+
+function expectedExternalReferenceCount(context: ContentSourceContext): number {
+  const config = context.generationConfig?.externalReferences;
+  if (config?.enabled === false || config?.requireEveryArticle === false) return 0;
+  const available = externalReferenceCandidates(context).length;
+  const minLinks = config?.minLinks ?? 1;
+  return Math.min(Math.max(1, minLinks), available);
+}
+
+function normalizeExternalReferenceUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return `${url.hostname.toLowerCase()}${url.pathname}${url.search}`;
+  } catch {
+    return value.trim().toLowerCase();
+  }
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+async function maybeGenerateArticleImages(
   provider: ResolvedAiProvider,
   article: GeneratedArticle,
   input: ParsedGenerationInput,
   context: ContentSourceContext
-): Promise<ImageAssetDraft | undefined> {
-  if (input.generationConfig?.imageGeneration?.enabled === false) return undefined;
+): Promise<ImageAssetDraft[]> {
+  if (input.generationConfig?.imageGeneration?.enabled === false) return [];
 
   const referenceLimit =
     input.generationConfig?.imageGeneration?.referenceImageLimit ??
     input.generationConfig?.productImageReference?.maxImages ??
     6;
   const referenceImageUrls = uniqueStrings(context.imageReferences?.map((item) => item.url) ?? []).slice(0, referenceLimit);
-  const prompt = composeImagePrompt(article.imagePrompt ?? buildFallbackImagePrompt(article, context), context, referenceImageUrls);
-  const altText = article.imageAlt ?? article.title;
+  const plans = buildImagePromptPlans(article, input, context, referenceImageUrls);
 
   if (!provider.imageModel) {
-    return {
-      prompt,
-      altText,
+    return plans.map((plan) => ({
+      ...plan,
       error: "AI image model is not configured.",
       referenceImageUrls
-    };
+    }));
   }
 
-  try {
-    const client = createOpenAICompatibleClient({
-      baseUrl: provider.baseUrl,
-      apiKey: provider.apiKey,
-      model: provider.imageModel,
-      timeoutMs: 120000
-    });
-    const image = await client.generateImage({
-      model: provider.imageModel,
-      prompt,
-      size: "1536x864",
-      responseFormat: "url",
-      referenceImageUrls,
-      extraBody: referenceImageUrls.length
-        ? {
-            reference_images: referenceImageUrls,
-            fusion_mode: input.generationConfig?.imageGeneration?.fusionMode
-          }
-        : undefined
-    });
+  const client = createOpenAICompatibleClient({
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: provider.imageModel,
+    timeoutMs: 120000
+  });
+  const assets: ImageAssetDraft[] = [];
 
-    return imageToAssetDraft(image, prompt, altText, referenceImageUrls);
-  } catch (error) {
-    return {
+  for (const plan of plans) {
+    const prompt = composeImagePrompt(plan.prompt, context, referenceImageUrls);
+    const assetBase = {
+      ...plan,
       prompt,
-      altText,
-      error: getErrorMessage(error),
       referenceImageUrls
     };
+
+    try {
+      const image = await client.generateImage({
+        model: provider.imageModel,
+        prompt,
+        size: "1536x864",
+        responseFormat: "url",
+        referenceImageUrls,
+        extraBody: referenceImageUrls.length
+          ? {
+              reference_images: referenceImageUrls,
+              fusion_mode: input.generationConfig?.imageGeneration?.fusionMode,
+              image_index: plan.index,
+              image_role: plan.placement
+            }
+          : undefined
+      });
+
+      assets.push(imageToAssetDraft(image, assetBase));
+    } catch (error) {
+      assets.push({
+        ...assetBase,
+        error: getErrorMessage(error)
+      });
+    }
   }
+
+  return assets;
+}
+
+function buildImagePromptPlans(
+  article: GeneratedArticle,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext,
+  referenceImageUrls: string[]
+): ImageAssetDraft[] {
+  const count = Math.max(1, Math.min(4, Math.round(input.generationConfig?.imageGeneration?.imageCount ?? 3)));
+  const placement = input.generationConfig?.imageGeneration?.placement ?? "inline";
+  const basePrompt = article.imagePrompt ?? buildFallbackImagePrompt(article, context);
+  const topic = context.topic ?? input.topic ?? article.primaryKeyword;
+  const productOrCategory = context.product?.title ?? context.collection?.title ?? article.primaryKeyword;
+  const locale = article.locale;
+  const variants =
+    locale === "zh-CN"
+      ? [
+          "首图：真实电商编辑场景，能一眼看懂搜索主题和品类使用场景，不要产品白底抠图",
+          "正文图：展示用户正在比较、搭配或检查细节的生活方式场景，画面自然不摆拍",
+          "正文图：覆盖 FAQ 或购买前检查意图，包含环境、尺度、细节和真实使用线索",
+          "正文图：趋势/场景化概念图，强调用户问题而不是单独展示商品"
+        ]
+      : [
+          "hero image: realistic ecommerce editorial scene that makes the search topic and category use case immediately clear, not a white-background product cutout",
+          "inline image: lifestyle moment where a shopper compares, styles, or checks details in a natural setting",
+          "inline image: FAQ or pre-purchase-check scene with environment, scale, detail, and real-use cues",
+          "inline image: trend or scenario-led concept image focused on the user's question rather than a standalone product shot"
+        ];
+
+  return Array.from({ length: count }, (_, index) => {
+    const planPlacement: ImageAssetDraft["placement"] = placement === "featured" || (placement === "both" && index === 0) ? "featured" : "inline";
+    const variant = variants[index % variants.length];
+    return {
+      prompt: [
+        basePrompt,
+        `Image ${index + 1}/${count}: ${variant}`,
+        `Article topic: ${topic}`,
+        `Product/category anchor: ${productOrCategory}`,
+        referenceImageUrls.length
+          ? "Use supplied product images only as optional visual grounding; the final image should be a complete editorial scene, not the raw product photo pasted into the article."
+          : "No product reference image is required; create a complete editorial scene that satisfies search intent.",
+        "Photorealistic, natural light, clean composition, Shopify blog ready, no watermark, no fake UI text, no brand logos that are not supplied."
+      ]
+        .filter(Boolean)
+        .join("; "),
+      altText:
+        index === 0
+          ? article.imageAlt ?? article.title
+          : locale === "zh-CN"
+            ? `${article.primaryKeyword}正文场景图 ${index + 1}`
+            : `${article.primaryKeyword} ${planPlacement === "featured" ? "feature" : "inline"} scene ${index + 1}`,
+      placement: planPlacement,
+      index,
+      referenceImageUrls
+    };
+  });
 }
 
 function imageToAssetDraft(
   image: GenerateImageResult,
-  prompt: string,
-  altText: string,
-  referenceImageUrls: string[]
+  draft: ImageAssetDraft
 ): ImageAssetDraft {
   const dataUrl = image.b64Json ? `data:image/png;base64,${image.b64Json}` : undefined;
 
   return {
-    prompt,
-    altText,
+    ...draft,
     publicUrl: image.url,
     sourceUrl: image.url ?? dataUrl,
     providerModel: image.model,
-    referenceImageUrls,
     raw: {
       revisedPrompt: image.revisedPrompt
     }
   };
 }
 
-function injectImageFigure(bodyHtml: string, imageUrl: string, altText: string, generationConfig?: GenerationConfig) {
-  if (!imageUrl || bodyHtml.includes(imageUrl)) return bodyHtml;
-  const figure = `<figure><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(altText)}" /></figure>`;
-  const placement = generationConfig?.imageGeneration?.placement ?? "inline";
-  if (placement === "featured") return `${figure}${bodyHtml}`;
+function serializeImageAssetDraft(asset: ImageAssetDraft) {
+  return {
+    prompt: asset.prompt,
+    altText: asset.altText,
+    placement: asset.placement,
+    index: asset.index,
+    publicUrl: asset.publicUrl,
+    sourceUrl: asset.sourceUrl,
+    providerModel: asset.providerModel,
+    error: asset.error,
+    referenceImageUrls: asset.referenceImageUrls,
+    raw: asset.raw
+  };
+}
 
-  const firstParagraphEnd = bodyHtml.indexOf("</p>");
-  if (firstParagraphEnd >= 0) {
-    return `${bodyHtml.slice(0, firstParagraphEnd + 4)}${figure}${bodyHtml.slice(firstParagraphEnd + 4)}`;
+function injectImageFigures(bodyHtml: string, assets: ImageAssetDraft[], generationConfig?: GenerationConfig) {
+  let nextBody = bodyHtml;
+  const orderedAssets = assets
+    .filter((asset) => asset.publicUrl && !nextBody.includes(asset.publicUrl))
+    .sort((left, right) => (left.index ?? 0) - (right.index ?? 0));
+
+  for (const asset of orderedAssets) {
+    const imageUrl = asset.publicUrl;
+    if (!imageUrl) continue;
+    const figure = `<figure><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset.altText)}" /></figure>`;
+    const placement = asset.placement ?? generationConfig?.imageGeneration?.placement ?? "inline";
+    if (placement === "featured") {
+      nextBody = `${figure}${nextBody}`;
+      continue;
+    }
+
+    nextBody = insertFigureAfterSection(nextBody, figure, asset.index ?? 1);
+  }
+
+  return nextBody;
+}
+
+function insertFigureAfterSection(bodyHtml: string, figure: string, index: number) {
+  const paragraphEnd = bodyHtml.indexOf("</p>");
+  if (paragraphEnd >= 0 && index <= 1) {
+    return `${bodyHtml.slice(0, paragraphEnd + 4)}${figure}${bodyHtml.slice(paragraphEnd + 4)}`;
+  }
+
+  const sectionMatches = Array.from(bodyHtml.matchAll(/<\/section>/gi));
+  const sectionIndex = Math.max(0, Math.min(sectionMatches.length - 1, index - 1));
+  const match = sectionMatches[sectionIndex];
+  if (match?.index !== undefined) {
+    const insertionPoint = match.index + match[0].length;
+    return `${bodyHtml.slice(0, insertionPoint)}${figure}${bodyHtml.slice(insertionPoint)}`;
   }
 
   return `${bodyHtml}${figure}`;
@@ -1902,7 +2213,7 @@ async function persistGeneratedImageAsset(input: {
       organizationId: input.organizationId,
       storeId: input.storeId,
       articleId: input.articleId,
-      type: "inline_image",
+      type: input.asset.placement === "featured" ? "featured_image" : "inline_image",
       status: input.asset.error ? "failed" : input.asset.publicUrl || input.asset.sourceUrl ? "generated" : "requested",
       provider: isAiProvider(input.provider) ? input.provider : undefined,
       prompt: input.asset.prompt,
@@ -1911,6 +2222,8 @@ async function persistGeneratedImageAsset(input: {
       publicUrl: input.asset.publicUrl,
       metadata: toPrismaJson({
         providerModel: input.asset.providerModel,
+        placement: input.asset.placement,
+        index: input.asset.index,
         referenceImageUrls: input.asset.referenceImageUrls,
         raw: input.asset.raw,
         error: input.asset.error
@@ -2499,9 +2812,14 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     loadInternalLinks(storefrontHost, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig, data.articleId),
     loadImageReferences(data.storeId, sourceContextBase, generationConfig)
   ]);
+  const externalReferences = externalReferenceCandidates({
+    ...sourceContextBase,
+    trendSignals
+  });
   const enrichedContextBase = {
     ...sourceContextBase,
     trendSignals,
+    externalReferences,
     internalLinks,
     imageReferences
   } satisfies ContentSourceContext;
@@ -2542,6 +2860,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
       topic: resolvedTopic,
       seedKeywords,
       trendSignals,
+      externalReferences,
       internalLinks,
       imageReferences,
       keywordEvidence,
@@ -3060,10 +3379,19 @@ function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown):
           strategy: linkStrategy(candidate.internalLinks.strategy)
         }
       : undefined,
+    externalReferences: isRecord(candidate.externalReferences)
+      ? {
+          enabled: candidate.externalReferences.enabled !== false,
+          minLinks: numberValue(candidate.externalReferences.minLinks),
+          maxLinks: numberValue(candidate.externalReferences.maxLinks),
+          requireEveryArticle: candidate.externalReferences.requireEveryArticle !== false
+        }
+      : undefined,
     imageGeneration: isRecord(candidate.imageGeneration)
       ? {
           enabled: candidate.imageGeneration.enabled !== false,
           placement: imagePlacement(candidate.imageGeneration.placement),
+          imageCount: numberValue(candidate.imageGeneration.imageCount),
           promptStyle: stringValue(candidate.imageGeneration.promptStyle),
           scenePrompt: stringValue(candidate.imageGeneration.scenePrompt),
           fusionMode: imageFusionMode(candidate.imageGeneration.fusionMode),

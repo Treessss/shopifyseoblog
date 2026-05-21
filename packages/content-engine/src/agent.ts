@@ -78,6 +78,7 @@ export async function runAgentContentPipeline(
     ...baseContext,
     trendSignals: research.trendSignals,
     internalLinks: research.internalLinks,
+    externalReferences: research.externalReferences,
     imageReferences: research.imageReferences,
     keywordEvidence: research.evidence
   } satisfies ContentSourceContext;
@@ -108,6 +109,18 @@ export async function runAgentContentPipeline(
       )
     );
   }
+  if (findPlan(toolPlan, "external_citation_planner")) {
+    toolCalls.push(
+      traceToolCall(
+        findPlan(toolPlan, "external_citation_planner"),
+        researchStageStart,
+        { trendCount: research.trendSignals.length, configuredMaxLinks: normalized.generationConfig?.externalReferences?.maxLinks ?? 3 },
+        { externalReferenceCount: research.externalReferences.length, urls: research.externalReferences.map((reference) => reference.url) },
+        research.evidence.filter((item) => item.type === "external_reference" || item.type === "trend"),
+        research.externalReferences.length ? [] : ["No external citation candidate was available."]
+      )
+    );
+  }
   stages.push(
     stage(
       "research",
@@ -118,7 +131,7 @@ export async function runAgentContentPipeline(
       research.evidence,
       researchResult.warnings,
       undefined,
-      "Collected catalog facts, trend/news evidence, internal links, and product image references.",
+      "Collected catalog facts, trend/news evidence, internal links, external citation candidates, and product image references.",
       ["tool_planning"],
       toolCalls.filter((call) => call.stage === "research").map((call) => call.id)
     )
@@ -207,6 +220,7 @@ export async function runAgentContentPipeline(
       {
         outlineCount: contentBrief.outline.length,
         internalLinkCount: contentBrief.internalLinkPlan.length,
+        externalCitationCount: contentBrief.externalCitationPlan.length,
         requiredModules: skillDoctrine.requiredArticleModules
       },
       topicSelectionV2.selected.evidence,
@@ -378,7 +392,8 @@ async function buildResearchBrief(
     }
   }
 
-  const evidenceContext = { ...context, trendSignals } satisfies ContentSourceContext;
+  const externalReferences = buildExternalReferences(input, context, trendSignals);
+  const evidenceContext = { ...context, trendSignals, externalReferences } satisfies ContentSourceContext;
   const evidence = buildKeywordEvidence(input, evidenceContext);
   const research: ResearchBrief = {
     sourceContext: {
@@ -395,12 +410,14 @@ async function buildResearchBrief(
       angle: inferCompetitorAngle(title)
     })),
     internalLinks: context.internalLinks ?? [],
+    externalReferences,
     imageReferences: context.imageReferences ?? [],
     evidence,
     riskFlags: researchRiskFlags(input, evidenceContext, trendSignals),
     sourceSummary: {
       trendCount: trendSignals.length,
       internalLinkCount: context.internalLinks?.length ?? 0,
+      externalReferenceCount: externalReferences.length,
       imageReferenceCount: context.imageReferences?.length ?? 0,
       recentTopicCount: context.recentTopics?.length ?? 0
     }
@@ -412,6 +429,50 @@ async function buildResearchBrief(
   if (research.riskFlags.length > 0) warnings.push(...research.riskFlags);
 
   return { research, warnings };
+}
+
+function buildExternalReferences(
+  input: NormalizedContentPipelineInput,
+  context: ContentSourceContext,
+  trendSignals: TrendSignal[]
+): NonNullable<ContentSourceContext["externalReferences"]> {
+  if (input.generationConfig?.externalReferences?.enabled === false) return [];
+
+  const maxLinks = input.generationConfig?.externalReferences?.maxLinks ?? 3;
+  const query =
+    firstNonBlank(input.primaryKeyword, input.topic, context.product?.productType, context.collection?.title, context.product?.title) ??
+    "Shopify ecommerce";
+  const fromContext = context.externalReferences ?? [];
+  const fromTrends = trendSignals
+    .filter((signal) => Boolean(signal.url))
+    .map((signal) => ({
+      title: signal.title,
+      url: signal.url as string,
+      source: signal.source || "trend feed",
+      snippet: signal.summary,
+      publishedAt: signal.publishedAt,
+      reason: "trend/news context for article angle",
+      relevanceScore: signal.relevanceScore
+    }));
+  const fallback = {
+    title: `Google Trends for ${query}`,
+    url: `https://trends.google.com/trends/explore?q=${encodeURIComponent(query)}`,
+    source: "Google Trends",
+    reason: "search demand cross-check",
+    relevanceScore: 1
+  };
+
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["externalReferences"]> = [];
+  for (const reference of [...fromContext, ...fromTrends, fallback]) {
+    if (!isExternalUrl(reference.url)) continue;
+    const key = normalizeReferenceUrl(reference.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(reference);
+    if (output.length >= maxLinks) break;
+  }
+  return output;
 }
 
 async function buildKeywordStrategy(
@@ -534,6 +595,12 @@ function buildContentBrief(
     placement: index === 0 ? "first relevant decision section" : "supporting section"
   }));
   const imageReferences = research.imageReferences.slice(0, input.generationConfig?.imageGeneration?.referenceImageLimit ?? 6);
+  const externalCitationPlan = research.externalReferences.slice(0, input.generationConfig?.externalReferences?.maxLinks ?? 3).map((reference, index) => ({
+    url: reference.url,
+    title: reference.title,
+    source: reference.source,
+    placement: index === 0 ? "answer or evidence section" : "supporting context or reference section"
+  }));
 
   return {
     titleDirection: topicSelection.selected.topic,
@@ -543,6 +610,7 @@ function buildContentBrief(
     outline: draft.sections,
     mustUseEvidenceIds: research.evidence.slice(0, 6).map(evidenceId),
     internalLinkPlan,
+    externalCitationPlan,
     imageBrief: {
       prompt: draft.imagePrompt ?? `${keywords.primaryKeyword} ecommerce editorial image`,
       alt: draft.imageAlt ?? keywords.primaryKeyword,
@@ -567,6 +635,7 @@ function buildReflectionReport(
   const article = pipelineResult.artifacts.html;
   const body = stripHtml(article.bodyHtml).toLowerCase();
   const missingLinks = brief.internalLinkPlan.filter((link) => !article.bodyHtml.includes(link.url)).map((link) => link.url);
+  const missingExternalCitations = brief.externalCitationPlan.filter((link) => !article.bodyHtml.includes(link.url)).map((link) => link.url);
   const missingEvidenceIds = brief.mustUseEvidenceIds.filter((id) => {
     const item = (pipelineResult.artifacts.keywordEvidence ?? []).find((evidence) => evidenceId(evidence) === id);
     if (!item) return false;
@@ -580,6 +649,12 @@ function buildReflectionReport(
   }
   if (missingLinks.length > 0) {
     revisions.push({ priority: "P1", instruction: `Add missing internal links where useful: ${missingLinks.slice(0, 3).join(", ")}` });
+  }
+  if (missingExternalCitations.length > 0 && input.generationConfig?.externalReferences?.enabled !== false) {
+    revisions.push({
+      priority: "P1",
+      instruction: `Add missing external citations from the approved reference plan: ${missingExternalCitations.slice(0, 3).join(", ")}`
+    });
   }
   if (missingEvidenceIds.length > 3) {
     revisions.push({ priority: "P1", instruction: "Use more supplied evidence in the outline and body without fabricating facts." });
@@ -814,6 +889,30 @@ function tokenize(value: string): string[] {
 
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
+  return values.find((value) => Boolean(value?.trim()))?.trim();
+}
+
+function isExternalUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeReferenceUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return `${url.hostname.toLowerCase()}${url.pathname}${url.search}`;
+  } catch {
+    return value.trim().toLowerCase();
+  }
 }
 
 function average(values: number[]): number {

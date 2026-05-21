@@ -54,8 +54,18 @@ export interface ImageReference {
   title?: string;
 }
 
+export interface ExternalReferenceCandidate {
+  title: string;
+  url: string;
+  source: string;
+  snippet?: string;
+  publishedAt?: string;
+  reason?: string;
+  relevanceScore?: number;
+}
+
 export interface KeywordEvidenceItem {
-  type: "product" | "collection" | "seed_keyword" | "trend" | "internal_link";
+  type: "product" | "collection" | "seed_keyword" | "trend" | "internal_link" | "external_reference";
   source: string;
   label: string;
   value: string;
@@ -127,6 +137,7 @@ export interface ContentSourceContext {
   competitorTitles?: string[];
   trendSignals?: TrendSignal[];
   internalLinks?: InternalLinkCandidate[];
+  externalReferences?: ExternalReferenceCandidate[];
   imageReferences?: ImageReference[];
   keywordEvidence?: KeywordEvidenceItem[];
   topicSelection?: TopicSelectionResult;
@@ -351,12 +362,14 @@ export interface ResearchBrief {
   marketInsights: MarketInsight[];
   competitorAngles: Array<{ title: string; url?: string; angle: string }>;
   internalLinks: InternalLinkCandidate[];
+  externalReferences: ExternalReferenceCandidate[];
   imageReferences: ImageReference[];
   evidence: KeywordEvidenceItem[];
   riskFlags: string[];
   sourceSummary: {
     trendCount: number;
     internalLinkCount: number;
+    externalReferenceCount: number;
     imageReferenceCount: number;
     recentTopicCount: number;
   };
@@ -404,6 +417,7 @@ export interface ContentBrief {
   outline: OutlineSection[];
   mustUseEvidenceIds: string[];
   internalLinkPlan: Array<{ url: string; anchor: string; placement: string }>;
+  externalCitationPlan: Array<{ url: string; title: string; source: string; placement: string }>;
   imageBrief?: { prompt: string; alt: string; references: ImageReference[] };
   claimsPolicy: string[];
 }

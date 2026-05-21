@@ -33,6 +33,80 @@ describe("content engine", () => {
     expect(article.qualityPassed).toBe(true);
   });
 
+  it("adds approved external citations without inserting raw product images", async () => {
+    const result = await runContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "streetwear phone case trend",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        generationConfig: {
+          externalReferences: {
+            enabled: true,
+            minLinks: 1,
+            maxLinks: 2,
+            requireEveryArticle: true
+          },
+          imageGeneration: {
+            enabled: true,
+            imageCount: 3
+          }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/1",
+          title: "Cross and Heart Streetwear iPhone Phone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["streetwear", "heart", "iphone"],
+          imageUrls: ["https://cdn.example.com/raw-product.jpg"]
+        },
+        externalReferences: [
+          {
+            title: "Mobile accessory search trend",
+            source: "Trend source",
+            url: "https://news.example.com/mobile-accessory-trend",
+            reason: "Search demand context"
+          }
+        ]
+      }
+    );
+
+    expect(result.article.bodyHtml).toContain("https://news.example.com/mobile-accessory-trend");
+    expect(result.article.bodyHtml).toContain("External references");
+    expect(result.article.bodyHtml).not.toContain("https://cdn.example.com/raw-product.jpg");
+  });
+
+  it("accepts external reference and multi-image generation config", () => {
+    const parsed = blogCampaignInputSchema.parse({
+      organizationId: "org_1",
+      storeId: "store_1",
+      locale: "zh-CN",
+      sourceType: "manual_topic",
+      topic: "手机壳通勤场景",
+      publishPolicy: "manual_review",
+      targetWordCount: 1200,
+      generationConfig: {
+        externalReferences: {
+          enabled: true,
+          minLinks: 1,
+          maxLinks: 3,
+          requireEveryArticle: true
+        },
+        imageGeneration: {
+          enabled: true,
+          placement: "both",
+          imageCount: 4
+        }
+      }
+    });
+
+    expect(parsed.generationConfig?.externalReferences?.minLinks).toBe(1);
+    expect(parsed.generationConfig?.imageGeneration?.imageCount).toBe(4);
+  });
+
   it("allows registry overrides for pipeline steps", async () => {
     const registry = createContentPipelineRegistry().registerKeywordPlanner("custom", {
       plan() {

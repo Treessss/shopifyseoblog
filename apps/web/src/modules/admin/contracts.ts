@@ -40,16 +40,33 @@ export interface GenerationConfig {
     maxLinks?: number;
     strategy?: "auto" | "product" | "collection" | "article";
   };
+  externalReferences?: {
+    enabled: boolean;
+    minLinks?: number;
+    maxLinks?: number;
+    requireEveryArticle?: boolean;
+  };
   imageGeneration?: {
     enabled: boolean;
     placement?: "featured" | "inline" | "both";
+    imageCount?: number;
     promptStyle?: string;
+    scenePrompt?: string;
+    fusionMode?: "single_product" | "multi_product_fusion" | "lifestyle_scene";
+    referenceImageLimit?: number;
   };
   productImageReference?: {
     enabled: boolean;
     source?: "source_product" | "selected_products" | "urls";
     productIds?: string[];
     imageUrls?: string[];
+    maxImages?: number;
+    maxImagesPerProduct?: number;
+  };
+  aiSearchReview?: {
+    enabled: boolean;
+    minTrafficScore?: number;
+    maxRevisionPasses?: number;
   };
   qualityGate?: {
     enabled: boolean;

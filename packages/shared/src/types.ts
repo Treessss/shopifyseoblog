@@ -61,6 +61,13 @@ export interface InternalLinksConfig {
   strategy?: InternalLinkStrategy;
 }
 
+export interface ExternalReferencesConfig {
+  enabled: boolean;
+  minLinks?: number;
+  maxLinks?: number;
+  requireEveryArticle?: boolean;
+}
+
 export interface TopicDiscoveryConfig {
   enabled: boolean;
   strategy?: TopicDiscoveryStrategy;
@@ -72,6 +79,7 @@ export interface TopicDiscoveryConfig {
 export interface ImageGenerationConfig {
   enabled: boolean;
   placement?: ImagePlacement;
+  imageCount?: number;
   promptStyle?: string;
   scenePrompt?: string;
   fusionMode?: ImageFusionMode;
@@ -116,6 +124,7 @@ export interface GenerationConfig {
   topicDiscovery?: TopicDiscoveryConfig;
   hotNews?: HotNewsConfig;
   internalLinks?: InternalLinksConfig;
+  externalReferences?: ExternalReferencesConfig;
   imageGeneration?: ImageGenerationConfig;
   productImageReference?: ProductImageReferenceConfig;
   qualityGate?: QualityGateConfig;

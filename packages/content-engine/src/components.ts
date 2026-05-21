@@ -87,6 +87,7 @@ export const defaultPromptBuilder: PromptBuilder = {
       : "Avoid unsupported claims and exaggerated guarantees.";
     const trendContext = trendContextLine(context);
     const internalLinks = internalLinkInstruction(context);
+    const externalReferences = externalReferenceInstruction(context, keywords, input.locale);
     const imageBrief = imagePromptInstruction(context);
 
     const system = [
@@ -118,6 +119,7 @@ export const defaultPromptBuilder: PromptBuilder = {
         productContextLine(context),
         trendContext,
         internalLinks,
+        externalReferences,
         imageBrief
       ]
         .filter(Boolean)
@@ -138,13 +140,12 @@ export const defaultHtmlAssembler: HtmlAssembler = {
 
     const bodyHtml = [
       `<p>${escapeHtml(draft.intro)}</p>`,
+      searchIntentCoverageHtml(input, context, keywords),
       sections,
       verifiedFactsHtml(context, input.locale),
       decisionMatrixHtml(context, keywords, input.locale),
-      context.product?.imageUrls?.[0]
-        ? `<figure><img src="${escapeHtml(context.product.imageUrls[0])}" alt="${escapeHtml(draft.imageAlt ?? draft.title)}" /></figure>`
-        : "",
       relatedLinksHtml(context, input.locale),
+      externalCitationsHtml(context, keywords, input.locale),
       faqHtml(keywords, context, input.locale),
       `<p>${escapeHtml(draft.conclusion)}</p>`
     ].join("");
@@ -177,6 +178,8 @@ export const defaultSeoScorer: SeoScorer = {
     const hasDecisionSupport = /<table\b/i.test(article.bodyHtml) || /choose|skip|适合|不适合|对比|比较|faq|常见问题/i.test(bodyText);
     const hasEvidenceSupport = /verified|confirmed|not confirmed|facts|已确认|未确认|事实|规格/i.test(bodyText);
     const contextualLinks = countMatches(article.bodyHtml, /<a\b/gi);
+    const externalCitations = countExternalCitationLinks(article.bodyHtml);
+    const searchIntentCoverage = hasSearchIntentCoverage(article.bodyHtml, bodyText, input.locale);
     const checks: SeoCheck[] = [
       check("title-primary", "Primary keyword in title", titlePrimaryPassed, 16),
       check("summary-primary", "Primary keyword in summary", summary.includes(primary), 10),
@@ -188,6 +191,8 @@ export const defaultSeoScorer: SeoScorer = {
       check("title-length", "Title is scannable", article.title.length >= 8 && article.title.length <= 72, 6),
       check("secondary-coverage", "Secondary keyword coverage", secondaryHits >= Math.min(2, keywords.secondaryKeywords.length), 8),
       check("internal-context", "Contextual internal links are present when available", contextualLinks > 0 || input.sourceType === "manual_topic", 4),
+      check("external-citations", "External cited sources are present", externalCitations > 0, 6),
+      check("search-intent-map", "Article covers the main search-intent stages", searchIntentCoverage, 6),
       check("html-structure", "HTML has semantic sections", article.bodyHtml.includes("<section>") && article.bodyHtml.includes("</section>"), 4)
     ];
 
@@ -239,6 +244,13 @@ export const defaultQualityGate: QualityGate = {
     if (!article.imageAlt) warnings.push("Missing image alt text.");
     if (context.generationConfig?.internalLinks?.enabled && !article.bodyHtml.includes("<a ")) {
       warnings.push("Internal links were requested but no anchor tag was found.");
+    }
+    const externalConfig = context.generationConfig?.externalReferences;
+    const externalRequired = Boolean(externalConfig) && externalConfig?.enabled !== false && externalConfig?.requireEveryArticle !== false;
+    const minExternalLinks = externalConfig?.minLinks ?? 1;
+    const externalLinks = countExternalCitationLinks(article.bodyHtml);
+    if (externalRequired && externalLinks < minExternalLinks) {
+      reasons.push(`External citations ${externalLinks} are below ${minExternalLinks}.`);
     }
 
     return {
@@ -680,6 +692,21 @@ function internalLinkInstruction(context: ContentSourceContext): string {
   ].join("\n");
 }
 
+function externalReferenceInstruction(context: ContentSourceContext, keywords: KeywordPlan, locale: SupportedLocale): string {
+  if (context.generationConfig?.externalReferences?.enabled === false) return "";
+  const references = externalCitationCandidates(context, keywords, locale);
+  if (references.length === 0) return "";
+
+  const minLinks = context.generationConfig?.externalReferences?.minLinks ?? 1;
+  return [
+    `Use at least ${minLinks} cited external reference link(s), only from this approved list. Do not invent citation URLs:`,
+    ...references.map((reference) =>
+      `- ${reference.title} (${reference.source}): ${reference.url}${reference.reason ? ` — ${reference.reason}` : ""}`
+    ),
+    "Citations must support search intent, trend context, or factual background. Place them in natural sentences and keep the final reference section."
+  ].join("\n");
+}
+
 function imagePromptInstruction(context: ContentSourceContext): string {
   if (context.generationConfig?.imageGeneration?.enabled === false) return "";
   const imageConfig = context.generationConfig?.imageGeneration;
@@ -804,6 +831,21 @@ export function buildKeywordEvidence(
       snippet: link.reason,
       metric: "available internal link",
       confidence: 70
+    });
+  }
+
+  for (const reference of externalCitationCandidates(context, { primaryKeyword: input.primaryKeyword ?? input.topic ?? "" }, DEFAULT_LOCALE).slice(0, 4)) {
+    evidence.push({
+      type: "external_reference",
+      source: reference.source,
+      label: "External citation candidate",
+      value: reference.title,
+      url: reference.url,
+      snippet: reference.snippet ?? reference.reason,
+      publishedAt: reference.publishedAt,
+      relevanceScore: reference.relevanceScore,
+      metric: "approved external reference",
+      confidence: clampScore(66 + (reference.relevanceScore ?? 0) * 4)
     });
   }
 
@@ -1289,6 +1331,43 @@ function relatedLinksHtml(context: ContentSourceContext, locale: SupportedLocale
   return `<section><h2>${heading}</h2><ul>${items}</ul></section>`;
 }
 
+function searchIntentCoverageHtml(
+  input: NormalizedContentPipelineInput,
+  context: ContentSourceContext,
+  keywords: KeywordPlan
+): string {
+  const locale = normalizeLocale(input.locale);
+  const source = context.product?.title ?? context.collection?.title ?? keywords.primaryKeyword;
+  const primaryKeyword = escapeHtml(keywords.primaryKeyword);
+  if (locale === "zh-CN") {
+    return `<section><h2>搜索意图覆盖</h2><ul><li><strong>快速判断：</strong>这篇文章先回答${primaryKeyword}适合什么搜索场景。</li><li><strong>事实核对：</strong>只使用${escapeHtml(source)}中已同步的商品、系列和图片信息。</li><li><strong>购买决策：</strong>用对比、适合/不适合和 FAQ 帮读者决定下一步。</li></ul></section>`;
+  }
+
+  return `<section><h2>Search intent coverage</h2><ul><li><strong>Quick answer:</strong> the article first clarifies the search question behind ${primaryKeyword}.</li><li><strong>Fact check:</strong> it uses only synced product, collection, and image context from ${escapeHtml(source)}.</li><li><strong>Decision support:</strong> comparison, choose/skip guidance, and FAQs help the reader choose the next step.</li></ul></section>`;
+}
+
+function externalCitationsHtml(context: ContentSourceContext, keywords: KeywordPlan, locale: SupportedLocale): string {
+  if (context.generationConfig?.externalReferences?.enabled === false) return "";
+  const references = externalCitationCandidates(context, keywords, locale);
+  const minLinks = context.generationConfig?.externalReferences?.minLinks ?? 1;
+  if (references.length < minLinks && context.generationConfig?.externalReferences?.requireEveryArticle !== false) return "";
+  if (references.length === 0) return "";
+
+  const heading = locale === "zh-CN" ? "参考来源" : "External references";
+  const note =
+    locale === "zh-CN"
+      ? "这些链接用于判断趋势、搜索需求或背景信息，商品细节仍以本店同步数据为准。"
+      : "These links support trend, demand, or background context; product-specific details still come from synced store data.";
+  const items = references
+    .map((reference) => {
+      const label = `${reference.title}${reference.source ? ` · ${reference.source}` : ""}`;
+      const extra = reference.reason ?? reference.snippet;
+      return `<li><a href="${escapeHtml(reference.url)}" rel="nofollow noopener noreferrer" target="_blank">${escapeHtml(label)}</a>${extra ? ` <span>${escapeHtml(extra)}</span>` : ""}</li>`;
+    })
+    .join("");
+  return `<section><h2>${heading}</h2><p>${escapeHtml(note)}</p><ul>${items}</ul></section>`;
+}
+
 function verifiedFactsHtml(context: ContentSourceContext, locale: SupportedLocale): string {
   const facts = [
     context.product?.title ? [locale === "zh-CN" ? "已确认商品" : "Confirmed product", context.product.title] : undefined,
@@ -1550,6 +1629,110 @@ function usableTrendSignals(context: ContentSourceContext) {
   }
 
   return output;
+}
+
+function externalCitationCandidates(context: ContentSourceContext, keywords: Pick<KeywordPlan, "primaryKeyword">, locale: SupportedLocale) {
+  if (context.generationConfig?.externalReferences?.enabled === false) return [];
+  const maxLinks = context.generationConfig?.externalReferences?.maxLinks ?? 3;
+  const configured = context.externalReferences ?? [];
+  const trends = usableTrendSignals(context)
+    .filter((signal) => Boolean(signal.url))
+    .map((signal) => ({
+      title: signal.title,
+      url: signal.url as string,
+      source: signal.source || "trend feed",
+      snippet: signal.summary,
+      publishedAt: signal.publishedAt,
+      reason: locale === "zh-CN" ? "用于判断当前搜索或新闻背景" : "supports current search or news context",
+      relevanceScore: signal.relevanceScore
+    }));
+  const query = firstNonBlank(keywords.primaryKeyword, context.topic, context.product?.productType, context.collection?.title) ?? "Shopify ecommerce";
+  const fallback = {
+    title: locale === "zh-CN" ? `${query} 的 Google Trends 趋势` : `Google Trends for ${query}`,
+    url: `https://trends.google.com/trends/explore?q=${encodeURIComponent(query)}`,
+    source: "Google Trends",
+    reason: locale === "zh-CN" ? "用于交叉检查搜索需求变化" : "for cross-checking search demand movement",
+    relevanceScore: 1
+  };
+  const candidates = [...configured, ...trends, fallback]
+    .filter((reference) => isUsableExternalUrl(reference.url))
+    .map((reference) => ({
+      ...reference,
+      title: reference.title?.trim() || reference.source || reference.url,
+      source: reference.source?.trim() || "External source"
+    }));
+  return dedupeExternalReferences(candidates).slice(0, Math.max(1, maxLinks));
+}
+
+function dedupeExternalReferences(references: NonNullable<ContentSourceContext["externalReferences"]>) {
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["externalReferences"]> = [];
+  for (const reference of references) {
+    const key = normalizeExternalUrl(reference.url);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(reference);
+  }
+  return output;
+}
+
+function isUsableExternalUrl(value: string | undefined): value is string {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeExternalUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    return `${url.hostname.toLowerCase()}${url.pathname}${url.search}`;
+  } catch {
+    return value.trim().toLowerCase();
+  }
+}
+
+function countExternalCitationLinks(bodyHtml: string): number {
+  let citations = 0;
+  const pattern = /<a\b([^>]*)\shref=["']([^"']+)["']([^>]*)>/gi;
+  for (const match of bodyHtml.matchAll(pattern)) {
+    const attrs = `${match[1] ?? ""} ${match[3] ?? ""}`.toLowerCase();
+    const href = match[2] ?? "";
+    if (!isUsableExternalUrl(href)) continue;
+    if (attrs.includes("nofollow") || attrs.includes("noopener") || isLikelyExternalReferenceUrl(href)) citations += 1;
+  }
+  return citations;
+}
+
+function isLikelyExternalReferenceUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    const path = url.pathname.toLowerCase();
+    if (host.includes("myshopify.com")) return false;
+    if (/\/(?:products|collections|blogs)\//.test(path)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasSearchIntentCoverage(html: string, text: string, locale: SupportedLocale): boolean {
+  if (/search intent coverage|搜索意图覆盖/i.test(html)) return true;
+  const hasQuickAnswer =
+    locale === "zh-CN"
+      ? /(快速答案|直接答案|结论先说|一句话结论)/i.test(text)
+      : /(quick answer|short answer|answer first|bottom line|quick take)/i.test(text);
+  const hasFacts =
+    locale === "zh-CN" ? /(已确认|未确认|事实|规格|来源|参考)/i.test(text) : /(verified|confirmed|not confirmed|facts|source|reference)/i.test(text);
+  const hasDecision =
+    locale === "zh-CN" ? /(适合|不适合|对比|选择|跳过|下单前)/i.test(text) : /(choose|skip|comparison|decision|before you buy|best for)/i.test(text);
+  const hasFaq = /FAQ|常见问题|[?？]/i.test(text);
+  return [hasQuickAnswer, hasFacts, hasDecision, hasFaq].filter(Boolean).length >= 3;
 }
 
 function looksLikeProductListingSignal(title: string, summary?: string): boolean {

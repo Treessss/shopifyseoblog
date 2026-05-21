@@ -343,9 +343,16 @@ function parseGenerationConfig(body: Record<string, unknown>) {
       maxLinks: optionalInteger(body.internalLinksMaxLinks, "internalLinksMaxLinks", 1, 8) ?? 4,
       strategy: optionalEnum(body.internalLinksStrategy, ["auto", "product", "collection", "article"] as const, "internalLinksStrategy") ?? "auto"
     },
+    externalReferences: {
+      enabled: booleanValue(body.externalReferencesEnabled, true),
+      minLinks: optionalInteger(body.externalReferenceMinLinks, "externalReferenceMinLinks", 1, 5) ?? 1,
+      maxLinks: optionalInteger(body.externalReferenceMaxLinks, "externalReferenceMaxLinks", 1, 8) ?? 3,
+      requireEveryArticle: booleanValue(body.requireExternalReferences, true)
+    },
     imageGeneration: {
       enabled: booleanValue(body.imageGenerationEnabled, true),
       placement: optionalEnum(body.imagePlacement, ["featured", "inline", "both"] as const, "imagePlacement") ?? "inline",
+      imageCount: optionalInteger(body.imageCount, "imageCount", 1, 4) ?? 3,
       promptStyle: optionalString(body.imagePromptStyle),
       scenePrompt: optionalString(body.imageScenePrompt),
       fusionMode:

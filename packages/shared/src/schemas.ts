@@ -56,10 +56,19 @@ export const generationConfigSchema = z.object({
       strategy: z.enum(["auto", "product", "collection", "article"]).default("auto")
     })
     .optional(),
+  externalReferences: z
+    .object({
+      enabled: z.boolean().default(true),
+      minLinks: z.number().int().min(1).max(5).default(1),
+      maxLinks: z.number().int().min(1).max(8).default(3),
+      requireEveryArticle: z.boolean().default(true)
+    })
+    .optional(),
   imageGeneration: z
     .object({
       enabled: z.boolean().default(true),
       placement: z.enum(["featured", "inline", "both"]).default("inline"),
+      imageCount: z.number().int().min(1).max(4).default(3),
       promptStyle: z.string().trim().min(1).max(240).optional(),
       scenePrompt: z.string().trim().min(1).max(500).optional(),
       fusionMode: z.enum(["single_product", "multi_product_fusion", "lifestyle_scene"]).default("lifestyle_scene"),
