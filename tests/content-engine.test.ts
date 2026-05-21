@@ -29,6 +29,11 @@ describe("content engine", () => {
     expect(article.primaryKeyword).toBe("亚麻衬衫");
     expect(article.title).toContain("亚麻衬衫");
     expect(article.bodyHtml).toContain("<section>");
+    expect(article.bodyHtml).toContain("先帮你判断适不适合");
+    expect(article.bodyHtml).toContain("适合谁，哪些情况先别冲");
+    expect(article.bodyHtml).not.toContain("搜索意图覆盖");
+    expect(article.bodyHtml).not.toContain("本文将");
+    expect(article.bodyHtml).not.toContain("写作时要");
     expect(article.seoScore).toBeGreaterThanOrEqual(72);
     expect(article.qualityPassed).toBe(true);
   });

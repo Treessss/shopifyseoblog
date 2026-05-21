@@ -818,6 +818,32 @@ tr:last-child td {
   gap: 10px;
 }
 
+.progress-cell--stacked {
+  display: grid;
+  min-width: 190px;
+  gap: 6px;
+  white-space: normal;
+}
+
+.progress-cell--stacked > div {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.progress-cell--stacked small,
+.progress-cell--stacked em {
+  max-width: 260px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
+}
+
+.progress-cell--stacked em {
+  color: var(--muted-strong);
+}
+
 .row-actions {
   display: inline-flex;
   align-items: center;
@@ -982,6 +1008,23 @@ tr:last-child td {
 
 .filter-bar__summary {
   margin-left: auto;
+}
+
+.table-live-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(248, 251, 255, 0.68);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.table-live-status strong {
+  color: var(--text);
+  font-weight: 800;
 }
 
 .list {

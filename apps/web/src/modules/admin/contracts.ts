@@ -140,6 +140,10 @@ export interface AdminCampaignOverview {
   topic: string | null;
   status: CampaignStatus;
   progress: number;
+  progressLabel: string;
+  progressStep: string | null;
+  progressDetail: string | null;
+  progressUpdatedAt: string | null;
   publishPolicy: string;
   publishPolicyCode: PublishPolicy;
   targetWordCount: number;

@@ -39,8 +39,11 @@ import {
   articleUpdate,
   createShopifyGraphQLClient,
   getShopInfo,
+  uploadImageFile,
+  type ShopifyArticleImageInput,
   type ShopifyGraphQLClient,
   type ShopifyArticle,
+  type ShopifyUploadedImage,
   type ShopifyShopInfo
 } from "@shopify-ai-blog/shopify";
 import {
@@ -129,12 +132,16 @@ interface BrandVoiceContextRow {
 }
 
 interface PublishableArticleRow {
+  id?: string;
   title: string | null;
   handle: string | null;
   bodyHtml: string | null;
   summary: string | null;
+  seoTitle?: string | null;
+  seoDescription?: string | null;
   tags: string[];
   shopifyArticleId: string | null;
+  generationMetadata?: unknown;
 }
 
 interface ParsedGenerationInput {
@@ -219,6 +226,17 @@ interface HighScoreStructureReport {
   issues: string[];
 }
 
+interface GenerationProgressUpdate {
+  step: string;
+  label: string;
+  percent: number;
+  detail?: string;
+  articleId?: string;
+  status?: string;
+}
+
+type GenerationProgressCallback = (progress: GenerationProgressUpdate) => Promise<void>;
+
 interface ResolvedCatalogSource {
   sourceType: Extract<SourceType, "product" | "collection">;
   sourceId: string;
@@ -280,7 +298,7 @@ export async function processBlogGenerationJob(job: BlogGenerationJob): Promise<
 async function generateBlogArticle(
   job: Job<BlogGenerationJobData, WorkerJobResult, typeof BLOG_GENERATION_JOB_NAMES.blogGeneration>
 ): Promise<WorkerJobResult> {
-  await job.updateProgress({ step: "article:generating", sourceType: job.data.sourceType });
+  await job.updateProgress({ step: "article:queued", percent: 5, label: "任务已进入生成队列", sourceType: job.data.sourceType });
   await job.log(`Generating blog article for campaign ${job.data.campaignId ?? "ad-hoc"}`);
 
   let publishJob: Awaited<ReturnType<typeof startPublishJob>> | undefined;
@@ -288,6 +306,15 @@ async function generateBlogArticle(
 
   try {
     const context = await loadGenerationContext(job.data);
+    const campaignId = context.campaign?.id ?? job.data.campaignId;
+    const updateProgress: GenerationProgressCallback = (progress) =>
+      recordGenerationProgress(job, campaignId, publishJob?.id, progress);
+    await updateProgress({
+      step: "context:loaded",
+      percent: 12,
+      label: "已读取店铺与任务上下文",
+      detail: context.sourceContext.topic ?? context.campaign?.title ?? job.data.topic
+    });
     const input = mergeGenerationInput(job.data, context.campaign, context.sourceContext.topic, context.resolvedSource);
     const parsedInput = blogCampaignInputSchema.safeParse(input);
     if (!parsedInput.success) {
@@ -296,6 +323,12 @@ async function generateBlogArticle(
       });
     }
     const generationInput = parsedInput.data;
+    await updateProgress({
+      step: "input:validated",
+      percent: 16,
+      label: "任务参数已校验",
+      detail: `${generationInput.locale} · ${generationInput.sourceType}`
+    });
 
     publishJob = await startPublishJob({
       jobId: job.data.publishJobId,
@@ -316,6 +349,12 @@ async function generateBlogArticle(
         locale: parsedInput.data.locale
       }
     });
+    await updateProgress({
+      step: "job:started",
+      percent: 20,
+      label: "生成任务已启动",
+      detail: "正在准备研究、选题和关键词规划"
+    });
 
     await writePublishLog({
       organizationId: job.data.organizationId,
@@ -329,16 +368,41 @@ async function generateBlogArticle(
 
     await markCampaignRunning(context.campaign?.id);
     await persistCampaignGenerationResolution(context.campaign?.id, context.sourceContext.topicSelection, context.resolvedSource);
+    await updateProgress({
+      step: "research:running",
+      percent: 28,
+      label: "正在研究选题和关键词",
+      detail: "读取 Shopify 上下文、热点趋势、内链和引用来源"
+    });
     const pipelineResult: ContentPipelineResult | AgentContentPipelineResult =
       generationInput.generationConfig?.seoAgent?.enabled === false
         ? await runContentPipeline(generationInput, context.sourceContext)
         : await runAgentContentPipeline(generationInput, context.sourceContext);
+    await updateProgress({
+      step: "brief:completed",
+      percent: 38,
+      label: "选题和内容简报已完成",
+      detail: pipelineResult.article.title
+    });
     const agentPipelineResult = isAgentPipelineResult(pipelineResult) ? pipelineResult : null;
     const seoAgentRun = agentPipelineResult?.artifacts.agentRun ?? null;
     const aiProvider = resolveAiProvider(context.aiProvider);
-    const aiResult = await generateArticleWithAi(aiProvider, generationInput, context.sourceContext, pipelineResult);
+    await updateProgress({
+      step: "ai:provider_ready",
+      percent: 42,
+      label: "AI 配置已就绪",
+      detail: aiProvider.safeMetadata.textModel
+    });
+    const aiResult = await generateArticleWithAi(aiProvider, generationInput, context.sourceContext, pipelineResult, updateProgress);
     const generated = aiResult.article;
     const status = generated.qualityPassed ? "ready_to_publish" : "quality_failed";
+    await updateProgress({
+      step: "article:saving",
+      percent: 88,
+      label: "正在保存文章和质量报告",
+      detail: generated.title,
+      status
+    });
     const article = await upsertGeneratedArticle({
       articleId: job.data.articleId,
       campaignId: context.campaign?.id ?? job.data.campaignId,
@@ -373,6 +437,14 @@ async function generateBlogArticle(
       }
     });
     articleId = article.id;
+    await updateProgress({
+      step: "article:saved",
+      percent: 91,
+      label: "文章已保存",
+      detail: generated.qualityPassed ? "质量门槛已通过" : "文章需要人工复核",
+      articleId: article.id,
+      status
+    });
     if (agentPipelineResult) {
       await persistSeoAgentRun({
         articleId: article.id,
@@ -390,6 +462,14 @@ async function generateBlogArticle(
         publishJobId: publishJob.id
       });
     }
+    await updateProgress({
+      step: "agent:metadata_saved",
+      percent: 94,
+      label: "Agent 运行轨迹已保存",
+      detail: seoAgentRun?.status ?? "standard pipeline",
+      articleId: article.id,
+      status
+    });
     const generatedAssets = aiResult.imageAssets?.length ? aiResult.imageAssets : aiResult.imageAsset ? [aiResult.imageAsset] : [];
     for (const imageAsset of generatedAssets) {
       await persistGeneratedImageAsset({
@@ -400,6 +480,14 @@ async function generateBlogArticle(
         asset: imageAsset
       });
     }
+    await updateProgress({
+      step: "assets:saved",
+      percent: 96,
+      label: "图片素材已保存",
+      detail: `${generatedAssets.length} 个素材记录`,
+      articleId: article.id,
+      status
+    });
 
     await completePublishJob(publishJob.id, {
       articleId: article.id,
@@ -438,8 +526,18 @@ async function generateBlogArticle(
       }
     });
     await markCampaignCompleted(context.campaign?.id);
+    await updateProgress({
+      step: "article:generated",
+      percent: 100,
+      label: generated.qualityPassed ? "文章生成完成，可进入发布流程" : "文章生成完成，等待人工复核",
+      detail: generated.title,
+      articleId: article.id,
+      status
+    });
     await job.updateProgress({
       step: "article:generated",
+      percent: 100,
+      label: generated.qualityPassed ? "文章生成完成，可进入发布流程" : "文章生成完成，等待人工复核",
       articleId: article.id,
       status,
       qualityPassed: generated.qualityPassed
@@ -502,6 +600,85 @@ async function markCampaignCompleted(campaignId: string | undefined): Promise<vo
       completedAt: completed ? new Date() : undefined
     }
   });
+}
+
+async function recordGenerationProgress(
+  job: Job<BlogGenerationJobData, WorkerJobResult, typeof BLOG_GENERATION_JOB_NAMES.blogGeneration>,
+  campaignId: string | undefined,
+  publishJobId: string | undefined,
+  update: GenerationProgressUpdate
+): Promise<void> {
+  const now = new Date().toISOString();
+  const progress = {
+    step: update.step,
+    label: update.label,
+    percent: clampProgressPercent(update.percent),
+    detail: update.detail,
+    articleId: update.articleId,
+    status: update.status,
+    bullJobId: job.id,
+    updatedAt: now
+  };
+
+  await job.updateProgress(progress);
+
+  await Promise.all([
+    updateCampaignGenerationProgress(campaignId, progress),
+    updatePublishJobGenerationProgress(publishJobId, progress)
+  ]);
+}
+
+async function updateCampaignGenerationProgress(
+  campaignId: string | undefined,
+  progress: Record<string, unknown>
+): Promise<void> {
+  if (!campaignId) return;
+
+  const campaign = await prisma.blogCampaign.findUnique({
+    where: { id: campaignId },
+    select: { metadata: true }
+  });
+  if (!campaign) return;
+
+  const metadata = isRecord(campaign.metadata) ? campaign.metadata : {};
+  await prisma.blogCampaign.update({
+    where: { id: campaignId },
+    data: {
+      metadata: toPrismaJson({
+        ...metadata,
+        generationProgress: progress
+      })
+    }
+  });
+}
+
+async function updatePublishJobGenerationProgress(
+  publishJobId: string | undefined,
+  progress: Record<string, unknown>
+): Promise<void> {
+  if (!publishJobId) return;
+
+  const publishJob = await prisma.publishJob.findUnique({
+    where: { id: publishJobId },
+    select: { payload: true }
+  });
+  if (!publishJob) return;
+
+  const payload = isRecord(publishJob.payload) ? publishJob.payload : {};
+  await prisma.publishJob.update({
+    where: { id: publishJobId },
+    data: {
+      payload: toPrismaJson({
+        ...payload,
+        generationProgress: progress
+      })
+    }
+  });
+}
+
+function clampProgressPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function stripJsonFence(content: string): string {
@@ -568,7 +745,8 @@ async function generateArticleWithAi(
   provider: ResolvedAiProvider,
   input: ParsedGenerationInput,
   context: ContentSourceContext,
-  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>,
+  onProgress?: GenerationProgressCallback
 ): Promise<{
   article: GeneratedArticle;
   seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>;
@@ -588,6 +766,12 @@ async function generateArticleWithAi(
     apiKey: provider.apiKey,
     model: provider.textModel,
     timeoutMs: 120000
+  });
+  await onProgress?.({
+    step: "ai:drafting",
+    percent: 48,
+    label: "AI 正在撰写正文",
+    detail: `${provider.textModel} · ${input.targetWordCount} words`
   });
   const result = await client.generateText({
     model: provider.textModel,
@@ -631,6 +815,8 @@ async function generateArticleWithAi(
       "The article title must be meaningfully different from previous topics and titles, not just a synonym swap.",
       "Never use these title formulas: 'Guide: Choosing, Using, and Optimizing ...', 'How to Choose, Use, and Style ...', or '[keyword] Guide'.",
       "Do not use the internal campaign/task name as article topic or title.",
+      "Preserve the SEO skeleton, but make the language read like a shopping recommendation guide: concrete buyer scenes, real hesitation, fit/skip judgment, and product-page checks.",
+      "Do not use reader-facing meta labels such as SEO, search intent, scoring, prompt, template, content strategy, or 'this article will'.",
       "Do not try to evade AI detectors. Instead, make the article specific, evidence-aware, varied in rhythm, useful to shoppers, and free of generic template phrases."
     ].join("\n\n"),
     maxTokens: Math.max(2400, Math.min(8000, input.targetWordCount * 5)),
@@ -659,12 +845,24 @@ async function generateArticleWithAi(
   }
 
   let finalArticle = enforceRequiredLinks(article.data, context);
-  let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, finalArticle, input, context, pipelineResult).catch((error) =>
+  await onProgress?.({
+    step: "ai:draft_completed",
+    percent: 56,
+    label: "正文初稿已生成",
+    detail: finalArticle.title
+  });
+  let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, finalArticle, input, context, pipelineResult, onProgress).catch((error) =>
     recoverAiSearchReviewFailure(error, input, "initial-review")
   );
   if (aiSearchReview.revisedArticle) {
     finalArticle = enforceRequiredLinks(aiSearchReview.revisedArticle, context);
   }
+  await onProgress?.({
+    step: "image:generating",
+    percent: 76,
+    label: "正在生成并插入配图",
+    detail: `${input.generationConfig?.imageGeneration?.imageCount ?? 3} 张图片计划`
+  });
   const imageAssets = await maybeGenerateArticleImages(provider, finalArticle, input, context);
   const generatedImageAssets = imageAssets.filter((asset) => asset.publicUrl);
   const primaryImageAsset = imageAssets[0];
@@ -683,8 +881,8 @@ async function generateArticleWithAi(
     };
   }
   finalArticle = enforceRequiredLinks(finalArticle, context);
-  aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult).catch((error) =>
-    recoverAiSearchReviewFailure(error, input, "final-review", aiSearchReview)
+  aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult, onProgress).catch(
+    (error) => recoverAiSearchReviewFailure(error, input, "final-review", aiSearchReview)
   );
   if (aiSearchReview.revisedArticle) {
     finalArticle = enforceRequiredLinks(aiSearchReview.revisedArticle, context);
@@ -699,6 +897,12 @@ async function generateArticleWithAi(
   finalArticle = enforceRequiredLinks(finalArticle, context);
 
   const qualityInput = normalizeFinalQualityInput(input);
+  await onProgress?.({
+    step: "quality:finalizing",
+    percent: 84,
+    label: "正在计算最终 SEO 和质量门槛",
+    detail: finalArticle.title
+  });
   const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
   const localQuality = await defaultQualityGate.evaluate(toHtmlAssembly(finalArticle), finalSeo, qualityInput, context);
   const finalStructure = evaluateHighScoreArticleStructure(finalArticle, qualityInput, context);
@@ -730,11 +934,18 @@ async function runAiSearchReviewWorkflow(
   article: GeneratedArticle,
   input: ParsedGenerationInput,
   context: ContentSourceContext,
-  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>,
+  onProgress?: GenerationProgressCallback
 ): Promise<{ workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle }> {
   const config = resolveAiSearchReviewConfig(input.generationConfig);
   if (!config.enabled) return {};
 
+  await onProgress?.({
+    step: "ai:reviewing",
+    percent: 60,
+    label: "AI 正在进行搜索流量评分",
+    detail: `目标分 ${config.minTrafficScore}+`
+  });
   const initial = applyHighScoreStructureReview(
     await reviewArticleForSearchTraffic(client, provider, article, input, context, pipelineResult, "initial"),
     evaluateHighScoreArticleStructure(article, input, context),
@@ -749,6 +960,12 @@ async function runAiSearchReviewWorkflow(
   for (let pass = 1; pass <= config.maxRevisionPasses; pass += 1) {
     if (currentReview.score >= config.minTrafficScore) break;
 
+    await onProgress?.({
+      step: `ai:revision_${pass}`,
+      percent: Math.min(72, 60 + pass * 4),
+      label: `AI 正在第 ${pass} 次改稿`,
+      detail: `当前评分 ${currentReview.score}，目标 ${config.minTrafficScore}+`
+    });
     const revisedArticle = enforceRequiredLinks(
       await reviseArticleForSearchTraffic(client, provider, currentArticle, currentReview, input, context, pipelineResult, pass),
       context
@@ -793,10 +1010,17 @@ async function finalizeAiSearchReviewWorkflow(
   finalArticle: GeneratedArticle,
   input: ParsedGenerationInput,
   context: ContentSourceContext,
-  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>
+  pipelineResult: Awaited<ReturnType<typeof runContentPipeline>>,
+  onProgress?: GenerationProgressCallback
 ): Promise<{ workflow?: AiSearchReviewWorkflow; revisedArticle?: GeneratedArticle }> {
   if (!result.workflow) return result;
 
+  await onProgress?.({
+    step: "ai:final_review",
+    percent: 80,
+    label: "AI 正在复核配图后的最终文章",
+    detail: `目标分 ${result.workflow.minTrafficScore}+`
+  });
   let currentArticle = finalArticle;
   let currentReview = applyHighScoreStructureReview(
     await reviewArticleForSearchTraffic(client, provider, currentArticle, input, context, pipelineResult, "final-saved-article"),
@@ -812,6 +1036,12 @@ async function finalizeAiSearchReviewWorkflow(
   for (let pass = revisions.length + 1; pass <= result.workflow.maxRevisionPasses; pass += 1) {
     if (currentReview.score >= result.workflow.minTrafficScore) break;
 
+    await onProgress?.({
+      step: `ai:final_revision_${pass}`,
+      percent: Math.min(84, 80 + pass * 2),
+      label: `AI 正在最终改稿第 ${pass} 次`,
+      detail: `当前评分 ${currentReview.score}，目标 ${result.workflow.minTrafficScore}+`
+    });
     const revisedArticle = await reviseArticleForSearchTraffic(
       client,
       provider,
@@ -892,7 +1122,7 @@ async function reviewArticleForSearchTraffic(
         ]
       }),
       "Score means likelihood to earn non-brand organic search traffic, not just keyword stuffing.",
-      "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, missing external citations, and weak product/category fit.",
+      "Use 0-100 integers. Penalize generic buying-guide content, weak search intent, thin examples, unsupported claims, title formulas, missing internal links, missing external citations, weak product/category fit, and visible AI/SEO instruction-sheet language.",
       "Use this high-score contract as the scoring rubric. Do not give 82+ unless the article substantially satisfies it:",
       highScoreArticleContract(input, context).join("\n"),
       "Use localStructureReport as a hard sanity check. If it has failed checks, the score must stay below the minimum and the failed checks must become actionItems.",
@@ -985,6 +1215,7 @@ async function reviseArticleForSearchTraffic(
       "Treat revisionBrief and actionItems as a required checklist. Satisfy every acceptanceCheck that can be satisfied with the supplied evidence, and remove unrelated trend/news terms.",
       "Before returning, audit your own draft: if an actionItem asks for a section, table, FAQ, internal link, product fact box, comparison, or CTA, it must actually exist in bodyHtml.",
       "When score is low because the article is generic, restructure heavily instead of making small wording changes.",
+      "Keep the SEO skeleton, but rewrite visible language as a shopping recommendation guide with real buyer scenes. Do not expose SEO, search-intent, scoring, prompt, template, or content-strategy labels to readers.",
       "Keep the article in the same locale. Do not invent product facts, prices, discounts, testimonials, rankings, medical/legal claims, or unsupported statistics.",
       "Use synced product options, variants, image context, SEO descriptions, and tags as facts. If important specs are missing, state that they are not confirmed and shift the angle to styling, gifting, cleaning, comparison, or shopper fit.",
       "If currentArticle already contains an image figure or generated image URL, preserve it unless it is broken or irrelevant.",
@@ -1112,6 +1343,9 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
     `Anti-slop rules: ${doctrine.antiSlopRules.join(" ")}`,
     `Scoring rubric: ${doctrine.scoringRubric.map((item) => `${item.dimension} ${item.weight}% - ${item.passSignal}`).join(" ; ")}`,
     "Hard requirements:",
+    "- Reader tone: preserve the SEO skeleton, but every visible heading and paragraph must read like a shopping recommendation guide, not an AI/SEO instruction sheet.",
+    "- Buyer scenes: include concrete use moments such as commute, gift, daily outfit, desk setup, travel, replacement, or care routine when they fit the product/category.",
+    "- Banned reader-facing labels: do not show 'SEO', 'search intent', 'scoring', 'prompt', 'template', 'content strategy', 'this article will', or similar internal workflow language.",
     "- Title: specific search intent + clear differentiator. Avoid formula starts like 'How to Choose', 'Guide', 'Best', or '[keyword]: ...' unless the exact query demands it.",
     "- Intro: within the first 120 words, state who the article is for, the concrete buying/search question, the verified product/category anchor, and the decision the reader will be able to make.",
     "- Direct answer: include a 40-60 word answer-first block near the top that could stand alone in a featured snippet or AI answer.",
@@ -1306,7 +1540,7 @@ function hasAnswerFirstBlock(html: string, text: string, locale: SupportedLocale
 }
 
 function hasSearchIntentCoverage(html: string, text: string, locale: SupportedLocale): boolean {
-  if (/search intent coverage|搜索意图覆盖/i.test(html)) return true;
+  if (/search intent coverage|搜索意图覆盖|先帮你判断适不适合|Start here: is it a good fit/i.test(html)) return true;
   const hasAnswer = hasAnswerFirstBlock(html, text, locale);
   const hasFacts = hasVerifiedFactsSection(html, text, locale);
   const hasDecision = hasDecisionTable(html, text, locale) || hasChooseSkipGuidance(text, locale);
@@ -2310,7 +2544,19 @@ async function publishArticle(
       apiVersion: store.apiVersion
     });
     const storefrontHost = await resolveStorefrontHostForStore(store, "publish", client);
-    const published = await publishToShopify(client, article, shopifyBlogId);
+    await job.updateProgress({ step: "article:uploading_images", articleId: article.id });
+    const preparedArticle = await prepareArticleForShopifyPublish({
+      client,
+      article,
+      organizationId: job.data.organizationId,
+      storeId: store.id,
+      authorName: publishAuthorName(store),
+      storefrontHost
+    });
+    const published = await publishToShopify(client, preparedArticle.article, shopifyBlogId, {
+      authorName: preparedArticle.authorName,
+      coverImage: preparedArticle.coverImage
+    });
     if (published.isPublished === false) {
       throw domainError(
         "SHOPIFY_ARTICLE_NOT_PUBLISHED",
@@ -2575,6 +2821,245 @@ function buildCanonicalUrl(shopDomain: string, article: ShopifyArticle): string 
   return `https://${shopDomain}/blogs/${blogHandle}/${article.handle}`;
 }
 
+function publishAuthorName(store: { name: string | null; myshopifyDomain: string }): string {
+  const name = store.name?.trim();
+  if (name) return name;
+  return store.myshopifyDomain.replace(/\.myshopify\.com$/i, "");
+}
+
+async function prepareArticleForShopifyPublish(input: {
+  client: ShopifyGraphQLClient;
+  article: PublishableArticleRow & {
+    id: string;
+    organizationId: string;
+    storeId: string;
+    generationMetadata: unknown;
+  };
+  organizationId: string;
+  storeId: string;
+  authorName: string;
+  storefrontHost: string;
+}): Promise<{ article: PublishableArticleRow; coverImage?: ShopifyArticleImageInput; authorName: string }> {
+  const bodyHtml = input.article.bodyHtml ?? "";
+  const assets = await prisma.generatedAsset.findMany({
+    where: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      articleId: input.article.id,
+      status: { in: ["generated", "uploaded"] }
+    },
+    orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+  });
+
+  const assetUrls = assets
+    .flatMap((asset) => {
+      if (isPublicHttpUrl(asset.publicUrl) && isShopifyHostedImage(asset.publicUrl, input.storefrontHost, input.client.shopDomain)) {
+        return [asset.publicUrl];
+      }
+      return [asset.publicUrl, asset.sourceUrl];
+    })
+    .filter(isPublicHttpUrl);
+  const bodyUrls = extractImageSources(bodyHtml).filter(isPublicHttpUrl);
+  const uploadTargets = uniqueStrings([...bodyUrls, ...assetUrls]);
+  const uploaded: Array<{
+    originalUrl: string;
+    uploaded: ShopifyUploadedImage;
+    altText?: string | null;
+    assetId?: string;
+  }> = [];
+
+  for (const originalUrl of uploadTargets) {
+    if (isShopifyHostedImage(originalUrl, input.storefrontHost, input.client.shopDomain)) continue;
+    const matchingAsset = assets.find((asset) => asset.publicUrl === originalUrl || asset.sourceUrl === originalUrl);
+    const uploadedImage = await uploadImageFile(input.client, {
+      originalSource: originalUrl,
+      alt: matchingAsset?.altText ?? input.article.title ?? input.authorName,
+      filename: shopifyImageFilename(input.article.handle ?? input.article.id, originalUrl)
+    });
+    uploaded.push({
+      originalUrl,
+      uploaded: uploadedImage,
+      altText: matchingAsset?.altText,
+      assetId: matchingAsset?.id
+    });
+  }
+
+  const urlMap = new Map(uploaded.map((item) => [item.originalUrl, item.uploaded.url]));
+  const nextBodyHtml = rewriteImageSources(bodyHtml, urlMap);
+  const firstUploadedBodyImage = extractImageSources(nextBodyHtml).find((url) => isShopifyHostedImage(url, input.storefrontHost, input.client.shopDomain));
+  const firstUploadedAssetImage = assetUrls.find((url) => isShopifyHostedImage(url, input.storefrontHost, input.client.shopDomain));
+  const preferredCover =
+    uploaded.find((item) => assets.find((asset) => asset.id === item.assetId)?.type === "featured_image") ??
+    uploaded[0];
+  const coverUrl = preferredCover?.uploaded.url ?? firstUploadedBodyImage ?? firstUploadedAssetImage;
+  const coverImage = coverUrl
+    ? {
+        url: coverUrl,
+        altText: preferredCover?.altText ?? input.article.title ?? input.authorName
+      }
+    : undefined;
+
+  if (nextBodyHtml !== bodyHtml || uploaded.length > 0) {
+    const metadata = isRecord(input.article.generationMetadata) ? input.article.generationMetadata : {};
+    await prisma.blogArticle.update({
+      where: { id: input.article.id },
+      data: {
+        bodyHtml: nextBodyHtml,
+        generationMetadata: toPrismaJson({
+          ...metadata,
+          shopifyPublishAssets: {
+            uploadedAt: new Date().toISOString(),
+            authorName: input.authorName,
+            coverImage,
+            images: uploaded.map((item) => ({
+              assetId: item.assetId,
+              originalUrl: item.originalUrl,
+              shopifyFileId: item.uploaded.id,
+              shopifyUrl: item.uploaded.url,
+              fileStatus: item.uploaded.fileStatus
+            }))
+          }
+        })
+      }
+    });
+
+    await Promise.all(
+      uploaded
+        .filter((item) => item.assetId)
+        .map((item) => {
+          const existingAsset = assets.find((asset) => asset.id === item.assetId);
+          const metadata = isRecord(existingAsset?.metadata) ? existingAsset.metadata : {};
+          return prisma.generatedAsset.update({
+            where: { id: item.assetId! },
+            data: {
+              status: "uploaded",
+              sourceUrl: existingAsset?.sourceUrl ?? item.originalUrl,
+              publicUrl: item.uploaded.url,
+              width: item.uploaded.width ?? undefined,
+              height: item.uploaded.height ?? undefined,
+              metadata: toPrismaJson({
+                ...metadata,
+                shopifyFileId: item.uploaded.id,
+                shopifyFileStatus: item.uploaded.fileStatus,
+                originalProviderUrl: item.originalUrl,
+                uploadedAt: new Date().toISOString()
+              })
+            }
+          });
+        })
+    );
+  }
+
+  return {
+    article: {
+      ...input.article,
+      bodyHtml: nextBodyHtml,
+      generationMetadata: undefined
+    },
+    coverImage,
+    authorName: input.authorName
+  };
+}
+
+function extractImageSources(bodyHtml: string): string[] {
+  const urls: string[] = [];
+  for (const match of bodyHtml.matchAll(/<img\b[^>]*\bsrc=(["'])(.*?)\1/gi)) {
+    const url = decodeHtmlAttribute(match[2] ?? "").trim();
+    if (url) urls.push(url);
+  }
+  for (const match of bodyHtml.matchAll(/<img\b[^>]*\bsrcset=(["'])(.*?)\1/gi)) {
+    urls.push(...parseSrcsetUrls(decodeHtmlAttribute(match[2] ?? "")));
+  }
+  return uniqueStrings(urls);
+}
+
+function rewriteImageSources(bodyHtml: string, urlMap: Map<string, string>): string {
+  if (urlMap.size === 0) return bodyHtml;
+  return bodyHtml
+    .replace(/(<img\b[^>]*\bsrc=)(["'])(.*?)\2/gi, (match, prefix: string, quote: string, src: string) => {
+      const decoded = decodeHtmlAttribute(src).trim();
+      const nextUrl = urlMap.get(decoded);
+      if (!nextUrl) return match;
+      return `${prefix}${quote}${escapeHtmlAttribute(nextUrl)}${quote}`;
+    })
+    .replace(/(<img\b[^>]*\bsrcset=)(["'])(.*?)\2/gi, (match, prefix: string, quote: string, srcset: string) => {
+      const nextSrcset = rewriteSrcset(decodeHtmlAttribute(srcset), urlMap);
+      if (nextSrcset === decodeHtmlAttribute(srcset)) return match;
+      return `${prefix}${quote}${escapeHtmlAttribute(nextSrcset)}${quote}`;
+    });
+}
+
+function parseSrcsetUrls(srcset: string): string[] {
+  return srcset
+    .split(",")
+    .map((candidate) => candidate.trim().split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function rewriteSrcset(srcset: string, urlMap: Map<string, string>): string {
+  return srcset
+    .split(",")
+    .map((candidate) => {
+      const trimmed = candidate.trim();
+      const [url, ...descriptors] = trimmed.split(/\s+/);
+      const nextUrl = urlMap.get(url ?? "");
+      return [nextUrl ?? url, ...descriptors].filter(Boolean).join(" ");
+    })
+    .join(", ");
+}
+
+function decodeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+function isPublicHttpUrl(value: string | null | undefined): value is string {
+  return Boolean(value && /^https?:\/\//i.test(value));
+}
+
+function isShopifyHostedImage(url: string, storefrontHost: string, shopDomain: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    const storefront = storefrontHost.toLowerCase();
+    const shop = shopDomain.toLowerCase();
+    return host === storefront || host === shop || host.endsWith(".myshopify.com") || host.includes("cdn.shopify.com") || host.includes("shopifycdn.net");
+  } catch {
+    return false;
+  }
+}
+
+function shopifyImageFilename(handleOrId: string, url: string): string {
+  const ext = imageExtensionFromUrl(url) ?? "jpg";
+  return `${compactHandleIdentity(handleOrId) ?? "blog-image"}-${hashString(url).toString(36).slice(0, 8)}.${ext}`;
+}
+
+function imageExtensionFromUrl(value: string): string | null {
+  try {
+    const pathname = new URL(value).pathname;
+    const ext = pathname.split(".").pop()?.toLowerCase();
+    if (ext && /^(png|jpe?g|webp|gif|avif)$/.test(ext)) return ext === "jpeg" ? "jpg" : ext;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function trimForShopifySeoTitle(value: string): string {
+  return trimForDb(stripHtmlForReview(value).replace(/\s+/g, " ").trim(), 70);
+}
+
+function trimForShopifySeoDescription(value: string): string {
+  return trimForDb(stripHtmlForReview(value).replace(/\s+/g, " ").trim(), 320);
+}
+
 async function recordGenerationFailure(
   job: Job<BlogGenerationJobData, WorkerJobResult, typeof BLOG_GENERATION_JOB_NAMES.blogGeneration>,
   error: unknown,
@@ -2586,17 +3071,33 @@ async function recordGenerationFailure(
 
   await job.updateProgress({
     step: retrying ? "article:generation_retry_scheduled" : "article:generation_failed",
+    percent: retrying ? 20 : 100,
+    label: retrying ? "生成失败，等待自动重试" : "生成失败",
     error: message
   });
   await job.log(`${job.name} failed: ${message}`);
   await markArticleFailed(articleId, message);
+  await recordGenerationProgress(job, job.data.campaignId, publishJobId, {
+    step: retrying ? "article:generation_retry_scheduled" : "article:generation_failed",
+    percent: retrying ? 20 : 100,
+    label: retrying ? "生成失败，等待自动重试" : "生成失败",
+    detail: message,
+    articleId,
+    status: retrying ? "retrying" : "failed"
+  });
 
   if (job.data.campaignId) {
+    const campaign = await prisma.blogCampaign.findUnique({
+      where: { id: job.data.campaignId },
+      select: { metadata: true }
+    });
+    const metadata = isRecord(campaign?.metadata) ? campaign.metadata : {};
     await prisma.blogCampaign.update({
       where: { id: job.data.campaignId },
       data: {
         status: retrying ? "active" : "failed",
         metadata: toPrismaJson({
+          ...metadata,
           lastFailure: failurePayload(error),
           bullJobId: job.id,
           attempt: job.attemptsMade + 1
@@ -4094,16 +4595,26 @@ async function markArticleFailed(articleId: string | undefined, failureReason: s
 async function publishToShopify(
   client: ShopifyGraphQLClient,
   article: PublishableArticleRow,
-  shopifyBlogId: string
+  shopifyBlogId: string,
+  options: {
+    authorName: string;
+    coverImage?: ShopifyArticleImageInput;
+  }
 ): Promise<ShopifyArticle> {
+  const seoDescription = trimForShopifySeoDescription(article.seoDescription ?? article.summary ?? article.title ?? "");
+  const seoTitle = trimForShopifySeoTitle(article.seoTitle ?? article.title ?? "");
   const input = {
     blogId: shopifyBlogId,
     title: article.title ?? "Untitled article",
+    author: options.authorName,
     handle: article.handle ?? undefined,
     bodyHtml: article.bodyHtml ?? "",
-    summary: article.summary ?? undefined,
+    summary: seoDescription || article.summary || undefined,
+    seoTitle: seoTitle || undefined,
+    seoDescription: seoDescription || undefined,
     isPublished: true,
-    tags: article.tags ?? []
+    tags: article.tags ?? [],
+    image: options.coverImage
   };
 
   if (article.shopifyArticleId) {

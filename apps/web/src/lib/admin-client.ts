@@ -50,6 +50,10 @@ export interface AdminCampaignView {
   status: CampaignStatus | string;
   statusTone: BadgeTone;
   progress: number;
+  progressLabel: string;
+  progressStep: string | null;
+  progressDetail: string | null;
+  progressUpdatedAt: string | null;
   publishPolicy: string;
   targetWordCount?: number;
   primaryKeyword?: string;
@@ -479,6 +483,10 @@ function normalizeCampaigns(input: unknown[]): AdminCampaignView[] {
       status,
       statusTone: campaignTone(status),
       progress: clampPercent(pickNumber(record, ["progress", "progressPercent"], total > 0 ? (generated / total) * 100 : 0)),
+      progressLabel: pickString(record, ["progressLabel", "stageLabel"], status === "active" ? "正在执行" : "未开始"),
+      progressStep: pickString(record, ["progressStep", "stage"], "") || null,
+      progressDetail: pickString(record, ["progressDetail", "detail"], "") || null,
+      progressUpdatedAt: pickString(record, ["progressUpdatedAt"], "") || null,
       publishPolicy: formatPublishPolicy(pickString(record, ["publishPolicy"], "manual_review")),
       targetWordCount: pickNumber(record, ["targetWordCount"], 0),
       primaryKeyword: pickString(record, ["primaryKeyword"], "")

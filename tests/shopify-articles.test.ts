@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { articleCreate, articleUpdate, type ShopifyGraphQLClient } from "../packages/shopify/src";
+import { articleCreate, articleUpdate, uploadImageFile, type ShopifyGraphQLClient } from "../packages/shopify/src";
 
 describe("Shopify article GraphQL wrappers", () => {
   it("does not send publishDate for immediate publish creates", async () => {
@@ -39,6 +39,79 @@ describe("Shopify article GraphQL wrappers", () => {
     expect(call?.variables).not.toHaveProperty("redirectNewHandle");
     expect(article.redirectNewHandle).toBe(true);
     expect(article.blogId).toBe("gid://shopify/Blog/2");
+  });
+
+  it("maps SEO metadata, brand author, and cover image into Shopify article input", async () => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> | undefined }> = [];
+    const client = fakeArticleClient(calls, "articleCreate");
+
+    await articleCreate(client, {
+      blogId: "gid://shopify/Blog/1",
+      title: "Streetwear Phone Case Picks",
+      bodyHtml: "<p>Ready</p>",
+      summary: "Buyer-facing meta description.",
+      seoTitle: "Streetwear Phone Case Picks",
+      seoDescription: "Buyer-facing meta description.",
+      author: "Caseease",
+      image: {
+        url: "https://cdn.shopify.com/s/files/1/blog-cover.jpg",
+        altText: "Caseease streetwear phone case"
+      },
+      isPublished: true
+    });
+
+    const article = calls[0]?.variables?.article as Record<string, unknown>;
+    expect(article.author).toEqual({ name: "Caseease" });
+    expect(article.image).toEqual({
+      url: "https://cdn.shopify.com/s/files/1/blog-cover.jpg",
+      altText: "Caseease streetwear phone case"
+    });
+    expect(article.summary).toBe("Buyer-facing meta description.");
+    expect(article.metafields).toContainEqual({
+      namespace: "global",
+      key: "description_tag",
+      type: "single_line_text_field",
+      value: "Buyer-facing meta description."
+    });
+  });
+
+  it("uploads remote images through Shopify Files and returns the hosted URL", async () => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> | undefined }> = [];
+    const client = {
+      request: async (query: string, variables?: Record<string, unknown>) => {
+        calls.push({ query, variables });
+        return {
+          fileCreate: {
+            files: [
+              {
+                id: "gid://shopify/MediaImage/1",
+                fileStatus: "READY",
+                image: {
+                  url: "https://cdn.shopify.com/s/files/1/blog-image.jpg",
+                  altText: "Blog image",
+                  width: 1600,
+                  height: 900
+                }
+              }
+            ],
+            userErrors: []
+          }
+        };
+      }
+    } as unknown as ShopifyGraphQLClient;
+
+    const uploaded = await uploadImageFile(client, {
+      originalSource: "https://images.example.com/provider-image.jpg",
+      alt: "Blog image"
+    });
+
+    const files = calls[0]?.variables?.files as Array<Record<string, unknown>>;
+    expect(files[0]).toMatchObject({
+      originalSource: "https://images.example.com/provider-image.jpg",
+      contentType: "IMAGE",
+      alt: "Blog image"
+    });
+    expect(uploaded.url).toBe("https://cdn.shopify.com/s/files/1/blog-image.jpg");
   });
 });
 

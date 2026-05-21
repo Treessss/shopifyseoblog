@@ -92,8 +92,9 @@ export const defaultPromptBuilder: PromptBuilder = {
 
     const system = [
       `Write in ${language}.`,
-      "You are an ecommerce SEO editor for a Shopify store.",
+      "You are a Shopify shopping-guide editor: keep the SEO structure, but make the article read like a real buyer-friendly recommendation guide.",
       "Use evidence carefully: trend and news signals are angle inputs, not permission to fabricate facts.",
+      "Never expose internal SEO, scoring, prompt, template, or search-intent labels in the reader-facing copy.",
       voice,
       audience,
       bannedWords
@@ -115,7 +116,8 @@ export const defaultPromptBuilder: PromptBuilder = {
         `Draft the article in ${language} using the approved outline.`,
         `Primary keyword must appear naturally in title, opening paragraph, at least one H2, and conclusion: ${keywords.primaryKeyword}.`,
         "Use concise HTML-ready paragraphs, no markdown fences, no fabricated discounts or medical claims.",
-        "Vary paragraph rhythm and examples. Avoid generic filler, repetitive sentence starts, and obvious template phrasing.",
+        "Keep the SEO skeleton, but write like a shopping inspiration guide: real routines, gifting moments, outfit/desk/travel scenarios, and practical hesitations a buyer would recognize.",
+        "Vary paragraph rhythm and examples. Avoid generic filler, repetitive sentence starts, obvious template phrasing, and meta phrases such as 'this article will', 'search intent', 'SEO', or 'content strategy'.",
         productContextLine(context),
         trendContext,
         internalLinks,
@@ -282,16 +284,16 @@ export function buildDefaultDraft(
     summary,
     intro:
       locale === "zh-CN"
-        ? `${angle.primaryKeyword}这篇文章需要从真实商品和搜索意图出发。本文会围绕${angle.anchorLabel}，把${angle.topic}拆成可判断的购买场景、细节检查和搭配思路。`
-        : `${angle.primaryKeyword} deserves a specific angle, not another generic buying guide. This article uses ${angle.anchorLabel} to connect ${angle.topic} with shopper intent, product context, and practical checks.`,
+        ? `如果你正在为通勤、送礼、日常搭配或换新场景挑${angle.primaryKeyword}，先别只看第一眼好不好看。把${angle.anchorLabel}放到真实使用里看，才能判断${angle.topic}到底适不适合你。`
+        : `If you're considering ${angle.primaryKeyword} for daily use, gifting, travel, or a style refresh, the first look is only part of the decision. Looking at ${angle.anchorLabel} in real-life use makes ${angle.topic} easier to judge.`,
     sections,
     conclusion:
       locale === "zh-CN"
-        ? `写好${angle.primaryKeyword}，关键是把证据、商品差异和用户场景放在一起。标题、内链和配图都应服务同一个具体角度，而不是套用固定导购模板。`
-        : `Strong ${angle.primaryKeyword} content should keep evidence, product differences, and shopper context in the same lane. The title, internal links, and imagery all need to support that specific angle.`,
+        ? `选${angle.primaryKeyword}时，最稳的顺序是先想清楚自己的使用场景，再回到商品页确认细节。这样你不会只被图片带着走，也更容易挑到真正会常用的款。`
+        : `The easiest way to choose ${angle.primaryKeyword} is to start with your real use case, then confirm the details on the product page. That keeps the decision grounded in how you'll actually use it.`,
     tags: [keywords.primaryKeyword, ...keywords.secondaryKeywords.slice(0, 4)],
     imagePrompt: buildDetailedImagePrompt(input, context, keywords),
-    imageAlt: locale === "zh-CN" ? `${keywords.primaryKeyword}使用场景图` : `${keywords.primaryKeyword} usage context`
+    imageAlt: locale === "zh-CN" ? `${keywords.primaryKeyword}真实使用场景` : `${keywords.primaryKeyword} real-life shopping scene`
   };
 }
 
@@ -478,9 +480,9 @@ function titleFromSelectedTopic(angle: DraftAngle): string | undefined {
 function buildEditorialSummary(locale: SupportedLocale, angle: DraftAngle): string {
   if (locale === "zh-CN") {
     return [
-      `围绕${angle.primaryKeyword}，这篇文章把${angle.anchorLabel}、${angle.category}和真实购买场景放在一起判断。`,
-      angle.trendTitle ? `选题参考了「${angle.trendTitle}」这类热点信号，但只把它作为内容角度，不夸大事实。` : "",
-      "读者可以快速看清适用场景、细节风险和下单前检查点。"
+      `围绕${angle.primaryKeyword}，从${angle.anchorLabel}、${angle.category}和真实买家场景判断适不适合入手。`,
+      angle.trendTitle ? `参考「${angle.trendTitle}」这类热点信号，但不把热点当成商品承诺。` : "",
+      "快速看清适用场景、细节风险和下单前要核对的地方。"
     ]
       .filter(Boolean)
       .join("");
@@ -499,20 +501,20 @@ function buildEditorialSections(locale: SupportedLocale, angle: DraftAngle) {
   if (locale === "zh-CN") {
     return [
       section(firstSectionHeading(angle), "evidence-angle", [
-        angle.trendTitle ? `先说明「${angle.trendTitle}」和${angle.category}需求之间的关系。` : `先说明${angle.anchorLabel}解决的具体问题。`,
-        `把${angle.primaryKeyword}放进真实购物语境，而不是只重复商品卖点。`
+        angle.trendTitle ? `先聊「${angle.trendTitle}」为什么会让买家重新注意${angle.category}。` : `先说明${angle.anchorLabel}在日常使用里解决的具体小麻烦。`,
+        `把${angle.primaryKeyword}放进通勤、送礼、搭配或桌面使用场景，而不是只堆商品卖点。`
       ]),
       section(`${angle.primaryKeyword}真正要看的细节`, "decision-detail", [
         `比较材质、尺寸、兼容性、手感或维护成本这些会影响长期使用的因素。`,
-        `用${angle.anchorLabel}作为例子，把抽象卖点翻译成读者能检查的条件。`
+        `用${angle.anchorLabel}作为例子，把抽象卖点翻译成下单前能核对的细节。`
       ]),
       section(`哪些场景适合${angle.anchorLabel}`, "usage-fit", [
-        "区分日常、通勤、礼物、自用或搭配场景，让读者知道自己是否匹配。",
-        "自然插入相关商品、系列或文章内链，而不是硬塞链接。"
+        "区分日常、通勤、礼物、自用或搭配场景，让读者知道自己是不是会真的常用。",
+        "相关商品、系列或文章只在能帮读者继续挑选时出现。"
       ]),
       section(`下单前的反向检查`, "purchase-check", [
-        "提醒读者哪些情况可能不适合，减少不必要的退换和误解。",
-        "用简短清单收束，让搜索用户能快速做决定。"
+        "提醒读者哪些情况可能先别冲，减少不必要的退换和误解。",
+        "用简短清单收束，让读者能更快决定要不要继续看商品页。"
       ])
     ];
   }
@@ -1340,10 +1342,10 @@ function searchIntentCoverageHtml(
   const source = context.product?.title ?? context.collection?.title ?? keywords.primaryKeyword;
   const primaryKeyword = escapeHtml(keywords.primaryKeyword);
   if (locale === "zh-CN") {
-    return `<section><h2>搜索意图覆盖</h2><ul><li><strong>快速判断：</strong>这篇文章先回答${primaryKeyword}适合什么搜索场景。</li><li><strong>事实核对：</strong>只使用${escapeHtml(source)}中已同步的商品、系列和图片信息。</li><li><strong>购买决策：</strong>用对比、适合/不适合和 FAQ 帮读者决定下一步。</li></ul></section>`;
+    return `<section><h2>先帮你判断适不适合</h2><ul><li><strong>一句话结论：</strong>${primaryKeyword}先看使用场景，再看外观和细节。</li><li><strong>能确认的依据：</strong>只使用${escapeHtml(source)}中已同步的商品、系列和图片信息。</li><li><strong>下单前判断：</strong>用适合/先别冲、对比和常见问题帮你决定下一步。</li></ul></section>`;
   }
 
-  return `<section><h2>Search intent coverage</h2><ul><li><strong>Quick answer:</strong> the article first clarifies the search question behind ${primaryKeyword}.</li><li><strong>Fact check:</strong> it uses only synced product, collection, and image context from ${escapeHtml(source)}.</li><li><strong>Decision support:</strong> comparison, choose/skip guidance, and FAQs help the reader choose the next step.</li></ul></section>`;
+  return `<section><h2>Start here: is it a good fit?</h2><ul><li><strong>Quick take:</strong> ${primaryKeyword} should be judged by use case first, then look and details.</li><li><strong>What is confirmed:</strong> this guide uses only synced product, collection, and image context from ${escapeHtml(source)}.</li><li><strong>Before you buy:</strong> fit/skip guidance, comparison, and FAQs help you decide the next step.</li></ul></section>`;
 }
 
 function externalCitationsHtml(context: ContentSourceContext, keywords: KeywordPlan, locale: SupportedLocale): string {
@@ -1381,23 +1383,23 @@ function verifiedFactsHtml(context: ContentSourceContext, locale: SupportedLocal
   ].filter((item): item is string[] => Boolean(item));
 
   if (facts.length === 0) return "";
-  const heading = locale === "zh-CN" ? "已确认事实和未确认信息" : "Verified facts and not-confirmed details";
+  const heading = locale === "zh-CN" ? "下单前能确认的细节" : "What you can confirm before buying";
   const rows = facts.map(([label, value]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(value)}</td></tr>`).join("");
   const unknown =
     locale === "zh-CN"
-      ? "材质、跌落保护、适配范围或促销信息未在同步数据中确认时，不应在正文里猜测。"
+      ? "如果材质、跌落保护、适配范围或促销信息没有在商品数据里写清，先回到商品页核对，不要凭感觉下单。"
       : "Material, drop protection, compatibility scope, and promotions should stay unclaimed when they are not confirmed in synced data.";
 
   return `<section><h2>${heading}</h2><table><tbody>${rows}</tbody></table><p>${escapeHtml(unknown)}</p></section>`;
 }
 
 function decisionMatrixHtml(context: ContentSourceContext, keywords: KeywordPlan, locale: SupportedLocale): string {
-  const heading = locale === "zh-CN" ? `${keywords.primaryKeyword}选择和跳过判断` : `${keywords.primaryKeyword} decision matrix`;
+  const heading = locale === "zh-CN" ? `适合谁，哪些情况先别冲` : `Who it fits, and when to skip`;
   const rows =
     locale === "zh-CN"
       ? [
-          ["适合", "想要围绕真实商品信息、图片和使用场景做购买判断的读者。"],
-          ["可以跳过", "如果你需要未同步的保护等级、材质认证或具体促销承诺，先查看商品页。"],
+          ["适合", "想围绕真实商品信息、图片和日常使用场景做判断的买家。"],
+          ["先别冲", "如果你需要未同步的保护等级、材质认证或具体促销承诺，先查看商品页。"],
           ["下一步", context.internalLinks?.[0] ? `继续看：${context.internalLinks[0].anchor ?? context.internalLinks[0].title}` : "对照商品页里的规格、变体和图片。"]
         ]
       : [
@@ -1415,11 +1417,11 @@ function faqHtml(keywords: KeywordPlan, context: ContentSourceContext, locale: S
   const items =
     locale === "zh-CN"
       ? [
-          [`${keywords.primaryKeyword}适合日常使用吗？`, `如果${product}的图片、标签和商品页信息符合你的使用场景，它更适合日常轻量决策；未确认的保护等级不要默认假设。`],
+          [`${keywords.primaryKeyword}适合日常使用吗？`, `如果${product}的图片、标签和商品页信息符合你的通勤、出门或日常搭配习惯，它更适合先加入候选；未确认的保护等级不要默认假设。`],
+          [`送礼会不会太挑人？`, "如果对方喜欢这个风格或已经在看同类款式，会更稳；不确定型号、颜色偏好或材质要求时，先选可核对规格的商品页。"],
+          [`搭配什么场景更自然？`, "可以优先想桌面、通勤包、日常穿搭或旅行使用场景，再判断颜色、图案和功能细节是否协调。"],
           [`购买前要看哪些已确认信息？`, "先看商品标题、品类、标签、图片、变体和商品页描述，再判断材质、兼容性或维护要求是否已经明确。"],
-          [`什么时候不建议只看这篇文章下单？`, "当你需要精确型号、保护认证、促销价格或发货承诺时，应该回到商品页核对最新信息。"],
-          [`内链应该怎么用？`, "内链只应该把读者带到相关商品、系列或延伸文章，而不是为了数量硬塞链接。"],
-          [`这类内容为什么要写未确认信息？`, "把未知项说清楚能减少夸大承诺，也让搜索用户更快知道下一步该查什么。"]
+          [`什么时候不建议只看这份建议下单？`, "当你需要精确型号、保护认证、促销价格或发货承诺时，应该回到商品页核对最新信息。"]
         ]
       : [
           [`Is ${keywords.primaryKeyword} good for daily use?`, `It can be, if ${product} matches the shopper's use case in the synced images, tags, and product-page facts. Do not assume unconfirmed protection ratings.`],
@@ -1508,12 +1510,12 @@ function section(heading: string, intent: string, bulletPoints: string[]) {
 function sectionParagraph(heading: string, intent: string, keywords: KeywordPlan, locale: SupportedLocale): string {
   if (locale === "zh-CN") {
     const paragraphs: Record<string, string> = {
-      "evidence-angle": `${heading}不是简单追热点，而是先判断这个信号和${keywords.primaryKeyword}的真实需求是否匹配。写作时要把来源、商品语境和读者问题放在同一段逻辑里。`,
-      "decision-detail": `读者真正需要的是可检查的细节。围绕${keywords.primaryKeyword}展开时，材质、尺寸、兼容性、维护成本和使用频率都比空泛卖点更有帮助。`,
+      "evidence-angle": `${heading}不是简单追热点，而是看它会不会改变你挑${keywords.primaryKeyword}时的优先级。比如通勤、送礼、日常搭配这些场景，往往比一句卖点更能说明适不适合。`,
+      "decision-detail": `真正影响使用感的通常是可检查的细节。围绕${keywords.primaryKeyword}展开时，材质、尺寸、兼容性、维护成本和使用频率都比空泛卖点更有帮助。`,
       "usage-fit": `${heading}要回答“我会不会真的用到”。可以把日常场景、人群、搭配方式和内链商品自然放在一起，让读者更快定位自己。`,
-      "purchase-check": `最后一段应该帮助读者排除不适合的情况。用${keywords.primaryKeyword}做下单前检查时，语气要具体克制，避免绝对化承诺。`
+      "purchase-check": `下单前再反向看一遍，会更容易避开不适合自己的选择。用${keywords.primaryKeyword}做检查时，重点是确认需求和商品页细节，而不是被单一图片或标题带着走。`
     };
-    return escapeHtml(paragraphs[intent] ?? `${heading}需要把${keywords.primaryKeyword}和具体购买场景连接起来，让内容更像编辑判断，而不是固定模板。`);
+    return escapeHtml(paragraphs[intent] ?? `${heading}可以把${keywords.primaryKeyword}和具体购买场景连接起来，让读者更快判断是否适合自己。`);
   }
 
   const paragraphs: Record<string, string> = {
@@ -1722,10 +1724,10 @@ function isLikelyExternalReferenceUrl(value: string): boolean {
 }
 
 function hasSearchIntentCoverage(html: string, text: string, locale: SupportedLocale): boolean {
-  if (/search intent coverage|搜索意图覆盖/i.test(html)) return true;
+  if (/search intent coverage|搜索意图覆盖|先帮你判断适不适合|Start here: is it a good fit/i.test(html)) return true;
   const hasQuickAnswer =
     locale === "zh-CN"
-      ? /(快速答案|直接答案|结论先说|一句话结论)/i.test(text)
+      ? /(快速答案|直接答案|结论先说|一句话结论|一句话)/i.test(text)
       : /(quick answer|short answer|answer first|bottom line|quick take)/i.test(text);
   const hasFacts =
     locale === "zh-CN" ? /(已确认|未确认|事实|规格|来源|参考)/i.test(text) : /(verified|confirmed|not confirmed|facts|source|reference)/i.test(text);
@@ -2159,7 +2161,7 @@ function templatePhrases(text: string, locale: SupportedLocale): string[] {
   const lower = text.toLowerCase();
   const phrases =
     locale === "zh-CN"
-      ? ["在当今", "不言而喻", "总的来说", "值得注意的是", "越来越多的人", "本文将深入探讨"]
+      ? ["在当今", "不言而喻", "总的来说", "值得注意的是", "越来越多的人", "本文将深入探讨", "搜索意图覆盖", "写作时要", "这篇文章需要"]
       : [
           "in today's fast-paced world",
           "it is important to note",

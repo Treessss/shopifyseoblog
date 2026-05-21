@@ -569,6 +569,7 @@ function mapStore(store: StoreRow): AdminStoreOverview {
 }
 
 function mapCampaign(campaign: CampaignRow): AdminCampaignOverview {
+  const progress = campaignProgressState(campaign);
   return {
     id: campaign.id,
     name: campaign.title,
@@ -581,7 +582,11 @@ function mapCampaign(campaign: CampaignRow): AdminCampaignOverview {
     sourceId: campaign.sourceId,
     topic: campaign.topic,
     status: campaign.status,
-    progress: campaignProgress(campaign),
+    progress: progress.percent,
+    progressLabel: progress.label,
+    progressStep: progress.step,
+    progressDetail: progress.detail,
+    progressUpdatedAt: progress.updatedAt,
     publishPolicy: publishPolicyLabel(campaign.publishPolicy),
     publishPolicyCode: campaign.publishPolicy,
     targetWordCount: campaign.targetWordCount,
@@ -838,6 +843,35 @@ function campaignSourceLabel(campaign: { sourceType: string; sourceId: string | 
   return `Product: ${campaign.sourceId ?? "unselected"}`;
 }
 
+function campaignProgressState(campaign: { status: string; metadata?: unknown; articles: Array<{ status: string }> }) {
+  const metadata = asRecord(campaign.metadata);
+  const progress = asRecord(metadata.generationProgress);
+  const percent = numberValue(progress.percent);
+  const label = stringValue(progress.label);
+  const step = stringValue(progress.step);
+  const detail = stringValue(progress.detail);
+  const updatedAt = stringValue(progress.updatedAt);
+
+  if (campaign.status === "active" && typeof percent === "number") {
+    return {
+      percent,
+      label: label ?? campaignProgressLabel(step, campaign.status),
+      step,
+      detail,
+      updatedAt
+    };
+  }
+
+  const fallbackPercent = campaignProgress(campaign);
+  return {
+    percent: fallbackPercent,
+    label: campaignProgressLabel(step, campaign.status),
+    step,
+    detail,
+    updatedAt
+  };
+}
+
 function campaignProgress(campaign: { status: string; articles: Array<{ status: string }> }) {
   if (campaign.status === "completed") return 100;
   if (campaign.status === "failed") return 0;
@@ -861,6 +895,58 @@ function campaignProgress(campaign: { status: string; articles: Array<{ status: 
   }, 0);
 
   return Math.min(100, Math.round(score / campaign.articles.length));
+}
+
+function campaignProgressLabel(step: string | null, status: string) {
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "生成失败";
+
+  switch (step) {
+    case "article:queued":
+      return "任务已进入队列";
+    case "context:loaded":
+      return "已读取店铺与任务上下文";
+    case "input:validated":
+      return "任务参数已校验";
+    case "job:started":
+      return "生成任务已启动";
+    case "research:running":
+      return "正在研究选题和关键词";
+    case "brief:completed":
+      return "内容简报已完成";
+    case "ai:drafting":
+      return "AI 正在撰写正文";
+    case "ai:draft_completed":
+      return "正文初稿已完成";
+    case "ai:reviewing":
+      return "AI 正在评分";
+    case "ai:final_review":
+      return "正在复核配图后的文章";
+    case "image:generating":
+      return "正在生成配图";
+    case "quality:finalizing":
+      return "正在计算质量门槛";
+    case "article:saving":
+      return "正在保存文章";
+    case "article:saved":
+      return "文章已保存";
+    case "agent:metadata_saved":
+      return "Agent 记录已保存";
+    case "assets:saved":
+      return "图片记录已保存";
+    case "article:uploading_images":
+      return "正在上传图片到 Shopify";
+    case "article:generated":
+      return "文章生成完成";
+    default:
+      if (step?.startsWith("ai:revision_")) return "AI 正在按评分建议改稿";
+      if (step?.startsWith("ai:final_revision_")) return "AI 正在最终改稿";
+      return status === "active" ? "正在执行" : "未开始";
+  }
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : undefined;
 }
 
 function publishPolicyLabel(policy: string) {

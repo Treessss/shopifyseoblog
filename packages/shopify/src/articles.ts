@@ -17,6 +17,8 @@ export interface ShopifyArticleWriteInput {
   body?: string;
   bodyHtml?: string;
   summary?: string;
+  seoTitle?: string;
+  seoDescription?: string;
   isPublished?: boolean;
   publishDate?: string;
   tags?: string[];
@@ -186,9 +188,43 @@ function normalizeArticleInput(input: ShopifyArticleWriteInput, mode: "create" |
     redirectNewHandle,
     tags: input.tags,
     image: input.image,
-    metafields: input.metafields,
+    metafields: articleSeoMetafields(input.metafields, input.seoTitle, input.seoDescription),
     templateSuffix: input.templateSuffix
   });
+}
+
+function articleSeoMetafields(
+  metafields: Array<Record<string, unknown>> | undefined,
+  seoTitle: string | null | undefined,
+  seoDescription: string | null | undefined
+): Array<Record<string, unknown>> | undefined {
+  const base = metafields ?? [];
+  const additions = [
+    seoTitle
+      ? {
+          namespace: "global",
+          key: "title_tag",
+          type: "single_line_text_field",
+          value: seoTitle
+        }
+      : undefined,
+    seoDescription
+      ? {
+          namespace: "global",
+          key: "description_tag",
+          type: "single_line_text_field",
+          value: seoDescription
+        }
+      : undefined
+  ].filter(Boolean) as Array<Record<string, unknown>>;
+
+  const merged = new Map<string, Record<string, unknown>>();
+  for (const metafield of [...base, ...additions]) {
+    const namespace = typeof metafield.namespace === "string" ? metafield.namespace : "global";
+    const key = typeof metafield.key === "string" ? metafield.key : JSON.stringify(metafield);
+    merged.set(`${namespace}:${key}`, metafield);
+  }
+  return merged.size > 0 ? Array.from(merged.values()) : undefined;
 }
 
 interface ShopifyArticlePayload {

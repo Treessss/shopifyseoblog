@@ -1,15 +1,13 @@
 import { Clock3, Languages, ListFilter, Megaphone, Plus, Search, ShieldCheck } from "lucide-react";
+import { CampaignProgressTable } from "@/components/campaign-progress-table";
 import {
-  Badge,
   ErrorState,
   Field,
   FormNotice,
   PageHeader,
   Panel,
-  ProgressBar,
   SelectField,
   StatusPill,
-  TableEmpty,
   TextAreaField
 } from "@/components/ui";
 import {
@@ -37,12 +35,6 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
   const stores = storeResult.data;
   const languages = languageResult.data.filter((language) => language.enabled);
   const notice = readFormNotice(params);
-  const filteredCampaigns = campaigns.filter((campaign) => {
-    const matchesQuery =
-      !query || `${campaign.name} ${campaign.store} ${campaign.source} ${campaign.primaryKeyword ?? ""}`.toLowerCase().includes(query);
-    const matchesStatus = !status || campaign.status === status;
-    return matchesQuery && matchesStatus;
-  });
 
   return (
     <>
@@ -112,59 +104,10 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
               <ListFilter size={16} aria-hidden="true" />
               筛选
             </button>
-            <span className="filter-bar__summary">当前 {filteredCampaigns.length} 个任务</span>
+            <span className="filter-bar__summary">当前任务会自动刷新进度</span>
           </form>
 
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>任务</th>
-                  <th>店铺</th>
-                  <th>来源</th>
-                  <th>语言</th>
-                  <th>进度</th>
-                  <th>发布策略</th>
-                  <th>状态</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredCampaigns.length === 0 ? (
-                  <TableEmpty
-                    colSpan={7}
-                    title={campaigns.length === 0 ? "暂无内容任务" : "没有匹配的任务"}
-                    description={
-                      campaigns.length === 0
-                        ? "新建任务后，worker 生成进度和发布策略会显示在这里。"
-                        : "调整搜索关键词或状态筛选条件。"
-                    }
-                  />
-                ) : (
-                  filteredCampaigns.map((campaign) => (
-                    <tr key={campaign.id}>
-                      <td>
-                        <strong>{campaign.name}</strong>
-                        {campaign.primaryKeyword ? <div className="muted">关键词：{campaign.primaryKeyword}</div> : null}
-                      </td>
-                      <td>{campaign.store}</td>
-                      <td>{campaign.source}</td>
-                      <td className="code">{campaign.locale}</td>
-                      <td>
-                        <div className="progress-cell">
-                          <ProgressBar value={campaign.progress} />
-                          <span>{campaign.progress}%</span>
-                        </div>
-                      </td>
-                      <td>{campaign.publishPolicy}</td>
-                      <td>
-                        <Badge tone={campaign.statusTone}>{formatCampaignStatus(campaign.status)}</Badge>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <CampaignProgressTable initialCampaigns={campaigns} query={query} status={status} />
         </Panel>
 
         <Panel
