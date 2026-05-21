@@ -70,6 +70,7 @@ import {
   failurePayload,
   failurePublishEvent,
   getErrorMessage,
+  parseIntegerEnv,
   throwForBullMQ,
   toPrismaJson,
   trimForDb,
@@ -765,7 +766,7 @@ async function generateArticleWithAi(
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     model: provider.textModel,
-    timeoutMs: 120000
+    timeoutMs: aiTextTimeoutMs()
   });
   await onProgress?.({
     step: "ai:drafting",
@@ -2209,7 +2210,7 @@ async function maybeGenerateArticleImages(
     baseUrl: provider.baseUrl,
     apiKey: provider.apiKey,
     model: provider.imageModel,
-    timeoutMs: 120000
+    timeoutMs: aiImageTimeoutMs()
   });
   const assets: ImageAssetDraft[] = [];
 
@@ -2468,6 +2469,14 @@ async function persistGeneratedImageAsset(input: {
 
 function isAiProvider(value: string | null): value is "openai" | "compatible" | "custom" {
   return value === "openai" || value === "compatible" || value === "custom";
+}
+
+function aiTextTimeoutMs(): number {
+  return parseIntegerEnv("AI_TEXT_TIMEOUT_MS", parseIntegerEnv("AI_REQUEST_TIMEOUT_MS", 300000));
+}
+
+function aiImageTimeoutMs(): number {
+  return parseIntegerEnv("AI_IMAGE_TIMEOUT_MS", parseIntegerEnv("AI_REQUEST_TIMEOUT_MS", 240000));
 }
 
 async function publishArticle(

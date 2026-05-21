@@ -213,6 +213,13 @@ export class OpenAICompatibleClient {
 
           return payload;
         } catch (error) {
+          if (operationSignal?.aborted && controller?.timedOut()) {
+            throw new AIClientError(`${errorLabel} timed out after ${controller.timeoutMs}ms.`, {
+              code: "AI_REQUEST_TIMEOUT",
+              timeoutMs: controller.timeoutMs
+            }, 408);
+          }
+
           if (operationSignal?.aborted || attempt >= DEFAULT_TRANSIENT_RETRIES || !isRetryableAiError(error)) {
             throw error;
           }
@@ -312,11 +319,24 @@ function parseImageGeneration(payload: unknown, model: string): GenerateImageRes
   };
 }
 
-function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): (AbortController & { clear: () => void }) | undefined {
+type TimedAbortController = AbortController & {
+  clear: () => void;
+  timedOut: () => boolean;
+  timeoutMs?: number;
+};
+
+function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): TimedAbortController | undefined {
   if (!timeoutMs && !parentSignal) return undefined;
 
-  const controller = new AbortController() as AbortController & { clear: () => void };
-  const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  const controller = new AbortController() as TimedAbortController;
+  let timedOut = false;
+  controller.timeoutMs = timeoutMs;
+  const timeout = timeoutMs
+    ? setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs)
+    : undefined;
   const abort = () => controller.abort();
   if (parentSignal?.aborted) {
     controller.abort();
@@ -327,6 +347,7 @@ function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): 
     if (timeout) clearTimeout(timeout);
     parentSignal?.removeEventListener("abort", abort);
   };
+  controller.timedOut = () => timedOut;
   return controller;
 }
 
