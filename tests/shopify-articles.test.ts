@@ -113,6 +113,59 @@ describe("Shopify article GraphQL wrappers", () => {
     });
     expect(uploaded.url).toBe("https://cdn.shopify.com/s/files/1/blog-image.jpg");
   });
+
+  it("polls Shopify Files until an uploaded image becomes ready", async () => {
+    const calls: Array<{ query: string; variables: Record<string, unknown> | undefined }> = [];
+    const client = {
+      request: async (query: string, variables?: Record<string, unknown>) => {
+        calls.push({ query, variables });
+        if (query.includes("fileCreate")) {
+          return {
+            fileCreate: {
+              files: [
+                {
+                  id: "gid://shopify/MediaImage/2",
+                  fileStatus: "UPLOADED",
+                  image: null
+                }
+              ],
+              userErrors: []
+            }
+          };
+        }
+
+        return {
+          nodes: [
+            {
+              id: "gid://shopify/MediaImage/2",
+              fileStatus: "UPLOADED",
+              image: null,
+              preview: {
+                image: {
+                  url: "https://cdn.shopify.com/s/files/1/ready-image.jpg",
+                  altText: "Ready image",
+                  width: 1200,
+                  height: 800
+                }
+              }
+            }
+          ]
+        };
+      }
+    } as unknown as ShopifyGraphQLClient;
+
+    const uploaded = await uploadImageFile(
+      client,
+      {
+        originalSource: "https://images.example.com/slow-image.jpg",
+        alt: "Ready image"
+      },
+      { pollDelayMs: 0 }
+    );
+
+    expect(calls).toHaveLength(2);
+    expect(uploaded.url).toBe("https://cdn.shopify.com/s/files/1/ready-image.jpg");
+  });
 });
 
 function fakeArticleClient(

@@ -31,6 +31,14 @@ interface ShopifyFileNode {
     width?: number | null;
     height?: number | null;
   } | null;
+  preview?: {
+    image?: {
+      url?: string | null;
+      altText?: string | null;
+      width?: number | null;
+      height?: number | null;
+    } | null;
+  } | null;
 }
 
 const FILE_IMAGE_FIELDS = /* GraphQL */ `
@@ -43,6 +51,14 @@ const FILE_IMAGE_FIELDS = /* GraphQL */ `
       altText
       width
       height
+    }
+    preview {
+      image {
+        url
+        altText
+        width
+        height
+      }
     }
   }
 `;
@@ -107,17 +123,19 @@ export async function uploadImageFile(
     throw new ShopifyError("fileCreate did not return a media image id.", payload.fileCreate);
   }
 
-  const attempts = options.pollAttempts ?? 6;
-  const delayMs = options.pollDelayMs ?? 1200;
+  const attempts = options.pollAttempts ?? 15;
+  const delayMs = options.pollDelayMs ?? 2000;
+  let lastStatus = created.fileStatus;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await delay(delayMs);
     const refreshed = await getImageFile(client, fileId);
     if (refreshed?.url) return refreshed;
+    lastStatus = refreshed?.fileStatus ?? lastStatus;
   }
 
   throw new ShopifyError("Shopify uploaded the image but did not return a hosted image URL yet.", {
     fileId,
-    fileStatus: created.fileStatus
+    fileStatus: lastStatus
   });
 }
 
@@ -130,7 +148,7 @@ async function getImageFile(client: ShopifyGraphQLClient, id: string): Promise<S
 
 function imageFromNode(node: ShopifyFileNode | undefined): ShopifyUploadedImage | null {
   if (!node?.id) return null;
-  const image = node.image ?? null;
+  const image = node.image ?? node.preview?.image ?? null;
   return {
     id: node.id,
     url: image?.url ?? "",

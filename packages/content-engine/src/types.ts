@@ -129,6 +129,7 @@ export interface AgentMemorySignal {
 }
 
 export interface ContentSourceContext {
+  storefrontHost?: string;
   product?: ProductContext;
   collection?: CollectionContext;
   brandVoice?: BrandVoice;

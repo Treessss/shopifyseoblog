@@ -77,6 +77,11 @@ import {
   willRetryJob
 } from "./shared";
 import { resolveFreshStoreAccessToken } from "./shopify-token";
+import {
+  normalizeInternalLinkUrl,
+  sanitizeArticleInternalLinks,
+  verifyInternalLinkCandidates
+} from "./internal-link-verification";
 
 export type BlogGenerationJob = Job<
   BlogGenerationQueueJobData,
@@ -818,6 +823,7 @@ async function generateArticleWithAi(
       "Never use these title formulas: 'Guide: Choosing, Using, and Optimizing ...', 'How to Choose, Use, and Style ...', or '[keyword] Guide'.",
       "Do not use the internal campaign/task name as article topic or title.",
       "Preserve the SEO skeleton, but make the language read like a shopping recommendation guide: concrete buyer scenes, real hesitation, fit/skip judgment, and product-page checks.",
+      "Internal links are pre-validated storefront URLs. Use only sourceContext.internalLinks for internal links; never invent a product, collection, article, blog, or store URL.",
       "Do not use reader-facing meta labels such as SEO, search intent, scoring, prompt, template, content strategy, or 'this article will'.",
       "Do not try to evade AI detectors. Instead, make the article specific, evidence-aware, varied in rhythm, useful to shoppers, and free of generic template phrases."
     ].join("\n\n"),
@@ -1216,6 +1222,7 @@ async function reviseArticleForSearchTraffic(
       "The localStructureReport in the context is a non-negotiable validator. Repair every failed check before making style improvements.",
       "Apply the recommendations concretely. Improve title intent, opening specificity, section depth, internal-link context, product/category evidence, and shopper usefulness.",
       "Preserve or add required external citations from sourceContext.externalReferences. Do not remove the reference section unless citations are disabled.",
+      "Use only verified URLs from sourceContext.internalLinks for internal links. Remove or replace any internal product, collection, article, blog, or store URL that is not in that list.",
       "Treat revisionBrief and actionItems as a required checklist. Satisfy every acceptanceCheck that can be satisfied with the supplied evidence, and remove unrelated trend/news terms.",
       "Before returning, audit your own draft: if an actionItem asks for a section, table, FAQ, internal link, product fact box, comparison, or CTA, it must actually exist in bodyHtml.",
       "When score is low because the article is generic, restructure heavily instead of making small wording changes.",
@@ -1362,8 +1369,8 @@ function highScoreArticleContract(input: ParsedGenerationInput, context: Content
       : "- Decision depth: include a concrete comparison table or decision matrix based on shopper fit, use case, styling, gifting, care, or category tradeoffs.",
     "- Product/image specificity: reference visible product-image observations only when supported by supplied images or metadata; avoid generic material/protection claims.",
     requiredInternalLinks > 0
-      ? `- Internal links: include at least ${requiredInternalLinks} contextual internal links with natural anchor text and a reason in the surrounding sentence.`
-      : "- Internal links: if no candidates are supplied, do not invent links.",
+      ? `- Internal links: include at least ${requiredInternalLinks} contextual internal links from the verified sourceContext.internalLinks list, with natural anchor text and a reason in the surrounding sentence.`
+      : "- Internal links: if no verified candidates are supplied, do not invent links.",
     requiredExternalLinks > 0
       ? `- External references: include at least ${requiredExternalLinks} cited external link(s) from sourceContext.externalReferences, with rel="nofollow noopener noreferrer" and a short reason.`
       : "- External references: if references are disabled, do not add fabricated citations.",
@@ -1737,6 +1744,7 @@ function articleForAiRevision(article: GeneratedArticle) {
 
 function contextForAiEditing(context: ContentSourceContext): ContentSourceContext {
   return {
+    storefrontHost: context.storefrontHost,
     product: compactProductContext(context.product),
     collection: compactCollectionContext(context.collection),
     brandVoice: context.brandVoice,
@@ -1981,7 +1989,11 @@ function clampPercent(value: number): number {
 }
 
 function enforceRequiredLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
-  return enforceExternalCitations(enforceInternalLinks(article, context), context);
+  const sanitized = {
+    ...article,
+    bodyHtml: sanitizeArticleInternalLinks(article.bodyHtml, context)
+  };
+  return enforceExternalCitations(enforceInternalLinks(sanitized, context), context);
 }
 
 function enforceInternalLinks(article: GeneratedArticle, context: ContentSourceContext): GeneratedArticle {
@@ -2486,6 +2498,10 @@ function aiTextStreamingEnabled(): boolean {
   return process.env.AI_TEXT_STREAMING?.toLowerCase() !== "false";
 }
 
+function internalLinkValidationTimeoutMs(): number {
+  return parseIntegerEnv("INTERNAL_LINK_VALIDATION_TIMEOUT_MS", 4500);
+}
+
 async function publishArticle(
   job: Job<ArticlePublishJobData, WorkerJobResult, typeof BLOG_GENERATION_JOB_NAMES.articlePublish>
 ): Promise<WorkerJobResult> {
@@ -2883,15 +2899,33 @@ async function prepareArticleForShopifyPublish(input: {
     altText?: string | null;
     assetId?: string;
   }> = [];
+  const skippedImageUploads: Array<{
+    originalUrl: string;
+    reason: string;
+    assetId?: string;
+  }> = [];
 
   for (const originalUrl of uploadTargets) {
     if (isShopifyHostedImage(originalUrl, input.storefrontHost, input.client.shopDomain)) continue;
     const matchingAsset = assets.find((asset) => asset.publicUrl === originalUrl || asset.sourceUrl === originalUrl);
-    const uploadedImage = await uploadImageFile(input.client, {
-      originalSource: originalUrl,
-      alt: matchingAsset?.altText ?? input.article.title ?? input.authorName,
-      filename: shopifyImageFilename(input.article.handle ?? input.article.id, originalUrl)
-    });
+    let uploadedImage: ShopifyUploadedImage;
+    try {
+      uploadedImage = await uploadImageFile(input.client, {
+        originalSource: originalUrl,
+        alt: matchingAsset?.altText ?? input.article.title ?? input.authorName,
+        filename: shopifyImageFilename(input.article.handle ?? input.article.id, originalUrl)
+      });
+    } catch (error) {
+      if (input.article.shopifyArticleId && isPendingShopifyImageUploadError(error)) {
+        skippedImageUploads.push({
+          originalUrl,
+          reason: getErrorMessage(error),
+          assetId: matchingAsset?.id
+        });
+        continue;
+      }
+      throw error;
+    }
     uploaded.push({
       originalUrl,
       uploaded: uploadedImage,
@@ -2915,7 +2949,7 @@ async function prepareArticleForShopifyPublish(input: {
       }
     : undefined;
 
-  if (nextBodyHtml !== bodyHtml || uploaded.length > 0) {
+  if (nextBodyHtml !== bodyHtml || uploaded.length > 0 || skippedImageUploads.length > 0) {
     const metadata = isRecord(input.article.generationMetadata) ? input.article.generationMetadata : {};
     await prisma.blogArticle.update({
       where: { id: input.article.id },
@@ -2933,7 +2967,8 @@ async function prepareArticleForShopifyPublish(input: {
               shopifyFileId: item.uploaded.id,
               shopifyUrl: item.uploaded.url,
               fileStatus: item.uploaded.fileStatus
-            }))
+            })),
+            skippedImages: skippedImageUploads
           }
         })
       }
@@ -3039,6 +3074,10 @@ function escapeHtmlAttribute(value: string): string {
 
 function isPublicHttpUrl(value: string | null | undefined): value is string {
   return Boolean(value && /^https?:\/\//i.test(value));
+}
+
+function isPendingShopifyImageUploadError(error: unknown): boolean {
+  return error instanceof Error && /did not return a hosted image URL yet/i.test(error.message);
 }
 
 function isShopifyHostedImage(url: string, storefrontHost: string, shopDomain: string): boolean {
@@ -3313,6 +3352,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
   );
   const sourceContextBase = {
     ...baseSourceContext,
+    storefrontHost,
     topic: topicSeed,
     seedKeywords,
     recentTopics,
@@ -3961,18 +4001,24 @@ async function loadInternalLinks(
   const includeProducts = strategy !== "collection" && strategy !== "article";
   const [sourceProduct, products, collections, articles] = await Promise.all([
     includeProducts && sourceType === "product" && sourceId
-      ? prisma.productSnapshot.findFirst({
-          where: {
-            storeId,
-            OR: [{ shopifyProductId: sourceId }, { id: sourceId }, { handle: sourceId }]
-          },
-          orderBy: { syncedAt: "desc" }
-        })
+        ? prisma.productSnapshot.findFirst({
+            where: {
+              storeId,
+              OR: [{ status: null }, { status: { equals: "ACTIVE", mode: "insensitive" } }],
+              AND: [
+                {
+                  OR: [{ shopifyProductId: sourceId }, { id: sourceId }, { handle: sourceId }]
+                }
+              ]
+            },
+            orderBy: { syncedAt: "desc" }
+          })
       : Promise.resolve(null),
     strategy === "collection" || strategy === "article"
       ? Promise.resolve([])
       : prisma.productSnapshot.findMany({
           where: {
+            OR: [{ status: null }, { status: { equals: "ACTIVE", mode: "insensitive" } }],
             storeId,
             shopifyProductId: sourceType === "product" && sourceId ? { not: sourceId } : undefined
           },
@@ -4034,7 +4080,9 @@ async function loadInternalLinks(
     anchor: article.title ?? article.primaryKeyword ?? "Related article"
   }));
 
-  return mixInternalLinkCandidates([sourceProductLinks, collectionLinks, articleLinks, productLinks], limit);
+  return verifyInternalLinkCandidates(mixInternalLinkCandidates([sourceProductLinks, collectionLinks, articleLinks, productLinks], limit), {
+    timeoutMs: internalLinkValidationTimeoutMs()
+  });
 }
 
 function storefrontUrl(host: string, path: string): string {
@@ -4071,17 +4119,6 @@ function mixInternalLinkCandidates(groups: InternalLinkCandidate[][], limit: num
   }
 
   return output;
-}
-
-function normalizeInternalLinkUrl(value: string): string {
-  try {
-    const url = new URL(value);
-    url.hash = "";
-    url.search = "";
-    return `${url.hostname.toLowerCase()}${url.pathname.replace(/\/+$/g, "")}`;
-  } catch {
-    return value.trim().toLowerCase().replace(/[?#].*$/, "").replace(/\/+$/g, "");
-  }
 }
 
 async function loadImageReferences(
