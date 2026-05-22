@@ -777,6 +777,7 @@ async function generateArticleWithAi(
   const result = await client.generateText({
     model: provider.textModel,
     temperature: provider.temperature,
+    stream: aiTextStreamingEnabled(),
     system: pipelineResult.artifacts.prompts.system,
     prompt: [
       "Return only a JSON object matching this shape:",
@@ -1096,6 +1097,7 @@ async function reviewArticleForSearchTraffic(
   const result = await client.generateText({
     model: provider.textModel,
     temperature: 0.15,
+    stream: aiTextStreamingEnabled(),
     system:
       "You are a senior SEO editor for ecommerce content. Score search traffic potential using evidence, search intent, helpfulness, and content quality. Be strict, practical, and specific.",
     prompt: [
@@ -1186,6 +1188,7 @@ async function reviseArticleForSearchTraffic(
   const result = await client.generateText({
     model: provider.textModel,
     temperature: Math.min(0.45, provider.temperature),
+    stream: aiTextStreamingEnabled(),
     system:
       "You are a senior ecommerce SEO editor. Rewrite the article to improve search traffic potential while preserving factual accuracy, locale, useful product context, and clean Shopify-compatible HTML.",
     prompt: [
@@ -2477,6 +2480,10 @@ function aiTextTimeoutMs(): number {
 
 function aiImageTimeoutMs(): number {
   return parseIntegerEnv("AI_IMAGE_TIMEOUT_MS", parseIntegerEnv("AI_REQUEST_TIMEOUT_MS", 240000));
+}
+
+function aiTextStreamingEnabled(): boolean {
+  return process.env.AI_TEXT_STREAMING?.toLowerCase() !== "false";
 }
 
 async function publishArticle(

@@ -30,6 +30,7 @@ export interface GenerateTextOptions {
   topP?: number;
   responseFormat?: { type: "text" | "json_object" } | Record<string, unknown>;
   stop?: string | string[];
+  stream?: boolean;
   signal?: AbortSignal;
   extraBody?: Record<string, unknown>;
 }
@@ -132,9 +133,13 @@ export class OpenAICompatibleClient {
       top_p: options.topP,
       response_format: options.responseFormat,
       stop: options.stop,
-      stream: false,
+      stream: options.stream === true,
       ...options.extraBody
     });
+
+    if (options.stream === true) {
+      return this.postStreamingChatCompletion("chat/completions", body, options.signal, "OpenAI-compatible request");
+    }
 
     const payload = await this.postJson("chat/completions", body, options.signal, "OpenAI-compatible request");
 
@@ -233,6 +238,69 @@ export class OpenAICompatibleClient {
 
     throw new AIClientError(`${errorLabel} failed.`);
   }
+
+  private async postStreamingChatCompletion(
+    path: string,
+    body: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    errorLabel: string
+  ): Promise<GenerateTextResult> {
+    const bodyJson = JSON.stringify(body);
+    const controller = createAbortController(signal, this.timeoutMs);
+    const operationSignal = controller?.signal ?? signal;
+
+    try {
+      for (let attempt = 0; attempt <= DEFAULT_TRANSIENT_RETRIES; attempt += 1) {
+        throwIfAborted(operationSignal);
+
+        try {
+          const response = await this.fetchImpl(joinUrl(this.baseUrl, path), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${this.apiKey}`,
+              ...this.defaultHeaders
+            },
+            body: bodyJson,
+            signal: operationSignal
+          });
+
+          if (!response.ok) {
+            const payload = await readJson(response);
+            throw new AIClientError(`${errorLabel} failed with HTTP ${response.status}.`, payload, response.status);
+          }
+
+          if (!response.body) {
+            throw new AIClientError(`${errorLabel} streaming response did not include a body.`, undefined, response.status);
+          }
+
+          return await readChatCompletionStream(response.body, {
+            signal: operationSignal,
+            resetTimeout: () => controller?.resetTimeout(),
+            errorLabel
+          });
+        } catch (error) {
+          if (operationSignal?.aborted && controller?.timedOut()) {
+            throw new AIClientError(`${errorLabel} timed out after ${controller.timeoutMs}ms.`, {
+              code: "AI_REQUEST_TIMEOUT",
+              timeoutMs: controller.timeoutMs,
+              stream: true
+            }, 408);
+          }
+
+          if (operationSignal?.aborted || attempt >= DEFAULT_TRANSIENT_RETRIES || !isRetryableAiError(error)) {
+            throw error;
+          }
+
+          await sleep(retryDelay(attempt), operationSignal);
+        }
+      }
+    } finally {
+      controller?.clear();
+    }
+
+    throw new AIClientError(`${errorLabel} failed.`);
+  }
 }
 
 export function createOpenAICompatibleClient(config: OpenAICompatibleClientConfig): OpenAICompatibleClient {
@@ -293,6 +361,117 @@ function parseChatCompletion(payload: unknown): GenerateTextResult {
   };
 }
 
+async function readChatCompletionStream(
+  body: ReadableStream<Uint8Array>,
+  options: {
+    signal?: AbortSignal;
+    resetTimeout: () => void;
+    errorLabel: string;
+  }
+): Promise<GenerateTextResult> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const rawChunks: unknown[] = [];
+  let buffer = "";
+  let content = "";
+  let id: string | undefined;
+  let model: string | undefined;
+  let finishReason: string | undefined;
+  let usage: AIUsage | undefined;
+
+  try {
+    while (true) {
+      throwIfAborted(options.signal);
+      const { value, done } = await reader.read();
+      if (done) break;
+      options.resetTimeout();
+      buffer += decoder.decode(value, { stream: true });
+
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        const data = eventData(event);
+        if (!data) continue;
+        if (data === "[DONE]") {
+          return {
+            id,
+            model,
+            content,
+            finishReason,
+            usage,
+            raw: { stream: true, chunks: rawChunks }
+          };
+        }
+
+        const chunk = parseStreamChunk(data, options.errorLabel);
+        rawChunks.push(chunk);
+        if (!isRecord(chunk)) continue;
+        id = typeof chunk.id === "string" ? chunk.id : id;
+        model = typeof chunk.model === "string" ? chunk.model : model;
+        usage = parseUsage(chunk.usage) ?? usage;
+
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : [];
+        for (const choice of choices) {
+          if (!isRecord(choice)) continue;
+          finishReason = typeof choice.finish_reason === "string" ? choice.finish_reason : finishReason;
+          const delta = isRecord(choice.delta) ? choice.delta : undefined;
+          const message = isRecord(choice.message) ? choice.message : undefined;
+          const deltaContent = typeof delta?.content === "string" ? delta.content : "";
+          const messageContent = typeof message?.content === "string" ? message.content : "";
+          content += deltaContent || messageContent;
+        }
+      }
+    }
+
+    const tail = decoder.decode();
+    if (tail) buffer += tail;
+    const data = eventData(buffer);
+    if (data && data !== "[DONE]") {
+      const chunk = parseStreamChunk(data, options.errorLabel);
+      rawChunks.push(chunk);
+      if (isRecord(chunk)) {
+        id = typeof chunk.id === "string" ? chunk.id : id;
+        model = typeof chunk.model === "string" ? chunk.model : model;
+        usage = parseUsage(chunk.usage) ?? usage;
+      }
+    }
+
+    return {
+      id,
+      model,
+      content,
+      finishReason,
+      usage,
+      raw: { stream: true, chunks: rawChunks }
+    };
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function eventData(event: string): string {
+  return event
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith("data:"))
+    .map((line) => line.replace(/^data:\s?/, ""))
+    .join("\n")
+    .trim();
+}
+
+function parseStreamChunk(data: string, errorLabel: string): unknown {
+  try {
+    const payload = JSON.parse(data) as unknown;
+    if (isRecord(payload) && payload.error) {
+      const message = isRecord(payload.error) && typeof payload.error.message === "string" ? payload.error.message : `${errorLabel} streaming response returned an error.`;
+      throw new AIClientError(message, payload);
+    }
+    return payload;
+  } catch (error) {
+    if (error instanceof AIClientError) throw error;
+    throw new AIClientError(`${errorLabel} streaming response was not valid JSON.`, { error, data });
+  }
+}
+
 function parseImageGeneration(payload: unknown, model: string): GenerateImageResult {
   if (!isRecord(payload)) {
     throw new AIClientError("OpenAI-compatible image response was not an object.", payload);
@@ -321,6 +500,7 @@ function parseImageGeneration(payload: unknown, model: string): GenerateImageRes
 
 type TimedAbortController = AbortController & {
   clear: () => void;
+  resetTimeout: () => void;
   timedOut: () => boolean;
   timeoutMs?: number;
 };
@@ -330,13 +510,18 @@ function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): 
 
   const controller = new AbortController() as TimedAbortController;
   let timedOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   controller.timeoutMs = timeoutMs;
-  const timeout = timeoutMs
-    ? setTimeout(() => {
+  const scheduleTimeout = () => {
+    if (timeout) clearTimeout(timeout);
+    timeout = timeoutMs
+      ? setTimeout(() => {
         timedOut = true;
         controller.abort();
       }, timeoutMs)
-    : undefined;
+      : undefined;
+  };
+  scheduleTimeout();
   const abort = () => controller.abort();
   if (parentSignal?.aborted) {
     controller.abort();
@@ -346,6 +531,10 @@ function createAbortController(parentSignal?: AbortSignal, timeoutMs?: number): 
   controller.clear = () => {
     if (timeout) clearTimeout(timeout);
     parentSignal?.removeEventListener("abort", abort);
+  };
+  controller.resetTimeout = () => {
+    timedOut = false;
+    scheduleTimeout();
   };
   controller.timedOut = () => timedOut;
   return controller;
@@ -393,6 +582,15 @@ function stripJsonFence(content: string): string {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined;
+}
+
+function parseUsage(value: unknown): AIUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    promptTokens: asNumber(value.prompt_tokens),
+    completionTokens: asNumber(value.completion_tokens),
+    totalTokens: asNumber(value.total_tokens)
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
