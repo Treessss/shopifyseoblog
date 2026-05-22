@@ -89,6 +89,7 @@ export const defaultPromptBuilder: PromptBuilder = {
     const internalLinks = internalLinkInstruction(context);
     const externalReferences = externalReferenceInstruction(context, keywords, input.locale);
     const imageBrief = imagePromptInstruction(context);
+    const memoryGuidance = memoryGuidanceInstruction(context);
 
     const system = [
       `Write in ${language}.`,
@@ -107,6 +108,7 @@ export const defaultPromptBuilder: PromptBuilder = {
         `Primary keyword: ${keywords.primaryKeyword}.`,
         `Secondary keywords: ${keywords.secondaryKeywords.join(", ")}.`,
         keywords.evidence?.length ? `Keyword evidence: ${keywords.evidence.join(" | ")}.` : "",
+        memoryGuidance,
         `Target length: ${input.targetWordCount} words.`,
         "Return title, summary, H2 sections, shopper intent, FAQs, and image alt text."
       ]
@@ -122,6 +124,7 @@ export const defaultPromptBuilder: PromptBuilder = {
         trendContext,
         internalLinks,
         externalReferences,
+        memoryGuidance,
         imageBrief
       ]
         .filter(Boolean)
@@ -706,6 +709,16 @@ function externalReferenceInstruction(context: ContentSourceContext, keywords: K
       `- ${reference.title} (${reference.source}): ${reference.url}${reference.reason ? ` — ${reference.reason}` : ""}`
     ),
     "Citations must support search intent, trend context, or factual background. Place them in natural sentences and keep the final reference section."
+  ].join("\n");
+}
+
+function memoryGuidanceInstruction(context: ContentSourceContext): string {
+  const guidance = context.memoryStrategy?.guidance.slice(0, 5) ?? [];
+  if (guidance.length === 0) return "";
+
+  return [
+    "Private performance guidance to follow; do not mention these constraints in the article:",
+    ...guidance.map((item) => `- ${item.instruction}`)
   ].join("\n");
 }
 

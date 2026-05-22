@@ -3,7 +3,7 @@ import {
   buildKeywordEvidence,
   selectTopicCandidate
 } from "./components";
-import { buildTopicMemorySnapshot, memoryWarnings } from "./memory";
+import { buildMemoryStrategy, buildTopicMemorySnapshot } from "./memory";
 import { planAgentTools } from "./planner";
 import { defaultContentPipelineRegistry, mergeInputSeedKeywords, normalizePipelineInput, runContentPipeline } from "./registry";
 import { buildCommercialSkillDoctrine } from "./skill-doctrine";
@@ -11,6 +11,7 @@ import { discoverTrendSignals } from "./trends";
 import type {
   AgentContentPipelineArtifacts,
   AgentContentPipelineResult,
+  AgentMemoryStrategy,
   AgentReflectionTaskDraft,
   AgentRole,
   AgentRunStage,
@@ -37,7 +38,7 @@ import type {
   TrendSignal
 } from "./types";
 
-const SEO_AGENT_VERSION = "seo-agent-commercial-1.1.0";
+const SEO_AGENT_VERSION = "seo-agent-commercial-1.2.0";
 
 export async function runAgentContentPipeline(
   input: ContentPipelineInput,
@@ -168,17 +169,19 @@ export async function runAgentContentPipeline(
   const topicStageStart = nowIso();
   const topicSelection = context.topicSelection ?? selectTopicCandidate({ ...normalized, primaryKeyword: normalized.primaryKeyword ?? keywordStrategy.primaryKeyword }, researchContext);
   const topicSelectionV2 = buildTopicSelectionV2(topicSelection, keywordStrategy, researchContext);
+  const memoryStrategy = buildMemoryStrategy(baseContext, topicSelectionV2.selected);
   const minOpportunityScore = normalized.generationConfig?.seoAgent?.minOpportunityScore ?? 70;
   const opportunityWarnings =
     topicSelectionV2.selected.scoring.opportunity < minOpportunityScore
       ? [`Selected topic opportunity score ${topicSelectionV2.selected.scoring.opportunity} is below configured minimum ${minOpportunityScore}.`]
       : [];
-  const topicWarnings = [...opportunityWarnings, ...memoryWarnings(baseContext.agentMemories, topicSelectionV2.selected)];
+  const topicWarnings = [...opportunityWarnings, ...memoryStrategy.warnings];
   const topicContext = {
     ...researchContext,
     topic: topicSelectionV2.selected.topic,
     topicSelection,
-    keywordEvidence: topicSelectionV2.selected.evidence
+    keywordEvidence: topicSelectionV2.selected.evidence,
+    memoryStrategy
   } satisfies ContentSourceContext;
   toolCalls.push(
     traceToolCall(
@@ -192,6 +195,25 @@ export async function runAgentContentPipeline(
       },
       topicSelectionV2.selected.evidence,
       topicWarnings
+    ),
+    traceToolCall(
+      findPlan(toolPlan, "memory_strategy"),
+      topicStageStart,
+      {
+        memoryCount: baseContext.agentMemories?.length ?? 0,
+        recentTopicCount: baseContext.recentTopics?.length ?? 0,
+        selectedTopic: topicSelectionV2.selected.topic,
+        selectedAngle: topicSelectionV2.selected.agent?.angleKey
+      },
+      {
+        riskScore: memoryStrategy.riskScore,
+        recommendationCount: memoryStrategy.recommendations.length,
+        guidanceCount: memoryStrategy.guidance.length,
+        blockedAngles: memoryStrategy.blockedAngles,
+        recommendations: memoryStrategy.recommendations
+      },
+      [],
+      memoryStrategy.warnings
     )
   );
   stages.push(
@@ -221,6 +243,7 @@ export async function runAgentContentPipeline(
         outlineCount: contentBrief.outline.length,
         internalLinkCount: contentBrief.internalLinkPlan.length,
         externalCitationCount: contentBrief.externalCitationPlan.length,
+        memoryGuidanceCount: contentBrief.memoryGuidance.length,
         requiredModules: skillDoctrine.requiredArticleModules
       },
       topicSelectionV2.selected.evidence,
@@ -332,7 +355,7 @@ export async function runAgentContentPipeline(
   );
 
   const finishedAt = nowIso();
-  const memory = buildTopicMemorySnapshot(baseContext, topicSelectionV2.selected);
+  const memory = buildTopicMemorySnapshot(topicContext, topicSelectionV2.selected);
   const agentRun: SeoAgentRun = {
     runId,
     agentVersion: SEO_AGENT_VERSION,
@@ -601,6 +624,7 @@ function buildContentBrief(
     source: reference.source,
     placement: index === 0 ? "answer or evidence section" : "supporting context or reference section"
   }));
+  const memoryGuidance = (context.memoryStrategy?.guidance ?? []).slice(0, 6);
 
   return {
     titleDirection: topicSelection.selected.topic,
@@ -616,10 +640,12 @@ function buildContentBrief(
       alt: draft.imageAlt ?? keywords.primaryKeyword,
       references: imageReferences
     },
+    memoryGuidance,
     claimsPolicy: [
       "Use trend/news signals only as editorial angles, not as unsupported claims.",
       "Use Shopify product facts as the source of product-specific truth.",
-      "Do not invent discounts, availability, materials, certifications, or compatibility details."
+      "Do not invent discounts, availability, materials, certifications, or compatibility details.",
+      ...(memoryGuidance.length ? ["Follow long-term memory guidance so the article does not repeat failed topics, weak keyword patterns, or stale guide formulas."] : [])
     ]
   };
 }
@@ -642,6 +668,7 @@ function buildReflectionReport(
     return !body.includes(item.value.toLowerCase().slice(0, 28));
   });
   const unsupportedClaims = unsupportedClaimSignals(body, context.trendSignals ?? []);
+  const memoryViolations = memoryComplianceViolations(article.title, body, context.memoryStrategy);
   const revisions: ReflectionReport["revisions"] = [];
 
   if (pipelineResult.artifacts.seo.score < (pipelineResult.artifacts.quality.minSeoScore ?? 78)) {
@@ -669,9 +696,20 @@ function buildReflectionReport(
       instruction: `Re-run topic research or choose a stronger candidate because opportunity score ${topicSelection.selected.scoring.opportunity} is below ${minOpportunityScore}.`
     });
   }
+  if (memoryViolations.length > 0) {
+    revisions.push({
+      priority: context.memoryStrategy && context.memoryStrategy.riskScore >= 75 ? "P0" : "P1",
+      instruction: `Revise against long-term agent memory: ${memoryViolations.slice(0, 2).join(" ")}`
+    });
+  }
 
   const factualityPassed = unsupportedClaims.length === 0;
-  const passed = pipelineResult.artifacts.quality.passed && factualityPassed && revisions.filter((revision) => revision.priority === "P0").length === 0;
+  const memoryPassed = memoryViolations.length === 0;
+  const passed =
+    pipelineResult.artifacts.quality.passed &&
+    factualityPassed &&
+    memoryPassed &&
+    revisions.filter((revision) => revision.priority === "P0").length === 0;
   const publishDecision = !passed && revisions.some((revision) => revision.priority === "P0") ? "reject" : passed && revisions.length === 0 ? "ready" : "revise";
 
   return {
@@ -686,6 +724,11 @@ function buildReflectionReport(
     briefCompliance: {
       missingEvidenceIds,
       missingLinks
+    },
+    memoryCompliance: {
+      passed: memoryPassed,
+      violations: memoryViolations,
+      appliedGuidance: brief.memoryGuidance.map((item) => item.instruction)
     },
     revisions,
     summary: passed
@@ -746,7 +789,9 @@ function traceToolCall(
     input,
     output,
     evidence: evidence.slice(0, 12),
+    evidenceIds: evidence.slice(0, 12).map(evidenceId),
     warnings,
+    decisionSummary: summarizeToolDecision(plan?.toolName ?? "ad_hoc_tool", output, warnings),
     startedAt,
     finishedAt,
     latencyMs: Math.max(0, new Date(finishedAt).getTime() - new Date(startedAt).getTime())
@@ -755,6 +800,17 @@ function traceToolCall(
 
 function findPlan(toolPlan: AgentToolPlan[], toolName: string): AgentToolPlan | undefined {
   return toolPlan.find((plan) => plan.toolName === toolName);
+}
+
+function summarizeToolDecision(toolName: string, output: unknown, warnings: string[]): string {
+  if (warnings.length > 0) return `${toolName} completed with ${warnings.length} warning(s).`;
+  if (!isRecord(output)) return `${toolName} completed.`;
+  if (typeof output.selectedTopic === "string") return `Selected topic: ${output.selectedTopic}.`;
+  if (typeof output.primaryKeyword === "string") return `Primary keyword: ${output.primaryKeyword}.`;
+  if (typeof output.publishDecision === "string") return `Publish decision: ${output.publishDecision}.`;
+  if (typeof output.riskScore === "number") return `Memory risk score: ${output.riskScore}.`;
+  if (typeof output.externalReferenceCount === "number") return `Approved ${output.externalReferenceCount} external reference(s).`;
+  return `${toolName} completed.`;
 }
 
 function buildReflectionTasks(reflection: ReflectionReport, evidence: KeywordEvidenceItem[]): AgentReflectionTaskDraft[] {
@@ -769,6 +825,29 @@ function buildReflectionTasks(reflection: ReflectionReport, evidence: KeywordEvi
     evidenceIds: evidence.slice(0, 6).map(evidenceId),
     status: "open"
   }));
+}
+
+function memoryComplianceViolations(title: string, body: string, strategy: AgentMemoryStrategy | undefined): string[] {
+  if (!strategy?.guidance.length) return [];
+
+  const text = `${title} ${body}`.toLowerCase();
+  const violations: string[] = [];
+  for (const guidance of strategy.guidance) {
+    if (guidance.priority === "P2") continue;
+    if (guidance.source === "avoid_window") {
+      violations.push("Selected angle is still inside an active avoid window; the draft needs a materially different framing before publish.");
+      continue;
+    }
+    if (guidance.source === "failed_keyword" && guidance.evidence && tokenOverlap(tokenize(text), tokenize(guidance.evidence)) >= 0.45) {
+      violations.push(`Draft still leans on a previously weak keyword/topic pattern: ${guidance.evidence}.`);
+      continue;
+    }
+    if (guidance.source === "recent_topic" && guidance.evidence && tokenOverlap(tokenize(title), tokenize(guidance.evidence)) >= 0.45) {
+      violations.push(`Title remains too close to a recent topic: ${guidance.evidence}.`);
+    }
+  }
+
+  return Array.from(new Set(violations)).slice(0, 4);
 }
 
 function buildMarketInsights(signals: TrendSignal[], evidence: KeywordEvidenceItem[]) {
@@ -893,6 +972,10 @@ function stripHtml(html: string): string {
 
 function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
   return values.find((value) => Boolean(value?.trim()))?.trim();
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isExternalUrl(value: string | undefined): value is string {

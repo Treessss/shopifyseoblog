@@ -39,7 +39,9 @@ export function planAgentTools(
       "keyword_evidence_builder",
       "Build keyword clusters from seed terms, catalog facts, trend signals, and available internal links.",
       true,
-      ["research.evidence"]
+      ["research.evidence"],
+      ["product", "collection", "seed_keyword", "trend", "internal_link"],
+      ["Primary keyword has evidence", "Cluster covers primary demand and long-tail buyer questions"]
     ),
     toolPlan(
       "research",
@@ -47,7 +49,9 @@ export function planAgentTools(
       "external_citation_planner",
       "Select approved external references from trend evidence and demand sources so every article cites real sources.",
       true,
-      ["trendSignals", "keywordStrategy", "generationConfig.externalReferences"]
+      ["trendSignals", "keywordStrategy", "generationConfig.externalReferences"],
+      ["external_reference", "trend"],
+      ["Only approved real URLs are used", "At least the configured minimum citation count is available when enabled"]
     ),
     toolPlan(
       "topic_selection",
@@ -55,7 +59,19 @@ export function planAgentTools(
       "topic_opportunity_ranker",
       "Rank topic candidates by impact, confidence, novelty, commerce fit, and memory risk.",
       true,
-      ["keywordStrategy", "agentMemories", "recentTopics"]
+      ["keywordStrategy", "agentMemories", "recentTopics"],
+      ["product", "collection", "seed_keyword", "trend", "internal_link"],
+      ["Opportunity score meets configured floor", "Selected angle is not a stale repetition"]
+    ),
+    toolPlan(
+      "topic_selection",
+      "topic_strategist",
+      "memory_strategy",
+      "Convert long-term agent memory into concrete topic, brief, and revision constraints.",
+      true,
+      ["agentMemories", "recentTopics", "topicSelection.selected"],
+      [],
+      ["Active avoid windows are respected", "Failed keyword patterns are transformed into actionable differentiation rules"]
     ),
     toolPlan(
       "content_brief",
@@ -63,7 +79,9 @@ export function planAgentTools(
       "content_brief_builder",
       "Create an evidence-backed article brief with required modules, links, image references, and claims policy.",
       true,
-      ["topicSelection", "skillDoctrine"]
+      ["topicSelection", "skillDoctrine", "memoryStrategy"],
+      ["product", "collection", "trend", "internal_link", "external_reference"],
+      ["Brief includes evidence, citations, internal links, image direction, and memory guidance"]
     ),
     toolPlan(
       "draft_generation",
@@ -71,7 +89,9 @@ export function planAgentTools(
       "article_generator",
       "Generate Shopify-compatible HTML from the brief while avoiding reusable guide templates.",
       true,
-      ["contentBrief", "skillDoctrine"]
+      ["contentBrief", "skillDoctrine"],
+      ["product", "collection", "trend", "internal_link", "external_reference"],
+      ["Article follows the brief", "Article avoids exposed SEO/prompt language and repeated template phrasing"]
     ),
     toolPlan(
       "quality_reflection",
@@ -79,11 +99,13 @@ export function planAgentTools(
       "expert_panel_reflection",
       "Score the draft against SEO, information gain, evidence, structure, internal links, and editorial rhythm.",
       true,
-      ["article", "qualityGate", "skillDoctrine"]
+      ["article", "qualityGate", "skillDoctrine", "memoryStrategy"],
+      ["product", "collection", "trend", "internal_link", "external_reference"],
+      ["Revision tasks are specific", "Memory guidance and evidence compliance are checked before publish"]
     )
   );
 
-  if (context.generationConfig?.imageGeneration?.enabled !== false) {
+  if (input.generationConfig?.imageGeneration?.enabled !== false) {
     plans.push(
       toolPlan(
         "draft_generation",
@@ -91,7 +113,9 @@ export function planAgentTools(
         "image_prompt_director",
         "Create a product-image-grounded scene prompt for generated blog imagery.",
         false,
-        ["imageReferences", "contentBrief"]
+        ["imageReferences", "contentBrief"],
+        ["product", "collection"],
+        ["Prompt uses available product image references", "Prompt names scene, composition, lighting, and exclusions"]
       )
     );
   }
@@ -105,7 +129,9 @@ function toolPlan(
   toolName: string,
   purpose: string,
   required: boolean,
-  inputRefs: string[]
+  inputRefs: string[],
+  requiredEvidenceTypes: AgentToolPlan["requiredEvidenceTypes"] = [],
+  decisionCriteria: string[] = []
 ): AgentToolPlan {
   return {
     id: `plan-${hashStable(`${stage}:${agentRole}:${toolName}:${purpose}`).toString(36)}`,
@@ -115,7 +141,9 @@ function toolPlan(
     purpose,
     required,
     inputRefs,
-    expectedOutput: `${toolName} evidence or decision artifact`
+    expectedOutput: `${toolName} evidence or decision artifact`,
+    requiredEvidenceTypes,
+    decisionCriteria
   };
 }
 

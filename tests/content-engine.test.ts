@@ -460,6 +460,58 @@ describe("content engine", () => {
     expect(result.artifacts.agentRun.memory.learnedRules.join(" ")).toContain("Avoid another scenario-fit");
     expect(result.artifacts.agentRun.memory.performanceSignals[0]?.outcome).toBe("failed");
     expect(result.artifacts.agentRun.toolCalls.some((call) => call.toolName === "topic_opportunity_ranker")).toBe(true);
+    expect(result.artifacts.agentRun.toolCalls.some((call) => call.toolName === "memory_strategy")).toBe(true);
+    expect(result.artifacts.agentRun.memory.recommendations.join(" ")).toMatch(/new search intent|sharper comparison|different shopper scenario|different angle/i);
+    expect(result.artifacts.contentBrief.memoryGuidance.length).toBeGreaterThan(0);
+    expect(result.artifacts.reflection.memoryCompliance.appliedGuidance.length).toBeGreaterThan(0);
+    expect(result.stages.find((stage) => stage.stage === "topic_selection")?.status).toBe("warning");
+  });
+
+  it("keeps memory strategy evidence and decision traces auditable", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Style",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["clear phone case"],
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", minOpportunityScore: 50 },
+          topicDiscovery: { enabled: true, maxCandidates: 3 },
+          imageGeneration: { enabled: false }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/8",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe"],
+          imageUrls: []
+        },
+        agentMemories: [
+          {
+            keyword: "clear phone case",
+            angleKey: "scenario_fit",
+            outcome: "success",
+            confidence: 91,
+            learnedRule: "Reuse scenario-fit articles only with a fresh buying moment."
+          }
+        ]
+      }
+    );
+
+    const memoryCall = result.artifacts.agentRun.toolCalls.find((call) => call.toolName === "memory_strategy");
+    const keywordCall = result.artifacts.agentRun.toolCalls.find((call) => call.toolName === "keyword_evidence_builder");
+
+    expect(result.artifacts.agentRun.toolPlan.find((plan) => plan.toolName === "memory_strategy")?.decisionCriteria?.length).toBeGreaterThan(0);
+    expect(result.artifacts.agentRun.toolPlan.some((plan) => plan.toolName === "image_prompt_director")).toBe(false);
+    expect(memoryCall?.decisionSummary).toContain("Memory risk score");
+    expect(memoryCall?.output).toMatchObject({ recommendationCount: expect.any(Number), guidanceCount: expect.any(Number) });
+    expect(keywordCall?.evidenceIds?.length).toBeGreaterThan(0);
+    expect(result.artifacts.agentRun.memory.reusePatterns[0]?.instruction).toContain("successful");
   });
 
   it("enforces the configured minimum topic opportunity score in the SEO agent", async () => {

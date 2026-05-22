@@ -144,6 +144,7 @@ export interface ContentSourceContext {
   topicSelection?: TopicSelectionResult;
   recentTopics?: TopicHistoryItem[];
   agentMemories?: AgentMemorySignal[];
+  memoryStrategy?: AgentMemoryStrategy;
   generationConfig?: GenerationConfig;
 }
 
@@ -297,6 +298,8 @@ export interface AgentToolPlan {
   required: boolean;
   inputRefs: string[];
   expectedOutput: string;
+  requiredEvidenceTypes?: KeywordEvidenceItem["type"][];
+  decisionCriteria?: string[];
 }
 
 export interface AgentToolCallTrace {
@@ -310,7 +313,9 @@ export interface AgentToolCallTrace {
   input?: unknown;
   output?: unknown;
   evidence: KeywordEvidenceItem[];
+  evidenceIds?: string[];
   warnings: string[];
+  decisionSummary?: string;
   startedAt: string;
   finishedAt: string;
   latencyMs: number;
@@ -420,6 +425,7 @@ export interface ContentBrief {
   internalLinkPlan: Array<{ url: string; anchor: string; placement: string }>;
   externalCitationPlan: Array<{ url: string; title: string; source: string; placement: string }>;
   imageBrief?: { prompt: string; alt: string; references: ImageReference[] };
+  memoryGuidance: AgentMemoryGuidance[];
   claimsPolicy: string[];
 }
 
@@ -430,8 +436,37 @@ export interface ReflectionReport {
   editorial?: EditorialQualityResult;
   factuality: { passed: boolean; unsupportedClaims: string[] };
   briefCompliance: { missingEvidenceIds: string[]; missingLinks: string[] };
+  memoryCompliance: { passed: boolean; violations: string[]; appliedGuidance: string[] };
   revisions: Array<{ priority: "P0" | "P1" | "P2"; instruction: string }>;
   summary: string;
+}
+
+export interface AgentMemoryGuidance {
+  priority: "P0" | "P1" | "P2";
+  source: "avoid_window" | "failed_keyword" | "recent_topic" | "success_pattern" | "learned_rule";
+  instruction: string;
+  reason: string;
+  evidence?: string;
+}
+
+export interface AgentMemoryMatchedSignal {
+  type: AgentMemoryGuidance["source"];
+  keyword?: string;
+  topic?: string;
+  angleKey?: string;
+  outcome?: AgentMemorySignal["outcome"];
+  confidence: number;
+  severity: "low" | "medium" | "high";
+}
+
+export interface AgentMemoryStrategy {
+  warnings: string[];
+  recommendations: string[];
+  guidance: AgentMemoryGuidance[];
+  riskScore: number;
+  blockedAngles: string[];
+  reusePatterns: Array<{ keyword?: string; angleKey?: string; instruction: string; confidence: number }>;
+  matchedSignals: AgentMemoryMatchedSignal[];
 }
 
 export interface TopicMemorySnapshot {
@@ -441,7 +476,11 @@ export interface TopicMemorySnapshot {
   lastTopics: string[];
   learnedRules: string[];
   blockedAngles: string[];
+  recommendations: string[];
+  riskScore: number;
+  reusePatterns: AgentMemoryStrategy["reusePatterns"];
   performanceSignals: Array<{ keyword?: string; angleKey?: string; outcome: AgentMemorySignal["outcome"]; confidence: number }>;
+  matchedSignals: AgentMemoryMatchedSignal[];
 }
 
 export interface SeoAgentRun {
