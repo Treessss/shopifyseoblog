@@ -8,6 +8,7 @@ import {
   runAgentContentPipeline,
   runContentPipeline,
   type AgentContentPipelineResult,
+  type AgentRole,
   buildCommercialSkillDoctrine,
   type AgentMemorySignal,
   type ContentPipelineResult,
@@ -4601,9 +4602,15 @@ async function persistAgentRuntimeArtifacts(input: {
   agentRun: AgentContentPipelineResult["artifacts"]["agentRun"];
 }) {
   await Promise.all([
+    prisma.agentStep.deleteMany({ where: { topicRunId: input.runId } }),
     prisma.agentToolCall.deleteMany({ where: { topicRunId: input.runId } }),
     prisma.agentReflectionTask.deleteMany({ where: { topicRunId: input.runId } })
   ]);
+
+  const stepRows = buildAgentStepRows(input);
+  if (stepRows.length > 0) {
+    await prisma.agentStep.createMany({ data: stepRows });
+  }
 
   if (input.agentRun.toolCalls.length > 0) {
     await prisma.agentToolCall.createMany({
@@ -4732,6 +4739,157 @@ async function persistAgentRuntimeArtifacts(input: {
   } else {
     await prisma.agentMemory.create({ data: memoryData });
   }
+}
+
+export interface AgentStepPersistenceRow {
+  organizationId: string;
+  storeId: string;
+  topicRunId: string;
+  campaignId?: string | null;
+  articleId: string;
+  runId: string;
+  sequence: number;
+  stepType: "stage" | "tool_call" | "reflection_task";
+  stepKey: string;
+  stage?: string | null;
+  agentRole?: AgentRole | null;
+  status: "passed" | "warning" | "failed" | "skipped";
+  title: string;
+  summary?: string | null;
+  decision?: string | null;
+  input?: ReturnType<typeof toPrismaJson>;
+  output?: ReturnType<typeof toPrismaJson>;
+  evidence?: ReturnType<typeof toPrismaJson>;
+  evidenceIds: string[];
+  warnings: string[];
+  error?: string | null;
+  startedAt?: Date;
+  completedAt?: Date;
+  latencyMs?: number | null;
+  metadata?: ReturnType<typeof toPrismaJson>;
+}
+
+export function buildAgentStepRows(input: {
+  runId: string;
+  agentRunId: string;
+  articleId: string;
+  campaignId?: string;
+  organizationId: string;
+  storeId: string;
+  locale: SupportedLocale;
+  agentRun: AgentContentPipelineResult["artifacts"]["agentRun"];
+}): AgentStepPersistenceRow[] {
+  const rows: Array<Omit<AgentStepPersistenceRow, "sequence"> & { sortTime?: number; sortRank: number }> = [];
+
+  for (const stage of input.agentRun.stages) {
+    rows.push({
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      topicRunId: input.runId,
+      campaignId: input.campaignId ?? null,
+      articleId: input.articleId,
+      runId: input.agentRunId,
+      stepType: "stage",
+      stepKey: stage.id,
+      stage: stage.stage,
+      agentRole: stage.agentRole,
+      status: stage.status,
+      title: readableAgentStepTitle("stage", stage.stage, stage.agentRole),
+      summary: stage.decision ?? null,
+      decision: stage.decision ?? null,
+      input: toPrismaJson(stage.input ?? null),
+      output: toPrismaJson(stage.output ?? null),
+      evidence: toPrismaJson(stage.evidence),
+      evidenceIds: stage.evidence.map((evidence) => agentEvidenceHash(input.locale, evidence)),
+      warnings: stage.warnings,
+      startedAt: dateValue(stage.startedAt),
+      completedAt: dateValue(stage.finishedAt),
+      metadata: toPrismaJson({
+        inputRefs: stage.inputRefs ?? [],
+        outputRefs: stage.outputRefs ?? [],
+        toolCallIds: stage.toolCallIds ?? [],
+        agentVersion: stage.agentVersion
+      }),
+      sortTime: dateValue(stage.startedAt)?.getTime(),
+      sortRank: 0
+    });
+  }
+
+  for (const call of input.agentRun.toolCalls) {
+    rows.push({
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      topicRunId: input.runId,
+      campaignId: input.campaignId ?? null,
+      articleId: input.articleId,
+      runId: input.agentRunId,
+      stepType: "tool_call",
+      stepKey: call.id,
+      stage: call.stage,
+      agentRole: call.agentRole,
+      status: call.status,
+      title: readableAgentStepTitle("tool_call", call.toolName, call.agentRole),
+      summary: call.decisionSummary ?? call.purpose,
+      decision: call.decisionSummary ?? null,
+      input: toPrismaJson(call.input ?? null),
+      output: toPrismaJson(call.output ?? null),
+      evidence: toPrismaJson(call.evidence),
+      evidenceIds: call.evidenceIds ?? call.evidence.map((evidence) => agentEvidenceHash(input.locale, evidence)),
+      warnings: call.warnings,
+      startedAt: dateValue(call.startedAt),
+      completedAt: dateValue(call.finishedAt),
+      latencyMs: call.latencyMs,
+      metadata: toPrismaJson({
+        planId: call.planId,
+        purpose: call.purpose
+      }),
+      sortTime: dateValue(call.startedAt)?.getTime(),
+      sortRank: 1
+    });
+  }
+
+  for (const [index, task] of input.agentRun.reflectionTasks.entries()) {
+    const status = task.status === "resolved" ? "passed" : task.priority === "P0" ? "failed" : "warning";
+    rows.push({
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      topicRunId: input.runId,
+      campaignId: input.campaignId ?? null,
+      articleId: input.articleId,
+      runId: input.agentRunId,
+      stepType: "reflection_task",
+      stepKey: `reflection-${index + 1}-${hashString(task.instruction).toString(36)}`,
+      stage: "quality_reflection",
+      agentRole: task.agentRole,
+      status,
+      title: `反思任务 ${index + 1}: ${task.priority}`,
+      summary: task.instruction,
+      decision: task.acceptanceCheck,
+      input: toPrismaJson({ priority: task.priority, evidenceIds: task.evidenceIds }),
+      output: toPrismaJson({ status: task.status, acceptanceCheck: task.acceptanceCheck }),
+      evidence: toPrismaJson([]),
+      evidenceIds: task.evidenceIds,
+      warnings: task.status === "open" ? [task.instruction] : [],
+      startedAt: dateValue(input.agentRun.finishedAt),
+      completedAt: task.status === "resolved" ? dateValue(input.agentRun.finishedAt) : undefined,
+      metadata: toPrismaJson({ source: "seo_agent_reflection" }),
+      sortTime: (dateValue(input.agentRun.finishedAt)?.getTime() ?? 0) + index,
+      sortRank: 2
+    });
+  }
+
+  return rows
+    .sort((left, right) => (left.sortTime ?? 0) - (right.sortTime ?? 0) || left.sortRank - right.sortRank)
+    .map(({ sortTime: _sortTime, sortRank: _sortRank, ...row }, index) => ({
+      ...row,
+      sequence: index + 1
+    }));
+}
+
+function readableAgentStepTitle(type: AgentStepPersistenceRow["stepType"], name: string, role?: string): string {
+  if (type === "stage") return `${name} · ${role ?? "agent"}`;
+  if (type === "tool_call") return `工具调用 · ${name}`;
+  return name;
 }
 
 export function buildAgentMemoryPersistenceData(input: {

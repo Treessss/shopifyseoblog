@@ -624,6 +624,16 @@ function mapArticle(article: ArticleRow): AdminArticleOverview {
 }
 
 function mapArticleReview(article: ArticleReviewRow, timezone: string): AdminArticleReviewOverview {
+  const generationMetadata = summarizeGenerationMetadata(article.generationMetadata);
+  const structuredAgentTrace = summarizeStructuredAgentTrace(article, timezone);
+  const enrichedGenerationMetadata =
+    structuredAgentTrace
+      ? {
+          ...(generationMetadata ?? {}),
+          structuredAgentTrace
+        }
+      : generationMetadata;
+
   return {
     ...mapArticle(article),
     summary: article.summary,
@@ -637,9 +647,80 @@ function mapArticleReview(article: ArticleReviewRow, timezone: string): AdminArt
     scheduledAt: toIso(article.scheduledAt),
     lastGeneratedAt: toIso(article.lastGeneratedAt),
     qualityReport: article.qualityReport,
-    generationMetadata: summarizeGenerationMetadata(article.generationMetadata),
+    generationMetadata: enrichedGenerationMetadata,
     assets: article.assets.map(mapArticleAsset),
     logs: article.publishLogs.map((log) => mapPublishLog(log, timezone))
+  };
+}
+
+function summarizeStructuredAgentTrace(article: ArticleReviewRow, timezone: string) {
+  const run = article.seoTopicRuns[0];
+  if (!run) return null;
+
+  return {
+    runId: run.runId,
+    status: run.status,
+    agentVersion: run.agentVersion,
+    objective: run.objective,
+    selectedTopic: run.selectedTopic,
+    startedAt: toIso(run.startedAt),
+    completedAt: toIso(run.completedAt),
+    stepCount: run.steps.length,
+    toolCallCount: run.toolCalls.length,
+    reflectionTaskCount: run.reflectionTasks.length,
+    evidenceCount: run.evidenceItems.length,
+    steps: run.steps.map((step) => ({
+      id: step.id,
+      sequence: step.sequence,
+      type: step.stepType,
+      key: step.stepKey,
+      stage: step.stage,
+      agentRole: step.agentRole,
+      status: step.status,
+      title: step.title,
+      summary: step.summary,
+      decision: step.decision,
+      warnings: step.warnings,
+      evidenceIds: step.evidenceIds,
+      startedAt: toIso(step.startedAt),
+      completedAt: toIso(step.completedAt),
+      time: step.startedAt ? formatClock(step.startedAt, timezone) : null,
+      latencyMs: step.latencyMs,
+      metadata: step.metadata
+    })),
+    toolCalls: run.toolCalls.map((call) => ({
+      id: call.id,
+      stage: call.stage,
+      agentRole: call.agentRole,
+      toolName: call.toolName,
+      status: call.status,
+      warnings: call.warnings,
+      startedAt: toIso(call.startedAt),
+      completedAt: toIso(call.completedAt),
+      latencyMs: call.latencyMs,
+      metadata: call.metadata
+    })),
+    reflectionTasks: run.reflectionTasks.map((task) => ({
+      id: task.id,
+      priority: task.priority,
+      agentRole: task.agentRole,
+      instruction: task.instruction,
+      acceptanceCheck: task.acceptanceCheck,
+      status: task.status,
+      evidenceIds: task.evidenceIds,
+      createdAt: task.createdAt.toISOString(),
+      resolvedAt: toIso(task.resolvedAt)
+    })),
+    evidence: run.evidenceItems.map((evidence) => ({
+      id: evidence.id,
+      type: evidence.evidenceType,
+      source: evidence.source,
+      value: evidence.value,
+      url: evidence.url,
+      confidence: evidence.confidence,
+      relevanceScore: evidence.relevanceScore,
+      createdAt: evidence.createdAt.toISOString()
+    }))
   };
 }
 

@@ -214,6 +214,7 @@ model Organization {
   agentToolCalls       AgentToolCall[]
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
+  agentSteps           AgentStep[]
 
   @@index([status])
 }
@@ -295,6 +296,7 @@ model ShopifyStore {
   agentToolCalls       AgentToolCall[]
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
+  agentSteps           AgentStep[]
 
   @@index([organizationId, status])
 }
@@ -403,6 +405,7 @@ model BlogCampaign {
   agentToolCalls       AgentToolCall[]
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
+  agentSteps           AgentStep[]
 
   @@index([organizationId, status])
   @@index([storeId, locale, status])
@@ -454,6 +457,7 @@ model BlogArticle {
   agentToolCalls       AgentToolCall[]
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
+  agentSteps           AgentStep[]
 
   @@unique([storeId, locale, handle])
   @@index([organizationId, status])
@@ -497,6 +501,7 @@ model SeoTopicRun {
   toolCalls         AgentToolCall[]
   reflectionTasks   AgentReflectionTask[]
   evidenceItems     AgentEvidence[]
+  steps             AgentStep[]
 
   @@index([organizationId, status, createdAt])
   @@index([storeId, locale, createdAt])
@@ -630,6 +635,48 @@ model AgentReflectionTask {
   @@index([topicRunId, status])
   @@index([articleId, priority])
   @@index([storeId, status, createdAt])
+}
+
+model AgentStep {
+  id             String              @id @default(cuid())
+  organizationId String
+  storeId        String
+  topicRunId     String?
+  campaignId     String?
+  articleId      String?
+  runId          String
+  sequence       Int
+  stepType       String
+  stepKey        String
+  stage          String?
+  agentRole      AgentRole?
+  status         AgentToolCallStatus @default(passed)
+  title          String
+  summary        String?             @db.Text
+  decision       String?             @db.Text
+  input          Json?
+  output         Json?
+  evidence       Json?
+  evidenceIds    String[]            @default([])
+  warnings       String[]            @default([])
+  error          String?             @db.Text
+  startedAt      DateTime?
+  completedAt    DateTime?
+  latencyMs      Int?
+  metadata       Json?
+  createdAt      DateTime            @default(now())
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  topicRun     SeoTopicRun?  @relation(fields: [topicRunId], references: [id], onDelete: Cascade)
+  campaign     BlogCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article      BlogArticle?  @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@unique([topicRunId, sequence])
+  @@index([runId, sequence])
+  @@index([articleId, sequence])
+  @@index([storeId, status, createdAt])
+  @@index([topicRunId, stepType])
 }
 
 model AgentEvidence {

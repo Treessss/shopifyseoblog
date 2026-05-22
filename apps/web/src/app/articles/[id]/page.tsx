@@ -45,6 +45,19 @@ export default async function ArticleReviewPage({ params }: PageProps) {
   const agentToolCalls = recordArray(seoAgent.toolCalls);
   const agentReflectionTasks = recordArray(seoAgent.reflectionTasks);
   const agentMemory = asRecord(seoAgent.memory);
+  const structuredAgentTrace = asRecord(generationMetadata.structuredAgentTrace);
+  const agentSteps = recordArray(structuredAgentTrace.steps);
+  const visibleAgentToolCalls = recordArray(structuredAgentTrace.toolCalls).length
+    ? recordArray(structuredAgentTrace.toolCalls)
+    : agentToolCalls;
+  const visibleReflectionTasks = recordArray(structuredAgentTrace.reflectionTasks).length
+    ? recordArray(structuredAgentTrace.reflectionTasks)
+    : agentReflectionTasks;
+  const structuredStepCount = numberValue(structuredAgentTrace.stepCount);
+  const executionStepCount =
+    structuredStepCount && structuredStepCount > 0
+      ? structuredStepCount
+      : agentSteps.length || agentStages.length || visibleAgentToolCalls.length + visibleReflectionTasks.length;
   const topicSelection = generationMetadata.topicSelection;
   const keywordEvidence = generationMetadata.keywordEvidence;
   const evidenceSummary =
@@ -291,35 +304,53 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                 </Panel>
 
                 <Panel title="AI Agent 轨迹" compact>
-                  {agentStages.length > 0 ? (
+                  {agentSteps.length > 0 || agentStages.length > 0 || visibleAgentToolCalls.length > 0 || visibleReflectionTasks.length > 0 ? (
                     <div className="stack">
                       <dl className="detail-list">
                         <div>
                           <dt>Agent 版本</dt>
-                          <dd className="code">{stringValue(seoAgent.agentVersion) ?? "未记录"}</dd>
+                          <dd className="code">
+                            {stringValue(structuredAgentTrace.agentVersion) ?? stringValue(seoAgent.agentVersion) ?? "未记录"}
+                          </dd>
                         </div>
                         <div>
                           <dt>运行状态</dt>
-                          <dd>{stringValue(seoAgent.status) ?? "未记录"}</dd>
+                          <dd>{stringValue(structuredAgentTrace.status) ?? stringValue(seoAgent.status) ?? "未记录"}</dd>
                         </div>
                         <div>
-                          <dt>工具调用</dt>
-                          <dd>{agentToolCalls.length}</dd>
+                          <dt>执行步骤</dt>
+                          <dd>{executionStepCount}</dd>
                         </div>
                         <div>
-                          <dt>反思任务</dt>
-                          <dd>{agentReflectionTasks.length}</dd>
+                          <dt>工具 / 反思</dt>
+                          <dd>
+                            {numberValue(structuredAgentTrace.toolCallCount) ?? visibleAgentToolCalls.length} /{" "}
+                            {numberValue(structuredAgentTrace.reflectionTaskCount) ?? visibleReflectionTasks.length}
+                          </dd>
                         </div>
                       </dl>
-                      <AgentTimeline stages={agentStages} />
+                      {agentSteps.length > 0 ? (
+                        <AgentStepTimeline steps={agentSteps} />
+                      ) : agentStages.length > 0 ? (
+                        <AgentTimeline stages={agentStages} />
+                      ) : (
+                        <AgentToolCallTimeline calls={visibleAgentToolCalls} />
+                      )}
                       <TextList
                         title="记忆规则"
                         items={stringArray(agentMemory.learnedRules).concat(
                           stringArray(agentMemory.blockedAngles).map((angle) => `避开角度：${angle}`)
                         )}
                       />
-                      <ActionItemList title="Agent 反思任务" items={agentReflectionTasks} />
-                      <JsonBlock value={{ toolCalls: agentToolCalls.slice(0, 8), memory: agentMemory }} empty="暂无 Agent 运行数据" />
+                      <ActionItemList title="Agent 反思任务" items={visibleReflectionTasks} />
+                      <JsonBlock
+                        value={{
+                          toolCalls: visibleAgentToolCalls.slice(0, 8),
+                          memory: agentMemory,
+                          evidence: recordArray(structuredAgentTrace.evidence).slice(0, 8)
+                        }}
+                        empty="暂无 Agent 运行数据"
+                      />
                     </div>
                   ) : (
                     <EmptyState title="暂无 Agent 轨迹" description="商业级 SEO Agent 运行后会展示阶段、工具、反思任务和记忆命中。" />
@@ -421,6 +452,55 @@ function AgentTimeline({ stages }: { stages: Array<Record<string, unknown>> }) {
               {index + 1}. {name} · {role} · {status}
             </strong>
             {decision ? <div>{decision}</div> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentStepTimeline({ steps }: { steps: Array<Record<string, unknown>> }) {
+  return (
+    <div className="json-block">
+      {steps.map((step, index) => {
+        const sequence = numberValue(step.sequence) ?? index + 1;
+        const title = stringValue(step.title) ?? stringValue(step.key) ?? `step-${sequence}`;
+        const status = stringValue(step.status) ?? "unknown";
+        const type = stringValue(step.type) ?? "step";
+        const summary = stringValue(step.summary) ?? stringValue(step.decision);
+        const warnings = stringArray(step.warnings);
+
+        return (
+          <div key={`${sequence}-${title}`} className="stack">
+            <strong>
+              {sequence}. {title} · {type} · {status}
+            </strong>
+            {summary ? <div>{summary}</div> : null}
+            {warnings.length > 0 ? <TextList title="警告" items={warnings.slice(0, 3)} /> : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AgentToolCallTimeline({ calls }: { calls: Array<Record<string, unknown>> }) {
+  return (
+    <div className="json-block">
+      {calls.map((call, index) => {
+        const toolName = stringValue(call.toolName) ?? stringValue(call.tool) ?? `tool-${index + 1}`;
+        const status = stringValue(call.status) ?? "unknown";
+        const stage = stringValue(call.stage) ?? "tool";
+        const role = stringValue(call.agentRole);
+        const warnings = stringArray(call.warnings);
+
+        return (
+          <div key={`${toolName}-${index}`} className="stack">
+            <strong>
+              {index + 1}. 工具调用 · {toolName} · {stage} · {status}
+            </strong>
+            {role ? <div>负责 Agent：{role}</div> : null}
+            {warnings.length > 0 ? <TextList title="警告" items={warnings.slice(0, 3)} /> : null}
           </div>
         );
       })}

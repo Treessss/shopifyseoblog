@@ -252,6 +252,28 @@ export function findArticleForReview(organizationId: string, articleId: string) 
             }
           }
         }
+      },
+      seoTopicRuns: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        include: {
+          steps: {
+            orderBy: { sequence: "asc" },
+            take: 80
+          },
+          toolCalls: {
+            orderBy: { createdAt: "asc" },
+            take: 40
+          },
+          reflectionTasks: {
+            orderBy: { createdAt: "asc" },
+            take: 20
+          },
+          evidenceItems: {
+            orderBy: { createdAt: "asc" },
+            take: 40
+          }
+        }
       }
     }
   });

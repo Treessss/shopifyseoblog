@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAgentMemoryPersistenceData,
+  buildAgentStepRows,
   buildGenerationProgressPayload,
   clampMemoryWindowDays,
   mergeGenerationProgressPayload,
@@ -112,6 +113,72 @@ describe("blog generation runtime helpers", () => {
     expect(data.outcome).toBe("warning");
     expect(data.avoidUntil).toBeInstanceOf(Date);
     expect(data.learnedRule).toContain("Avoid repeating scenario_fit");
+  });
+
+  it("builds ordered agent step rows from stages, tool calls, and reflection tasks", () => {
+    const rows = buildAgentStepRows({
+      runId: "topic-run-1",
+      agentRunId: "agent-run-1",
+      articleId: "article-1",
+      campaignId: "campaign-1",
+      organizationId: "org-1",
+      storeId: "store-1",
+      locale: "en-US",
+      agentRun: {
+        stages: [
+          {
+            id: "stage-research",
+            stage: "research",
+            agentRole: "researcher",
+            status: "passed",
+            input: { topic: "Phone Case" },
+            output: { evidenceCount: 2 },
+            evidence: [{ type: "seed_keyword", source: "manual", label: "seed", value: "phone case", confidence: 80 }],
+            warnings: [],
+            decision: "Collected evidence.",
+            startedAt: "2026-05-22T10:00:00.000Z",
+            finishedAt: "2026-05-22T10:00:05.000Z",
+            agentVersion: "test-agent"
+          }
+        ],
+        toolCalls: [
+          {
+            id: "tool-trends",
+            stage: "research",
+            agentRole: "researcher",
+            toolName: "trend_discovery",
+            purpose: "Find timely angles.",
+            status: "warning",
+            input: { query: "phone case" },
+            output: { trendCount: 0 },
+            evidence: [],
+            evidenceIds: ["evidence-1"],
+            warnings: ["No trend found."],
+            decisionSummary: "trend_discovery completed with 1 warning.",
+            startedAt: "2026-05-22T10:00:02.000Z",
+            finishedAt: "2026-05-22T10:00:03.000Z",
+            latencyMs: 1000
+          }
+        ],
+        reflectionTasks: [
+          {
+            priority: "P0",
+            agentRole: "seo_editor",
+            instruction: "Add stronger internal links.",
+            acceptanceCheck: "Internal links are visible.",
+            evidenceIds: ["evidence-1"],
+            status: "open"
+          }
+        ],
+        finishedAt: "2026-05-22T10:01:00.000Z"
+      } as any
+    });
+
+    expect(rows.map((row) => row.sequence)).toEqual([1, 2, 3]);
+    expect(rows.map((row) => row.stepType)).toEqual(["stage", "tool_call", "reflection_task"]);
+    expect(rows[0]).toMatchObject({ title: "research · researcher", status: "passed" });
+    expect(rows[1]).toMatchObject({ title: "工具调用 · trend_discovery", status: "warning", evidenceIds: ["evidence-1"] });
+    expect(rows[2]).toMatchObject({ status: "failed", warnings: ["Add stronger internal links."] });
   });
 
   it("clamps memory windows to a safe operating range", () => {
