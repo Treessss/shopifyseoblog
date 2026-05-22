@@ -16,6 +16,7 @@ import {
   type ExternalReferenceCandidate,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
+  type KeywordCannibalizationSignal,
   type KeywordEvidenceItem,
   type QualityGateResult,
   selectTopicCandidate,
@@ -3475,7 +3476,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     agentMemories,
     generationConfig
   } satisfies ContentSourceContext;
-  const [trendSignals, internalLinks, imageReferences] = await Promise.all([
+  const [trendSignals, internalLinks, imageReferences, keywordCannibalization] = await Promise.all([
     discoverTrendSignals({
       topic: fallbackTopicSeed ?? "Shopify blog topic",
       locale,
@@ -3483,7 +3484,21 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
       context: sourceContextBase
     }),
     loadInternalLinks(storefrontHost, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig, data.articleId),
-    loadImageReferences(data.storeId, sourceContextBase, generationConfig)
+    loadImageReferences(data.storeId, sourceContextBase, generationConfig),
+    loadKeywordCannibalizationSignals({
+      organizationId: data.organizationId,
+      storeId: data.storeId,
+      locale,
+      articleId: data.articleId,
+      targetKeywords: [
+        fallbackTopicSeed,
+        data.primaryKeyword,
+        campaign?.primaryKeyword,
+        ...(seedKeywords ?? []),
+        baseSourceContext.product?.title,
+        baseSourceContext.collection?.title
+      ]
+    })
   ]);
   const externalReferences = externalReferenceCandidates({
     ...sourceContextBase,
@@ -3494,7 +3509,8 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     trendSignals,
     externalReferences,
     internalLinks,
-    imageReferences
+    imageReferences,
+    keywordCannibalization
   } satisfies ContentSourceContext;
   const topicSelectionInput = {
     organizationId: data.organizationId,
@@ -3536,6 +3552,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
       externalReferences,
       internalLinks,
       imageReferences,
+      keywordCannibalization,
       keywordEvidence,
       topicSelection,
       generationConfig
@@ -3644,6 +3661,177 @@ async function loadRecentTopicHistory(
       createdAt: article.createdAt.toISOString()
     }))
   ]).slice(0, 60);
+}
+
+interface KeywordCannibalizationArticleInput {
+  id: string;
+  title: string | null;
+  status: string;
+  primaryKeyword: string | null;
+  secondaryKeywords: string[];
+  canonicalUrl: string | null;
+}
+
+async function loadKeywordCannibalizationSignals(input: {
+  organizationId: string;
+  storeId: string;
+  locale: string;
+  articleId?: string;
+  targetKeywords: Array<string | null | undefined>;
+}): Promise<KeywordCannibalizationSignal[]> {
+  const targetKeywords = normalizeCannibalizationTargets(input.targetKeywords);
+  if (targetKeywords.length === 0) return [];
+
+  const articles = await prisma.blogArticle.findMany({
+    where: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      locale: input.locale,
+      ...(input.articleId ? { id: { not: input.articleId } } : {}),
+      OR: [{ primaryKeyword: { not: null } }, { title: { not: null } }, { secondaryKeywords: { isEmpty: false } }]
+    },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      primaryKeyword: true,
+      secondaryKeywords: true,
+      canonicalUrl: true
+    },
+    orderBy: [{ status: "desc" }, { updatedAt: "desc" }],
+    take: 120
+  });
+
+  return buildKeywordCannibalizationSignals({
+    targetKeywords,
+    articles,
+    currentArticleId: input.articleId
+  });
+}
+
+export function buildKeywordCannibalizationSignals(input: {
+  targetKeywords: string[];
+  articles: KeywordCannibalizationArticleInput[];
+  currentArticleId?: string;
+  limit?: number;
+}): KeywordCannibalizationSignal[] {
+  const targets = normalizeCannibalizationTargets(input.targetKeywords);
+  if (targets.length === 0) return [];
+
+  const signals: KeywordCannibalizationSignal[] = [];
+  for (const article of input.articles) {
+    if (article.id === input.currentArticleId) continue;
+
+    for (const entry of articleKeywordEntries(article)) {
+      const normalizedKeyword = normalizeAgentKeyword(entry.keyword);
+      if (!normalizedKeyword) continue;
+
+      const overlapScore = Math.max(...targets.map((target) => keywordOverlapScore(target, entry.keyword)));
+      if (overlapScore < 0.55) continue;
+
+      const risk = overlapScore >= 0.86 ? "high" : overlapScore >= 0.68 ? "medium" : "low";
+      signals.push({
+        keyword: entry.keyword,
+        normalizedKeyword,
+        articleId: article.id,
+        title: article.title ?? undefined,
+        url: article.canonicalUrl ?? undefined,
+        status: article.status,
+        source: entry.source,
+        overlapScore,
+        risk,
+        reason:
+          risk === "high"
+            ? "Existing article already targets this keyword cluster."
+            : "Existing article partially overlaps this keyword cluster."
+      });
+    }
+  }
+
+  const seen = new Map<string, KeywordCannibalizationSignal>();
+  for (const signal of signals.sort((left, right) => right.overlapScore - left.overlapScore)) {
+    const key = signal.articleId ?? signal.normalizedKeyword;
+    const previous = seen.get(key);
+    if (!previous || previous.overlapScore < signal.overlapScore) {
+      seen.set(key, signal);
+    }
+  }
+
+  return Array.from(seen.values())
+    .sort((left, right) => riskRank(right.risk) - riskRank(left.risk) || right.overlapScore - left.overlapScore)
+    .slice(0, input.limit ?? 20);
+}
+
+function articleKeywordEntries(article: KeywordCannibalizationArticleInput): Array<{
+  keyword: string;
+  source: NonNullable<KeywordCannibalizationSignal["source"]>;
+}> {
+  return [
+    article.primaryKeyword ? { keyword: article.primaryKeyword, source: "primary_keyword" as const } : undefined,
+    ...article.secondaryKeywords.map((keyword) => ({ keyword, source: "secondary_keyword" as const })),
+    article.title ? { keyword: article.title, source: "title" as const } : undefined
+  ].filter((entry): entry is { keyword: string; source: NonNullable<KeywordCannibalizationSignal["source"]> } =>
+    Boolean(entry?.keyword.trim())
+  );
+}
+
+function normalizeCannibalizationTargets(values: Array<string | null | undefined>): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  for (const value of values) {
+    const normalized = normalizeAgentKeyword(value);
+    if (!normalized || normalized.length < 4 || seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(normalized);
+  }
+  return output.slice(0, 24);
+}
+
+function keywordOverlapScore(left: string, right: string): number {
+  const leftNormalized = normalizeAgentKeyword(left);
+  const rightNormalized = normalizeAgentKeyword(right);
+  if (!leftNormalized || !rightNormalized) return 0;
+  if (leftNormalized === rightNormalized) return 1;
+  if (leftNormalized.includes(rightNormalized) || rightNormalized.includes(leftNormalized)) return 0.9;
+
+  const leftTokens = leftNormalized.split(" ").filter(Boolean);
+  const rightTokens = rightNormalized.split(" ").filter(Boolean);
+  if (leftTokens.length === 0 || rightTokens.length === 0) return 0;
+
+  const leftDistinctive = distinctiveCannibalizationTokens(leftTokens);
+  const rightDistinctive = distinctiveCannibalizationTokens(rightTokens);
+  const scoringLeft = leftDistinctive.length > 0 && rightDistinctive.length > 0 ? leftDistinctive : leftTokens;
+  const scoringRight = leftDistinctive.length > 0 && rightDistinctive.length > 0 ? rightDistinctive : rightTokens;
+  const rightSet = new Set(scoringRight);
+  const hits = scoringLeft.filter((token) => rightSet.has(token)).length;
+  return hits / Math.min(scoringLeft.length, scoringRight.length);
+}
+
+function riskRank(risk: KeywordCannibalizationSignal["risk"]): number {
+  if (risk === "high") return 3;
+  if (risk === "medium") return 2;
+  return 1;
+}
+
+function distinctiveCannibalizationTokens(tokens: string[]): string[] {
+  const generic = new Set([
+    "phone",
+    "case",
+    "cases",
+    "cover",
+    "covers",
+    "iphone",
+    "magsafe",
+    "guide",
+    "buyer",
+    "buying",
+    "best",
+    "with",
+    "for",
+    "and",
+    "the"
+  ]);
+  return tokens.filter((token) => !generic.has(token));
 }
 
 async function loadAgentMemories(

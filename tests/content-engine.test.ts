@@ -514,6 +514,54 @@ describe("content engine", () => {
     expect(result.artifacts.agentRun.memory.reusePatterns[0]?.instruction).toContain("successful");
   });
 
+  it("flags keyword cannibalization before drafting", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Clear Phone Case",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["clear phone case"],
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", minOpportunityScore: 50 },
+          topicDiscovery: { enabled: true, maxCandidates: 3 },
+          imageGeneration: { enabled: false }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/18",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe"],
+          imageUrls: []
+        },
+        keywordCannibalization: [
+          {
+            keyword: "clear phone case",
+            normalizedKeyword: "clear phone case",
+            articleId: "article-existing",
+            title: "Clear Phone Case Buyer Guide",
+            url: "https://www.caseease.com/blogs/news/clear-phone-case-guide",
+            status: "published",
+            source: "primary_keyword",
+            overlapScore: 1,
+            risk: "high",
+            reason: "Existing article already targets this keyword cluster."
+          }
+        ]
+      }
+    );
+
+    expect(result.artifacts.research.sourceSummary.cannibalizationRiskCount).toBe(1);
+    expect(result.artifacts.keywordStrategy.excludedKeywords.some((item) => item.reason.includes("cannibalization"))).toBe(true);
+    expect(result.artifacts.agentRun.toolPlan.some((plan) => plan.toolName === "keyword_cannibalization_check")).toBe(true);
+    expect(result.artifacts.agentRun.toolCalls.some((call) => call.toolName === "keyword_cannibalization_check")).toBe(true);
+    expect(result.artifacts.contentBrief.claimsPolicy.join(" ")).toContain("same primary keyword");
+  });
+
   it("enforces the configured minimum topic opportunity score in the SEO agent", async () => {
     const result = await runAgentContentPipeline(
       {

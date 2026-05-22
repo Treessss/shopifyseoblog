@@ -3,6 +3,7 @@ import {
   buildAgentMemoryPersistenceData,
   buildAgentStepRows,
   buildGenerationProgressPayload,
+  buildKeywordCannibalizationSignals,
   clampMemoryWindowDays,
   mergeGenerationProgressPayload,
   selectAgentMemoryRows
@@ -179,6 +180,47 @@ describe("blog generation runtime helpers", () => {
     expect(rows[0]).toMatchObject({ title: "research · researcher", status: "passed" });
     expect(rows[1]).toMatchObject({ title: "工具调用 · trend_discovery", status: "warning", evidenceIds: ["evidence-1"] });
     expect(rows[2]).toMatchObject({ status: "failed", warnings: ["Add stronger internal links."] });
+  });
+
+  it("maps existing article keywords into cannibalization risks", () => {
+    const signals = buildKeywordCannibalizationSignals({
+      targetKeywords: ["clear phone case", "clear magsafe case"],
+      currentArticleId: "current",
+      articles: [
+        {
+          id: "existing-1",
+          title: "Clear Phone Case Buyer Guide",
+          status: "published",
+          primaryKeyword: "clear phone case",
+          secondaryKeywords: ["transparent iphone case"],
+          canonicalUrl: "https://www.caseease.com/blogs/news/clear-phone-case-guide"
+        },
+        {
+          id: "current",
+          title: "Current Draft",
+          status: "draft",
+          primaryKeyword: "clear phone case",
+          secondaryKeywords: [],
+          canonicalUrl: null
+        },
+        {
+          id: "unrelated",
+          title: "Basketball Phone Case Gifts",
+          status: "published",
+          primaryKeyword: "basketball phone case",
+          secondaryKeywords: [],
+          canonicalUrl: null
+        }
+      ]
+    });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      articleId: "existing-1",
+      keyword: "clear phone case",
+      risk: "high",
+      source: "primary_keyword"
+    });
   });
 
   it("clamps memory windows to a safe operating range", () => {

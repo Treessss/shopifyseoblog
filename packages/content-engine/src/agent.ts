@@ -150,6 +150,35 @@ export async function runAgentContentPipeline(
       []
     )
   );
+  const keywordCannibalizationMatchesForPlan = keywordCannibalizationMatches(keywordStrategy.primaryKeyword, baseContext);
+  const keywordWarnings = keywordCannibalizationMatchesForPlan.some((item) => item.risk === "high")
+    ? ["High keyword cannibalization risk found; topic must be reframed before drafting."]
+    : [];
+  if (findPlan(toolPlan, "keyword_cannibalization_check")) {
+    toolCalls.push(
+      traceToolCall(
+        findPlan(toolPlan, "keyword_cannibalization_check"),
+        keywordStageStart,
+        {
+          primaryKeyword: keywordStrategy.primaryKeyword,
+          clusters: keywordStrategy.clusters.map((cluster) => cluster.name)
+        },
+        {
+          riskCount: keywordCannibalizationMatchesForPlan.length,
+          highRiskCount: keywordCannibalizationMatchesForPlan.filter((item) => item.risk === "high").length,
+          matches: keywordCannibalizationMatchesForPlan.slice(0, 5).map((item) => ({
+            keyword: item.keyword,
+            articleId: item.articleId,
+            url: item.url,
+            risk: item.risk,
+            overlapScore: item.overlapScore
+          }))
+        },
+        [],
+        keywordWarnings
+      )
+    );
+  }
   stages.push(
     stage(
       "keyword_strategy",
@@ -158,7 +187,7 @@ export async function runAgentContentPipeline(
       { topic: normalized.topic },
       keywordStrategy,
       keywordStrategy.evidenceItems ?? research.evidence,
-      [],
+      keywordWarnings,
       undefined,
       "Built keyword clusters and opportunity score from evidence, search intent, trends, and internal links.",
       ["research"],
@@ -435,6 +464,7 @@ async function buildResearchBrief(
     internalLinks: context.internalLinks ?? [],
     externalReferences,
     imageReferences: context.imageReferences ?? [],
+    keywordCannibalization: context.keywordCannibalization ?? [],
     evidence,
     riskFlags: researchRiskFlags(input, evidenceContext, trendSignals),
     sourceSummary: {
@@ -442,7 +472,8 @@ async function buildResearchBrief(
       internalLinkCount: context.internalLinks?.length ?? 0,
       externalReferenceCount: externalReferences.length,
       imageReferenceCount: context.imageReferences?.length ?? 0,
-      recentTopicCount: context.recentTopics?.length ?? 0
+      recentTopicCount: context.recentTopics?.length ?? 0,
+      cannibalizationRiskCount: (context.keywordCannibalization ?? []).filter((item) => item.risk !== "low").length
     }
   };
 
@@ -508,7 +539,8 @@ async function buildKeywordStrategy(
   const evidenceConfidence = average((plan.evidenceItems ?? research.evidence).map((item) => item.confidence));
   const trendBoost = Math.min(12, research.trendSignals.length * 3);
   const linkBoost = Math.min(8, research.internalLinks.length * 2);
-  const opportunityScore = clampScore(evidenceConfidence * 0.55 + funnelWeight(plan.searchIntent) + trendBoost + linkBoost);
+  const cannibalizationPenalty = keywordCannibalizationPressure(plan.primaryKeyword, context);
+  const opportunityScore = clampScore(evidenceConfidence * 0.55 + funnelWeight(plan.searchIntent) + trendBoost + linkBoost - cannibalizationPenalty);
   const clustersInput = [
     {
       name: "Primary demand",
@@ -645,6 +677,9 @@ function buildContentBrief(
       "Use trend/news signals only as editorial angles, not as unsupported claims.",
       "Use Shopify product facts as the source of product-specific truth.",
       "Do not invent discounts, availability, materials, certifications, or compatibility details.",
+      ...(research.keywordCannibalization.some((item) => item.risk !== "low")
+        ? ["Avoid targeting the same primary keyword as an existing article; reframe the search intent, title promise, and internal-link path."]
+        : []),
       ...(memoryGuidance.length ? ["Follow long-term memory guidance so the article does not repeat failed topics, weak keyword patterns, or stale guide formulas."] : [])
     ]
   };
@@ -867,6 +902,7 @@ function researchRiskFlags(input: NormalizedContentPipelineInput, context: Conte
   if (input.generationConfig?.hotNews?.enabled && signals.length === 0) flags.push("trend_discovery_empty");
   if (!context.product && !context.collection && !context.seedKeywords?.length) flags.push("weak_source_context");
   if (context.internalLinks?.length === 0 && input.generationConfig?.internalLinks?.enabled) flags.push("no_internal_links_available");
+  if ((context.keywordCannibalization ?? []).some((item) => item.risk === "high")) flags.push("keyword_cannibalization_map_has_high_risk");
   return flags;
 }
 
@@ -876,6 +912,9 @@ function topicRiskFlags(candidate: TopicCandidate, context: ContentSourceContext
     flags.push("required_trend_evidence_missing");
   }
   if (repeatedTopicPressure(candidate.topic, context) >= 28) flags.push("recent_topic_similarity_high");
+  if (keywordCannibalizationPressure(candidate.primaryKeyword, context) >= 24 || keywordCannibalizationPressure(candidate.topic, context) >= 28) {
+    flags.push("keyword_cannibalization_high");
+  }
   return flags;
 }
 
@@ -889,9 +928,59 @@ function commerceFitScore(candidate: TopicCandidate, keywords: KeywordPlan, cont
 
 function excludedKeywordCandidates(context: ContentSourceContext, plan: KeywordPlan) {
   const banned = context.brandVoice?.bannedWords ?? [];
-  return plan.secondaryKeywords
+  const bannedKeywords = plan.secondaryKeywords
     .filter((keyword) => banned.some((word) => keyword.toLowerCase().includes(word.toLowerCase())))
     .map((keyword) => ({ keyword, reason: "blocked by brand voice banned words" }));
+  const cannibalizedKeywords = [plan.primaryKeyword, ...plan.secondaryKeywords, ...plan.longTailKeywords].flatMap((keyword) =>
+    keywordCannibalizationMatches(keyword, context)
+      .filter((match) => match.risk !== "low")
+      .map((match) => ({
+        keyword,
+        reason: `keyword cannibalization risk with existing article "${match.title ?? match.keyword}"`
+      }))
+  );
+  return uniqueKeywordExclusions([...bannedKeywords, ...cannibalizedKeywords]);
+}
+
+function keywordCannibalizationPressure(value: string, context: ContentSourceContext): number {
+  const matches = keywordCannibalizationMatches(value, context);
+  if (matches.length === 0) return 0;
+
+  return Math.max(
+    ...matches.map((match) => {
+      const riskWeight = match.risk === "high" ? 36 : match.risk === "medium" ? 22 : 8;
+      return Math.round(riskWeight * Math.max(match.overlapScore, tokenOverlap(tokenize(value), tokenize(match.keyword))));
+    })
+  );
+}
+
+function keywordCannibalizationMatches(value: string, context: ContentSourceContext) {
+  const tokens = tokenize(value);
+  return (context.keywordCannibalization ?? [])
+    .map((signal) => {
+      const overlapScore = Math.max(signal.overlapScore, tokenOverlap(tokens, tokenize(signal.keyword)));
+      return { ...signal, overlapScore };
+    })
+    .filter((signal) => signal.overlapScore >= 0.45 || signal.risk === "high")
+    .sort((left, right) => {
+      const riskRank = (risk: "low" | "medium" | "high") => (risk === "high" ? 3 : risk === "medium" ? 2 : 1);
+      return riskRank(right.risk) - riskRank(left.risk) || right.overlapScore - left.overlapScore;
+    })
+    .slice(0, 8);
+}
+
+function uniqueKeywordExclusions(items: Array<{ keyword: string; reason: string }>) {
+  const seen = new Set<string>();
+  const output: Array<{ keyword: string; reason: string }> = [];
+
+  for (const item of items) {
+    const key = `${item.keyword.toLowerCase()}|${item.reason.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+
+  return output;
 }
 
 function agentObjective(input: NormalizedContentPipelineInput): string {

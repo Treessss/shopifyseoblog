@@ -43,6 +43,20 @@ export function planAgentTools(
       ["product", "collection", "seed_keyword", "trend", "internal_link"],
       ["Primary keyword has evidence", "Cluster covers primary demand and long-tail buyer questions"]
     ),
+    ...(context.keywordCannibalization?.length
+      ? [
+          toolPlan(
+            "keyword_strategy",
+            "keyword_planner",
+            "keyword_cannibalization_check",
+            "Compare the planned keyword cluster with existing articles so the new draft does not compete against the store's own URLs.",
+            true,
+            ["keywordStrategy.clusters", "existingArticles", "recentTopics"],
+            [],
+            ["High-overlap existing articles are identified", "Risky keywords are blocked or reframed before drafting"]
+          )
+        ]
+      : []),
     toolPlan(
       "research",
       "researcher",

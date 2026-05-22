@@ -128,6 +128,19 @@ export interface AgentMemorySignal {
   lastUsedAt?: string;
 }
 
+export interface KeywordCannibalizationSignal {
+  keyword: string;
+  normalizedKeyword: string;
+  articleId?: string;
+  title?: string;
+  url?: string;
+  status?: string;
+  source?: "primary_keyword" | "secondary_keyword" | "title";
+  overlapScore: number;
+  risk: "low" | "medium" | "high";
+  reason: string;
+}
+
 export interface ContentSourceContext {
   storefrontHost?: string;
   product?: ProductContext;
@@ -144,6 +157,7 @@ export interface ContentSourceContext {
   topicSelection?: TopicSelectionResult;
   recentTopics?: TopicHistoryItem[];
   agentMemories?: AgentMemorySignal[];
+  keywordCannibalization?: KeywordCannibalizationSignal[];
   memoryStrategy?: AgentMemoryStrategy;
   generationConfig?: GenerationConfig;
 }
@@ -370,6 +384,7 @@ export interface ResearchBrief {
   internalLinks: InternalLinkCandidate[];
   externalReferences: ExternalReferenceCandidate[];
   imageReferences: ImageReference[];
+  keywordCannibalization: KeywordCannibalizationSignal[];
   evidence: KeywordEvidenceItem[];
   riskFlags: string[];
   sourceSummary: {
@@ -378,6 +393,7 @@ export interface ResearchBrief {
     externalReferenceCount: number;
     imageReferenceCount: number;
     recentTopicCount: number;
+    cannibalizationRiskCount: number;
   };
 }
 
