@@ -241,6 +241,29 @@ interface GenerationProgressUpdate {
   status?: string;
 }
 
+export interface GenerationProgressPayload extends Record<string, unknown> {
+  step: string;
+  label: string;
+  percent: number;
+  detail?: string;
+  articleId?: string;
+  status?: string;
+  bullJobId?: string;
+  updatedAt: string;
+  previousStep?: string;
+  history?: GenerationProgressHistoryEntry[];
+  staleUpdate?: GenerationProgressHistoryEntry;
+}
+
+export interface GenerationProgressHistoryEntry {
+  step: string;
+  label?: string;
+  percent: number;
+  status?: string;
+  updatedAt?: string;
+  stale?: boolean;
+}
+
 type GenerationProgressCallback = (progress: GenerationProgressUpdate) => Promise<void>;
 
 interface ResolvedCatalogSource {
@@ -614,17 +637,7 @@ async function recordGenerationProgress(
   publishJobId: string | undefined,
   update: GenerationProgressUpdate
 ): Promise<void> {
-  const now = new Date().toISOString();
-  const progress = {
-    step: update.step,
-    label: update.label,
-    percent: clampProgressPercent(update.percent),
-    detail: update.detail,
-    articleId: update.articleId,
-    status: update.status,
-    bullJobId: job.id,
-    updatedAt: now
-  };
+  const progress = buildGenerationProgressPayload(update, job.id);
 
   await job.updateProgress(progress);
 
@@ -636,7 +649,7 @@ async function recordGenerationProgress(
 
 async function updateCampaignGenerationProgress(
   campaignId: string | undefined,
-  progress: Record<string, unknown>
+  progress: GenerationProgressPayload
 ): Promise<void> {
   if (!campaignId) return;
 
@@ -650,17 +663,14 @@ async function updateCampaignGenerationProgress(
   await prisma.blogCampaign.update({
     where: { id: campaignId },
     data: {
-      metadata: toPrismaJson({
-        ...metadata,
-        generationProgress: progress
-      })
+      metadata: toPrismaJson(mergeGenerationProgressPayload(metadata, progress))
     }
   });
 }
 
 async function updatePublishJobGenerationProgress(
   publishJobId: string | undefined,
-  progress: Record<string, unknown>
+  progress: GenerationProgressPayload
 ): Promise<void> {
   if (!publishJobId) return;
 
@@ -674,17 +684,130 @@ async function updatePublishJobGenerationProgress(
   await prisma.publishJob.update({
     where: { id: publishJobId },
     data: {
-      payload: toPrismaJson({
-        ...payload,
-        generationProgress: progress
-      })
+      payload: toPrismaJson(mergeGenerationProgressPayload(payload, progress))
     }
   });
 }
 
-function clampProgressPercent(value: number): number {
+export function buildGenerationProgressPayload(
+  update: GenerationProgressUpdate,
+  bullJobId?: string,
+  updatedAt = new Date().toISOString()
+): GenerationProgressPayload {
+  return {
+    step: update.step,
+    label: update.label,
+    percent: clampProgressPercent(update.percent),
+    detail: update.detail,
+    articleId: update.articleId,
+    status: update.status,
+    bullJobId,
+    updatedAt
+  };
+}
+
+export function mergeGenerationProgressPayload(
+  container: unknown,
+  progress: GenerationProgressPayload
+): Record<string, unknown> {
+  const base = isRecord(container) ? { ...container } : {};
+  const previous = isRecord(base.generationProgress) ? (base.generationProgress as Record<string, unknown>) : undefined;
+  if (!previous) {
+    return {
+      ...base,
+      generationProgress: {
+        ...progress,
+        history: progress.history ?? [toProgressHistoryEntry(progress)]
+      }
+    };
+  }
+
+  const previousPercent = clampProgressPercent(numberValue(previous.percent) ?? 0);
+  const nextPercent = clampProgressPercent(progress.percent);
+  const canRegress = canProgressRegress(progress);
+  if (previousPercent > nextPercent && !canRegress) {
+    const staleUpdate = toProgressHistoryEntry(progress, true);
+    return {
+      ...base,
+      generationProgress: {
+        ...previous,
+        updatedAt: progress.updatedAt,
+        history: appendProgressHistory(seedProgressHistory(previous), staleUpdate),
+        staleUpdate
+      }
+    };
+  }
+
+  return {
+    ...base,
+    generationProgress: {
+      ...progress,
+      previousStep: stringValue(previous.step),
+      history: appendProgressHistory(seedProgressHistory(previous), toProgressHistoryEntry(progress))
+    }
+  };
+}
+
+export function clampProgressPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function canProgressRegress(progress: GenerationProgressPayload): boolean {
+  const marker = `${progress.step} ${progress.status ?? ""}`.toLowerCase();
+  return marker.includes("retry") || marker.includes("failed");
+}
+
+function appendProgressHistory(existing: unknown, next: GenerationProgressHistoryEntry): GenerationProgressHistoryEntry[] {
+  const history = Array.isArray(existing)
+    ? existing
+        .filter(isRecord)
+        .map((item) => ({
+          step: stringValue(item.step) ?? "unknown",
+          label: stringValue(item.label),
+          percent: clampProgressPercent(numberValue(item.percent) ?? 0),
+          status: stringValue(item.status),
+          updatedAt: stringValue(item.updatedAt),
+          stale: Boolean(item.stale)
+        }))
+    : [];
+  const previousLast = history.at(-1);
+  if (
+    previousLast &&
+    previousLast.step === next.step &&
+    previousLast.percent === next.percent &&
+    previousLast.status === next.status
+  ) {
+    return history.slice(-8);
+  }
+  return [...history, next].slice(-8);
+}
+
+function seedProgressHistory(previous: Record<string, unknown>): GenerationProgressHistoryEntry[] {
+  if (Array.isArray(previous.history) && previous.history.length > 0) return previous.history as GenerationProgressHistoryEntry[];
+  return [
+    {
+      step: stringValue(previous.step) ?? "unknown",
+      label: stringValue(previous.label),
+      percent: clampProgressPercent(numberValue(previous.percent) ?? 0),
+      status: stringValue(previous.status),
+      updatedAt: stringValue(previous.updatedAt)
+    }
+  ];
+}
+
+function toProgressHistoryEntry(
+  progress: Pick<GenerationProgressPayload, "step" | "label" | "percent" | "status" | "updatedAt">,
+  stale = false
+): GenerationProgressHistoryEntry {
+  return {
+    step: progress.step,
+    label: progress.label,
+    percent: clampProgressPercent(progress.percent),
+    status: progress.status,
+    updatedAt: progress.updatedAt,
+    stale
+  };
 }
 
 function stripJsonFence(content: string): string {
@@ -1037,9 +1160,7 @@ async function finalizeAiSearchReviewWorkflow(
   );
   let bestArticle = currentArticle;
   let bestReview = currentReview;
-  const revisions = result.workflow.revisions.map((revision, index, allRevisions) =>
-    index === allRevisions.length - 1 ? { ...revision, afterScore: currentReview.score } : revision
-  );
+  const revisions = [...result.workflow.revisions];
 
   for (let pass = revisions.length + 1; pass <= result.workflow.maxRevisionPasses; pass += 1) {
     if (currentReview.score >= result.workflow.minTrafficScore) break;
@@ -3124,12 +3245,6 @@ async function recordGenerationFailure(
   const message = errorMessage(error);
   const retrying = willRetryJob(job, error);
 
-  await job.updateProgress({
-    step: retrying ? "article:generation_retry_scheduled" : "article:generation_failed",
-    percent: retrying ? 20 : 100,
-    label: retrying ? "生成失败，等待自动重试" : "生成失败",
-    error: message
-  });
   await job.log(`${job.name} failed: ${message}`);
   await markArticleFailed(articleId, message);
   await recordGenerationProgress(job, job.data.campaignId, publishJobId, {
@@ -3331,7 +3446,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     loadBrandVoice(data.organizationId, data.storeId, locale, campaign?.brandVoice),
     loadSourceContext(data.storeId, sourceType, sourceId),
     loadRecentTopicHistory(data.organizationId, data.storeId, locale, campaign?.id ?? data.campaignId),
-    loadAgentMemories(data.organizationId, data.storeId, locale, sourceType, sourceId)
+    loadAgentMemories(data.organizationId, data.storeId, locale, sourceType, sourceId, generationConfig)
   ]);
   const baseSourceContext =
     shouldAutoDiscoverTopic(generationConfig, initialTopic) && !hasCatalogContext(requestedSourceContext)
@@ -3535,26 +3650,52 @@ async function loadAgentMemories(
   storeId: string,
   locale: string,
   sourceType: SourceType,
-  sourceId: string | null | undefined
+  sourceId: string | null | undefined,
+  generationConfig: GenerationConfig | undefined
 ): Promise<AgentMemorySignal[]> {
-  const memoryFilters: Array<{ sourceId?: string | null; sourceType?: SourceType; avoidUntil?: { gt: Date } }> = [
+  const now = new Date();
+  const memoryWindowDays = clampMemoryWindowDays(generationConfig?.seoAgent?.memoryWindowDays);
+  const memoryWindowStart = dateDaysAgo(memoryWindowDays, now);
+  const scopeFilters: Array<{ sourceId?: string | null; sourceType?: SourceType }> = [
     { sourceId: null },
-    { sourceType },
-    { avoidUntil: { gt: new Date() } }
+    { sourceType }
   ];
-  if (sourceId) memoryFilters.unshift({ sourceId });
+  if (sourceId) scopeFilters.unshift({ sourceId });
   const memories = await prisma.agentMemory.findMany({
     where: {
       organizationId,
       storeId,
       locale,
-      OR: memoryFilters
+      OR: [
+        {
+          AND: [
+            { OR: scopeFilters },
+            {
+              OR: [
+                { lastUsedAt: { gte: memoryWindowStart } },
+                { createdAt: { gte: memoryWindowStart } },
+                { confidence: { gte: 85 } }
+              ]
+            }
+          ]
+        },
+        { avoidUntil: { gt: now } }
+      ]
     },
     orderBy: [{ confidence: "desc" }, { lastUsedAt: "desc" }],
-    take: 30
+    take: 60
   });
 
-  return memories.map((memory) => ({
+  const selectedMemories = selectAgentMemoryRows(memories, 30);
+  const selectedIds = selectedMemories.map((memory) => memory.id).filter(Boolean);
+  if (selectedIds.length > 0) {
+    await prisma.agentMemory.updateMany({
+      where: { id: { in: selectedIds } },
+      data: { lastUsedAt: now }
+    });
+  }
+
+  return selectedMemories.map((memory) => ({
     keyword: memory.keyword ?? undefined,
     topic: memory.topicFingerprint ?? undefined,
     angleKey: memory.angleKey ?? undefined,
@@ -3566,6 +3707,76 @@ async function loadAgentMemories(
     avoidUntil: memory.avoidUntil?.toISOString(),
     lastUsedAt: memory.lastUsedAt.toISOString()
   }));
+}
+
+export interface AgentMemoryRowForSelection {
+  id: string;
+  keyword: string | null;
+  topicFingerprint: string | null;
+  angleKey: string | null;
+  outcome: AgentMemorySignal["outcome"];
+  confidence: number;
+  qualityScore: number | null;
+  trafficScore: number | null;
+  learnedRule: string | null;
+  avoidUntil: Date | null;
+  lastUsedAt: Date;
+  createdAt?: Date;
+}
+
+export function selectAgentMemoryRows<T extends AgentMemoryRowForSelection>(rows: T[], limit = 30, now = new Date()): T[] {
+  const selected: T[] = [];
+  const seen = new Set<string>();
+  const sorted = [...rows].sort((left, right) => agentMemorySortScore(right, now) - agentMemorySortScore(left, now));
+
+  for (const row of sorted) {
+    if (!isUsefulAgentMemory(row, now)) continue;
+    const key = agentMemorySelectionKey(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push(row);
+    if (selected.length >= limit) break;
+  }
+
+  return selected;
+}
+
+export function clampMemoryWindowDays(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 180;
+  return Math.max(7, Math.min(730, Math.round(value)));
+}
+
+function dateDaysAgo(days: number, now = new Date()): Date {
+  return new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+function isUsefulAgentMemory(memory: AgentMemoryRowForSelection, now: Date): boolean {
+  if (memory.avoidUntil && memory.avoidUntil.getTime() > now.getTime()) return true;
+  if (memory.confidence >= 45) return true;
+  if (memory.qualityScore !== null && memory.qualityScore < 78) return true;
+  if (memory.trafficScore !== null && memory.trafficScore < 78) return true;
+  return ["failed", "rejected", "warning"].includes(memory.outcome);
+}
+
+function agentMemorySelectionKey(memory: AgentMemoryRowForSelection): string {
+  return [
+    normalizeAgentKeyword(memory.keyword) ?? "",
+    memory.angleKey ?? "",
+    normalizeAgentKeyword(memory.topicFingerprint) ?? "",
+    memory.outcome
+  ].join("|");
+}
+
+function agentMemorySortScore(memory: AgentMemoryRowForSelection, now: Date): number {
+  const activeAvoid = memory.avoidUntil && memory.avoidUntil.getTime() > now.getTime() ? 60 : 0;
+  const failedBoost = ["failed", "rejected"].includes(memory.outcome) ? 18 : memory.outcome === "warning" ? 10 : 0;
+  const qualityBoost =
+    memory.qualityScore !== null && memory.qualityScore < 82 ? Math.min(18, Math.round((82 - memory.qualityScore) / 2)) : 0;
+  const trafficBoost =
+    memory.trafficScore !== null && memory.trafficScore < 82 ? Math.min(18, Math.round((82 - memory.trafficScore) / 2)) : 0;
+  const recencyDays = Math.max(0, (now.getTime() - memory.lastUsedAt.getTime()) / (24 * 60 * 60 * 1000));
+  const recencyScore = Math.max(0, 20 - recencyDays / 7);
+  return activeAvoid + failedBoost + qualityBoost + trafficBoost + memory.confidence + recencyScore;
 }
 
 function dedupeTopicHistory(items: TopicHistoryItem[]): TopicHistoryItem[] {
@@ -4415,7 +4626,11 @@ async function persistAgentRuntimeArtifacts(input: {
         startedAt: dateValue(call.startedAt),
         completedAt: dateValue(call.finishedAt),
         latencyMs: call.latencyMs,
-        metadata: toPrismaJson({ planId: call.planId })
+        metadata: toPrismaJson({
+          planId: call.planId,
+          evidenceIds: call.evidenceIds ?? [],
+          decisionSummary: call.decisionSummary
+        })
       }))
     });
   }
@@ -4483,33 +4698,81 @@ async function persistAgentRuntimeArtifacts(input: {
     )
   );
 
-  await prisma.agentMemory.create({
-    data: {
-      organizationId: input.organizationId,
-      storeId: input.storeId,
-      campaignId: input.campaignId,
-      articleId: input.articleId,
-      locale: input.locale,
-      sourceType: input.sourceType,
-      sourceId: input.sourceId,
-      keyword: input.agentRun.keywordStrategy.primaryKeyword,
-      angleKey: input.agentRun.topicSelection.selected.agent?.angleKey,
-      topicFingerprint: normalizeAgentKeyword(input.agentRun.topicSelection.selected.topic),
-      outcome: input.qualityPassed ? "success" : input.agentRun.status === "failed" ? "failed" : "warning",
-      confidence: input.qualityPassed ? 86 : 62,
-      qualityScore: input.finalSeoScore,
-      trafficScore: input.finalTrafficScore,
-      learnedRule: buildAgentLearnedRule(input),
-      avoidUntil: input.qualityPassed ? undefined : daysFromNow(21),
-      evidence: toPrismaJson(input.agentRun.topicSelection.selected.evidence),
-      metadata: toPrismaJson({
-        runId: input.agentRunId,
-        selectedTopic: input.agentRun.topicSelection.selected.topic,
-        reflectionDecision: input.agentRun.reflection.publishDecision,
-        memorySnapshot: input.agentRun.memory
-      })
-    }
+  const memoryData = buildAgentMemoryPersistenceData(input);
+  const existingMemory = await prisma.agentMemory.findFirst({
+    where: {
+      organizationId: memoryData.organizationId,
+      storeId: memoryData.storeId,
+      locale: memoryData.locale,
+      sourceType: memoryData.sourceType,
+      sourceId: memoryData.sourceId,
+      keyword: memoryData.keyword,
+      angleKey: memoryData.angleKey,
+      topicFingerprint: memoryData.topicFingerprint
+    },
+    orderBy: [{ confidence: "desc" }, { updatedAt: "desc" }]
   });
+  if (existingMemory) {
+    await prisma.agentMemory.update({
+      where: { id: existingMemory.id },
+      data: {
+        campaignId: memoryData.campaignId,
+        articleId: memoryData.articleId,
+        outcome: memoryData.outcome,
+        confidence: Math.max(existingMemory.confidence, memoryData.confidence),
+        qualityScore: memoryData.qualityScore,
+        trafficScore: memoryData.trafficScore,
+        learnedRule: memoryData.learnedRule,
+        avoidUntil: memoryData.avoidUntil,
+        evidence: memoryData.evidence,
+        metadata: memoryData.metadata,
+        lastUsedAt: new Date()
+      }
+    });
+  } else {
+    await prisma.agentMemory.create({ data: memoryData });
+  }
+}
+
+export function buildAgentMemoryPersistenceData(input: {
+  agentRunId: string;
+  articleId: string;
+  campaignId?: string;
+  organizationId: string;
+  storeId: string;
+  locale: SupportedLocale;
+  sourceType: SourceType;
+  sourceId?: string;
+  qualityPassed?: boolean;
+  finalSeoScore?: number;
+  finalTrafficScore?: number;
+  agentRun: AgentContentPipelineResult["artifacts"]["agentRun"];
+}) {
+  return {
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    campaignId: input.campaignId ?? null,
+    articleId: input.articleId,
+    locale: input.locale,
+    sourceType: input.sourceType,
+    sourceId: input.sourceId ?? null,
+    keyword: input.agentRun.keywordStrategy.primaryKeyword,
+    angleKey: input.agentRun.topicSelection.selected.agent?.angleKey ?? null,
+    topicFingerprint: normalizeAgentKeyword(input.agentRun.topicSelection.selected.topic) ?? null,
+    outcome: input.qualityPassed ? "success" as const : input.agentRun.status === "failed" ? "failed" as const : "warning" as const,
+    confidence: input.qualityPassed ? 86 : 62,
+    qualityScore: input.finalSeoScore ?? null,
+    trafficScore: input.finalTrafficScore ?? null,
+    learnedRule: buildAgentLearnedRule(input),
+    avoidUntil: input.qualityPassed ? null : daysFromNow(21),
+    evidence: toPrismaJson(input.agentRun.topicSelection.selected.evidence),
+    metadata: toPrismaJson({
+      runId: input.agentRunId,
+      selectedTopic: input.agentRun.topicSelection.selected.topic,
+      reflectionDecision: input.agentRun.reflection.publishDecision,
+      memorySnapshot: input.agentRun.memory
+    })
+  };
 }
 
 function collectAgentEvidence(agentRun: AgentContentPipelineResult["artifacts"]["agentRun"]): KeywordEvidenceItem[] {
