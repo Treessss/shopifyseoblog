@@ -59,6 +59,25 @@ export interface PythonAgentCenterSnapshot {
   doctrine_sources: string[];
 }
 
+export interface PythonIntegrationStatus {
+  key: string;
+  label: string;
+  owner: string;
+  status: string;
+  summary: string;
+  required_environment: string[];
+  capabilities: string[];
+  next_step: string;
+}
+
+export interface PythonIntegrationHealthSummary {
+  status: string;
+  ready_count: number;
+  degraded_count: number;
+  blocked_count: number;
+  integrations: PythonIntegrationStatus[];
+}
+
 export interface PythonWorkflowPlan {
   mode: string;
   topic: string;
@@ -251,6 +270,11 @@ export function pythonAgentServiceEnabled() {
 export async function getPythonAgentSnapshot(): Promise<PythonAgentCenterSnapshot | null> {
   if (!pythonAgentServiceEnabled()) return null;
   return pythonAgentFetch<PythonAgentCenterSnapshot>("/api/v1/agents");
+}
+
+export async function getPythonIntegrationHealth(): Promise<PythonIntegrationHealthSummary | null> {
+  if (!pythonAgentServiceEnabled()) return null;
+  return pythonAgentFetch<PythonIntegrationHealthSummary>("/api/v1/health/integrations");
 }
 
 export async function createPythonAgentSnapshot(

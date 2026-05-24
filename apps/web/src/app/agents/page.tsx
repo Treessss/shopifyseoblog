@@ -30,6 +30,7 @@ import {
   createPythonAgentSnapshot,
   createPythonWorkflowPlan,
   getPythonAgentSnapshot,
+  getPythonIntegrationHealth,
   getPythonSeoBoard,
   type PythonWorkflowPlanRequest
 } from "@/lib/agent-center/python-agent-client";
@@ -42,9 +43,10 @@ export default async function AgentsPage() {
     getResearchView("overview")
   ]);
   const organization = priorities.data.organization ?? performance.data.organization ?? research.data.organization;
-  const [pythonSnapshot, pythonSeoBoard] = await Promise.all([
+  const [pythonSnapshot, pythonSeoBoard, pythonIntegrationHealth] = await Promise.all([
     getPythonAgentSnapshot(),
-    getPythonSeoBoard()
+    getPythonSeoBoard(),
+    getPythonIntegrationHealth()
   ]);
   const workflowRequest: PythonWorkflowPlanRequest = {
     organization_id: organization.id || "demo",
@@ -278,6 +280,32 @@ export default async function AgentsPage() {
           </Panel>
         ) : null}
 
+        {pythonIntegrationHealth ? (
+          <Panel title="Python Integration Health" description="前后端分离迁移里，Python 后端已经接管或仍需接管的企业级依赖。">
+            <div className="insight-strip">
+              <StatusPill label="总体状态" value={pythonIntegrationHealth.status} tone={integrationTone(pythonIntegrationHealth.status)} icon={<BrainCircuit size={18} aria-hidden="true" />} />
+              <StatusPill label="Ready" value={pythonIntegrationHealth.ready_count} tone="good" icon={<CircleCheckBig size={18} aria-hidden="true" />} />
+              <StatusPill label="Degraded" value={pythonIntegrationHealth.degraded_count} tone={pythonIntegrationHealth.degraded_count > 0 ? "warn" : "neutral"} icon={<ShieldCheck size={18} aria-hidden="true" />} />
+              <StatusPill label="Blocked" value={pythonIntegrationHealth.blocked_count} tone={pythonIntegrationHealth.blocked_count > 0 ? "danger" : "good"} icon={<ListTodo size={18} aria-hidden="true" />} />
+            </div>
+            <div className="list">
+              {pythonIntegrationHealth.integrations.map((integration) => (
+                <div className="list-item" key={integration.key}>
+                  <div>
+                    <strong>{integration.label}</strong>
+                    <small className="muted">
+                      Owner：{formatAgentRole(integration.owner)} · {integration.summary}
+                    </small>
+                    <small className="muted">Capabilities：{integration.capabilities.join(" / ")}</small>
+                    <small className="muted">Next：{integration.next_step}</small>
+                  </div>
+                  <Badge tone={integrationTone(integration.status)}>{integration.status}</Badge>
+                </div>
+              ))}
+            </div>
+          </Panel>
+        ) : null}
+
         {pythonSeoBoard ? (
           <Panel title="Python SEO Strategy Board" description="后端按 quick wins、竞品缺口和内容矩阵合成的策略优先级。">
             <div className="readiness-summary">
@@ -445,6 +473,20 @@ function SeoGateRow(props: { title: string; value: string; tone: "good" | "warn"
       <Badge tone={props.tone}>{props.tone === "good" ? "达标" : props.tone === "warn" ? "待验证" : "观察"}</Badge>
     </div>
   );
+}
+
+function integrationTone(status: string): "good" | "warn" | "danger" | "neutral" {
+  if (status === "ready") return "good";
+  if (status === "degraded") return "warn";
+  if (status === "blocked") return "danger";
+  return "neutral";
+}
+
+function formatAgentRole(role: string) {
+  return role
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function resolveNextAction(input: {

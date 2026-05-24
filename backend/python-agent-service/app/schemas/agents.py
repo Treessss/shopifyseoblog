@@ -61,3 +61,22 @@ class AgentCenterSnapshot(BaseModel):
     completed_agents_total: int = 0
     workflow_completion: float = 0.0
     doctrine_sources: list[str] = Field(default_factory=list)
+
+
+class IntegrationStatus(BaseModel):
+    key: str
+    label: str
+    owner: AgentRole
+    status: str
+    summary: str
+    required_environment: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    next_step: str
+
+
+class IntegrationHealthSummary(BaseModel):
+    status: str
+    ready_count: int
+    degraded_count: int
+    blocked_count: int
+    integrations: list[IntegrationStatus] = Field(default_factory=list)
