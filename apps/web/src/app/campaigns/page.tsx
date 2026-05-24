@@ -1,5 +1,6 @@
 import { Clock3, Languages, ListFilter, Megaphone, Plus, Search, ShieldCheck } from "lucide-react";
 import { CampaignProgressTable } from "@/components/campaign-progress-table";
+import { CampaignRecoveryPanel } from "@/components/campaign-recovery-panel";
 import {
   ErrorState,
   Field,
@@ -121,6 +122,19 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
 
           <CampaignProgressTable initialCampaigns={campaigns} query={query} status={status} />
         </Panel>
+
+        {campaigns.some((campaign) => campaign.progressIsStale || campaign.progressRecoverable) ? (
+          <Panel title="卡住任务概览" description="先处理最需要恢复的任务，避免继续堆积新的内容任务。">
+            <div className="stack">
+              {campaigns
+                .filter((campaign) => campaign.progressIsStale || campaign.progressRecoverable)
+                .slice(0, 3)
+                .map((campaign) => (
+                  <CampaignRecoveryPanel campaign={campaign} key={campaign.id} />
+                ))}
+            </div>
+          </Panel>
+        ) : null}
 
         <Panel
           title="新建内容任务"
