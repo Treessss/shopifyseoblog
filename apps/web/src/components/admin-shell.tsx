@@ -48,7 +48,8 @@ const navGroups = [
     items: [
       { href: "/stores", label: dictionary.nav.stores, icon: Store },
       { href: "/campaigns", label: dictionary.nav.campaigns, icon: Megaphone },
-      { href: "/articles", label: dictionary.nav.articles, icon: FileText }
+      { href: "/articles", label: dictionary.nav.articles, icon: FileText },
+      { href: "/content-rules", label: dictionary.nav.contentRules, icon: CheckCircle2 }
     ]
   },
   {

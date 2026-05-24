@@ -17,6 +17,7 @@ export const dictionaries = {
       campaigns: "内容任务",
       articles: "文章",
       research: "研究台",
+      contentRules: "内容准则",
       brandVoice: "品牌语气",
       logs: "日志"
     },
@@ -41,6 +42,7 @@ export const dictionaries = {
       campaigns: "Campaigns",
       articles: "Articles",
       research: "Research",
+      contentRules: "Content Rules",
       brandVoice: "Brand Voice",
       logs: "Logs"
     },

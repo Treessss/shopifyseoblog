@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Bot,
   CircleCheckBig,
+  CheckCircle2,
   FileText,
   Layers3,
   Megaphone,
@@ -49,6 +50,10 @@ export default async function DashboardPage() {
             <Link href="/agents" className="button">
               <Bot size={16} aria-hidden="true" />
               Agent 中心
+            </Link>
+            <Link href="/content-rules" className="button">
+              <CheckCircle2 size={16} aria-hidden="true" />
+              内容准则
             </Link>
             <Link href="/research" className="button">
               <Search size={16} aria-hidden="true" />
@@ -198,6 +203,10 @@ export default async function DashboardPage() {
             <Link href="/research" className="compact-link">
               <Search size={16} aria-hidden="true" />
               研究台
+            </Link>
+            <Link href="/content-rules" className="compact-link">
+              <CheckCircle2 size={16} aria-hidden="true" />
+              内容准则
             </Link>
             <Link href="/priorities" className="compact-link">
               <Layers3 size={16} aria-hidden="true" />
