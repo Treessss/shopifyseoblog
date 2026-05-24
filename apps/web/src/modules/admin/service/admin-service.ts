@@ -299,17 +299,24 @@ export async function getBrandVoice(input: AdminRequestContextInput) {
   };
 }
 
-export async function getSearchConsole(input: AdminRequestContextInput): Promise<{ organization: ResolvedAdminContext["organization"]; properties: AdminSearchConsolePropertyOverview[]; snapshots: AdminSearchConsoleSnapshotOverview[]; }> {
+export async function getSearchConsole(input: AdminRequestContextInput): Promise<AdminSearchConsoleView & { organization: ResolvedAdminContext["organization"] }> {
   const context = await resolveAdminContext(input);
-  const [properties, snapshots] = await Promise.all([
+  const [properties, snapshots, stores] = await Promise.all([
     repository.findSearchConsoleProperties(context.organizationId),
-    repository.findSearchConsoleSnapshots(context.organizationId)
+    repository.findSearchConsoleSnapshots(context.organizationId),
+    repository.findStores(context.organizationId)
   ]);
 
   return {
     organization: context.organization,
     properties: properties.map((property) => mapSearchConsoleProperty(property)),
-    snapshots: snapshots.map((snapshot) => mapSearchConsoleSnapshot(snapshot))
+    snapshots: snapshots.map((snapshot) => mapSearchConsoleSnapshot(snapshot)),
+    stores: stores.map((store) => ({
+      id: store.id,
+      name: store.name,
+      domain: store.myshopifyDomain,
+      defaultSiteUrl: toUrlPrefixSiteUrl(store.myshopifyDomain)
+    }))
   };
 }
 
@@ -1437,11 +1444,15 @@ function mapSearchConsoleProperty(property: SearchConsolePropertyRow): AdminSear
     id: property.id,
     storeId: property.store.id,
     store: property.store.name,
+    storeDomain: property.store.myshopifyDomain,
     siteUrl: property.siteUrl,
     status: property.status,
     statusTone: searchConsolePropertyTone(property.status),
     permissionLevel: property.permissionLevel,
     scopes: property.scopes,
+    hasOAuthClient: Boolean(property.googleClientId),
+    hasClientSecret: Boolean(property.googleClientSecretEncrypted),
+    hasRefreshToken: Boolean(property.refreshTokenEncrypted),
     snapshotCount: property.snapshots.length,
     queryRowCount: property.queryRows.length,
     lastSyncedAt: toIso(property.lastSyncedAt),
@@ -1449,6 +1460,10 @@ function mapSearchConsoleProperty(property: SearchConsolePropertyRow): AdminSear
     createdAt: property.createdAt.toISOString(),
     updatedAt: property.updatedAt.toISOString()
   };
+}
+
+function toUrlPrefixSiteUrl(host: string): string {
+  return `https://${host.replace(/^https?:\/\//i, "").replace(/\/+$/g, "")}/`;
 }
 
 function mapSearchConsoleSnapshot(snapshot: SearchConsoleSnapshotRow): AdminSearchConsoleSnapshotOverview {

@@ -315,11 +315,15 @@ export interface AdminSearchConsolePropertyOverview {
   id: string;
   storeId: string;
   store: string;
+  storeDomain: string;
   siteUrl: string;
   status: SearchConsolePropertyStatus;
   statusTone: "good" | "warn" | "danger" | "neutral";
   permissionLevel: string | null;
   scopes: string[];
+  hasOAuthClient: boolean;
+  hasClientSecret: boolean;
+  hasRefreshToken: boolean;
   snapshotCount: number;
   queryRowCount: number;
   lastSyncedAt: string | null;
@@ -354,6 +358,12 @@ export interface AdminSearchConsoleSnapshotOverview {
 export interface AdminSearchConsoleView {
   properties: AdminSearchConsolePropertyOverview[];
   snapshots: AdminSearchConsoleSnapshotOverview[];
+  stores: Array<{
+    id: string;
+    name: string;
+    domain: string;
+    defaultSiteUrl: string;
+  }>;
 }
 
 export type AdminPriorityKind =

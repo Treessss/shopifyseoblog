@@ -18,9 +18,15 @@ def get_search_console_integration_status(settings: Settings) -> IntegrationStat
         summary=(
             "Search Console property and OAuth credentials are available for Python performance review."
             if ready
-            else "Search Console is partially configured; Python can plan the review but cannot fetch live query data yet."
+            else (
+                "Search Console property is configured, but live query data still requires OAuth client ID and client secret; "
+                "an API key cannot read Search Console performance data."
+            )
             if has_property
-            else "Search Console property is missing for Python-owned rank-ready validation."
+            else (
+                "Search Console property is missing for Python-owned rank-ready validation; OAuth credentials are also "
+                "required for live performance data."
+            )
         ),
         required_environment=[
             "AGENT_GOOGLE_SEARCH_CONSOLE_PROPERTY_URL",
@@ -36,6 +42,6 @@ def get_search_console_integration_status(settings: Settings) -> IntegrationStat
         next_step=(
             "Use this adapter for post-publish query gap and refresh planning."
             if ready
-            else "Add Search Console property and OAuth credentials before moving growth review fully into Python."
+            else "Add the Search Console property plus OAuth client ID and secret; API keys do not unlock performance review."
         ),
     )

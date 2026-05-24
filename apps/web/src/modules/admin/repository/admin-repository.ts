@@ -140,7 +140,8 @@ export function findSearchConsoleProperties(organizationId: string, take = 50) {
       store: {
         select: {
           id: true,
-          name: true
+          name: true,
+          myshopifyDomain: true
         }
       },
       snapshots: {

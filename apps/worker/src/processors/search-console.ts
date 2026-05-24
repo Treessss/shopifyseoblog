@@ -447,10 +447,10 @@ async function resolveSearchConsoleAccessToken(property: SearchConsolePropertyRo
       where: { id: property.id },
       data: {
         status: "needs_auth",
-        lastSyncError: "Missing GSC refresh token, client id, or client secret."
+        lastSyncError: "Missing Search Console OAuth refresh token, client ID, or client secret. API keys cannot read performance data."
       }
     });
-    throw domainError("SEARCH_CONSOLE_AUTH_REQUIRED", "Google Search Console needs OAuth credentials before syncing.", {
+    throw domainError("SEARCH_CONSOLE_AUTH_REQUIRED", "Google Search Console performance sync needs OAuth credentials; an API key is not enough.", {
       retryable: false,
       details: { propertyId: property.id }
     });

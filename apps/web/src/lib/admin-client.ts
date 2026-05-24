@@ -383,7 +383,8 @@ export async function getSearchConsoleView(): Promise<AdminPageView<AdminSearchC
   return {
     data: {
       properties: normalizeSearchConsoleProperties(unwrapCollection(record, ["properties", "items", "data"])),
-      snapshots: normalizeSearchConsoleSnapshots(unwrapCollection(record, ["snapshots", "items", "data"]))
+      snapshots: normalizeSearchConsoleSnapshots(unwrapCollection(record, ["snapshots", "items", "data"])),
+      stores: normalizeSearchConsoleStores(unwrapCollection(record, ["stores", "shopifyStores"]))
     },
     error: result.error
   };
@@ -958,16 +959,26 @@ function normalizeSearchConsoleProperties(input: unknown[]): AdminSearchConsoleP
   return input.map((item, index) => {
     const record = asRecord(item);
     const store = pickRecord(record, ["store", "shopifyStore"]);
+    const storeName = pickString(record, ["storeName", "store"], pickString(store, ["name"], "未绑定店铺"));
+    const storeDomain = pickString(
+      record,
+      ["storeDomain", "myshopifyDomain"],
+      pickString(store, ["myshopifyDomain", "domain"], "")
+    );
 
     return {
       id: pickString(record, ["id", "propertyId"], `search-console-property-${index}`),
       storeId: pickString(record, ["storeId"], pickString(store, ["id"], "")),
-      store: pickString(record, ["storeName"], pickString(store, ["name"], "未绑定店铺")),
+      store: storeName,
+      storeDomain,
       siteUrl: pickString(record, ["siteUrl"], ""),
       status: normalizeSearchConsoleStatus(pickString(record, ["status"], "active")),
       statusTone: normalizeTone(pickString(record, ["statusTone"], pickString(record, ["status"], "neutral"))),
       permissionLevel: pickString(record, ["permissionLevel"], "") || null,
       scopes: pickStringArray(record, ["scopes"]),
+      hasOAuthClient: pickBoolean(record, ["hasOAuthClient"], Boolean(pickString(record, ["googleClientId"], ""))),
+      hasClientSecret: pickBoolean(record, ["hasClientSecret"], false),
+      hasRefreshToken: pickBoolean(record, ["hasRefreshToken"], false),
       snapshotCount: pickNumber(record, ["snapshotCount", "_count.snapshots"], 0),
       queryRowCount: pickNumber(record, ["queryRowCount", "_count.queryRows"], 0),
       lastSyncedAt: formatIsoDate(pickString(record, ["lastSyncedAt"], "")),
@@ -978,18 +989,33 @@ function normalizeSearchConsoleProperties(input: unknown[]): AdminSearchConsoleP
   });
 }
 
+function normalizeSearchConsoleStores(input: unknown[]): AdminSearchConsoleView["stores"] {
+  return input.map((item, index) => {
+    const record = asRecord(item);
+    const domain = pickString(record, ["domain", "myshopifyDomain"], "");
+
+    return {
+      id: pickString(record, ["id", "storeId"], `search-console-store-${index}`),
+      name: pickString(record, ["name", "storeName"], domain || "未命名店铺"),
+      domain,
+      defaultSiteUrl: pickString(record, ["defaultSiteUrl", "siteUrl"], domain ? `https://${domain}/` : "")
+    };
+  });
+}
+
 function normalizeSearchConsoleSnapshots(input: unknown[]): AdminSearchConsoleSnapshotOverview[] {
   return input.map((item, index) => {
     const record = asRecord(item);
     const store = pickRecord(record, ["store", "shopifyStore"]);
     const article = pickRecord(record, ["article", "blogArticle"]);
     const property = pickRecord(record, ["property", "searchConsoleProperty"]);
+    const storeName = pickString(record, ["storeName", "store"], pickString(store, ["name"], "未绑定店铺"));
 
     return {
       id: pickString(record, ["id", "snapshotId"], `search-console-snapshot-${index}`),
       propertyId: pickString(record, ["propertyId"], pickString(property, ["id"], "")),
       storeId: pickString(record, ["storeId"], pickString(store, ["id"], "")),
-      store: pickString(record, ["storeName"], pickString(store, ["name"], "未绑定店铺")),
+      store: storeName,
       articleId: pickString(record, ["articleId"], pickString(article, ["id"], "")),
       article: pickString(record, ["articleTitle"], pickString(article, ["title"], "未命名文章")),
       siteUrl: pickString(record, ["siteUrl"], pickString(property, ["siteUrl"], "")),

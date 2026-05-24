@@ -24,6 +24,20 @@ Available bootstrap endpoints:
 
 The current Next.js worker still owns live article generation. This service is the staged backend for moving orchestration out of TypeScript.
 
+## Search Console Credentials
+
+Search Console search performance data requires OAuth 2.0 credentials. An API key can identify a Google Cloud project, but it cannot read private Search Console query, click, CTR, or ranking data.
+
+Use these local variables when enabling live performance review:
+
+```bash
+AGENT_GOOGLE_SEARCH_CONSOLE_PROPERTY_URL=https://your-store.myshopify.com/
+AGENT_GOOGLE_CLIENT_ID=
+AGENT_GOOGLE_CLIENT_SECRET=
+```
+
+The Next.js worker also needs `GSC_REFRESH_TOKEN` or a saved refresh token on the Search Console property before it can sync performance rows.
+
 ## Architecture Notes
 
 - `app/api/v1` owns versioned HTTP routes.
