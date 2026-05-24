@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, FileText, ScrollText, Sparkles } from "lucide-react";
+import { FileText, ScrollText, Sparkles, TriangleAlert } from "lucide-react";
 import { Badge, ProgressBar, TableEmpty } from "@/components/ui";
 import type { AdminCampaignView } from "@/lib/admin-client";
 
@@ -116,10 +116,10 @@ export function CampaignProgressTable({ initialCampaigns, query, status }: Campa
                       {campaign.progressNextStep ? <em>下一步：{campaign.progressNextStep}</em> : null}
                       {campaign.progressIsStale ? (
                         <div className="progress-alert" role="status">
-                          <AlertTriangle size={14} aria-hidden="true" />
+                          <TriangleAlert size={14} aria-hidden="true" />
                           <span>
                             {campaign.progressStaleReason ??
-                              `任务较久没有进度心跳${campaign.progressStaleMinutes !== null ? `（${campaign.progressStaleMinutes} 分钟）` : ""}，建议先查看日志。`}
+                              `任务较久没有进度心跳${campaign.progressStaleMinutes !== null ? `（${campaign.progressStaleMinutes} 分钟）` : ""}。先看日志，如果草稿已生成就去文章页修复。`}
                           </span>
                         </div>
                       ) : campaign.progressRecoverable ? (
@@ -142,7 +142,7 @@ export function CampaignProgressTable({ initialCampaigns, query, status }: Campa
                               <input type="hidden" name="repairReason" value="任务长时间没有进度心跳：按当前草稿、质检状态和 Agent 轨迹继续修复。" />
                               <button className="button button--small" type="submit">
                                 <Sparkles size={14} aria-hidden="true" />
-                                修复
+                                继续修复
                               </button>
                             </form>
                           ) : null}
