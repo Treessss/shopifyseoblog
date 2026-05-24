@@ -1,7 +1,9 @@
 import { Clock3, Languages, ListFilter, Megaphone, Plus, Search, ShieldCheck } from "lucide-react";
 import { CampaignProgressTable } from "@/components/campaign-progress-table";
 import { CampaignRecoveryPanel } from "@/components/campaign-recovery-panel";
+import { StartPathPanel } from "@/components/start-path-panel";
 import {
+  Badge,
   ErrorState,
   Field,
   FormNotice,
@@ -15,8 +17,16 @@ import {
   formatCampaignStatus,
   getCampaignsView,
   getLanguagesView,
+  getDashboardView,
+  getSearchConsoleView,
   getStoresView
 } from "@/lib/admin-client";
+import {
+  buildCampaignStartSteps,
+  buildCampaignWorkflowPlanFallback,
+  buildCampaignWorkflowRequest
+} from "@/lib/agent-center/campaign-workflow-preview";
+import { createPythonWorkflowPlan } from "@/lib/agent-center/python-agent-client";
 import { readFormNotice, readSearchParam } from "@/lib/search-params";
 
 type PageProps = {
@@ -34,20 +44,40 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
   const presetKeywords = readSearchParam(params, "keywords");
   const presetSourceId = readSearchParam(params, "sourceId");
   const presetTargetWordCount = readSearchParam(params, "targetWordCount");
-  const [campaignResult, storeResult, languageResult] = await Promise.all([
+  const [campaignResult, storeResult, languageResult, dashboardResult, searchConsoleResult] = await Promise.all([
     getCampaignsView(),
     getStoresView(),
-    getLanguagesView()
+    getLanguagesView(),
+    getDashboardView(),
+    getSearchConsoleView()
   ]);
   const campaigns = campaignResult.data;
   const stores = storeResult.data;
   const languages = languageResult.data.filter((language) => language.enabled);
+  const dashboard = dashboardResult.data;
+  const searchConsole = searchConsoleResult.data;
   const notice = readFormNotice(params);
   const activeStoreId = stores.some((store) => store.id === presetStoreId) ? presetStoreId : stores[0]?.id ?? "";
   const activeLocale = languages.some((language) => language.locale === presetLocale)
     ? presetLocale
     : languages[0]?.locale ?? "zh-CN";
   const activeTargetWordCount = Number.parseInt(presetTargetWordCount, 10) || 1400;
+  const workflowRequest = buildCampaignWorkflowRequest({
+    organizationId: "preview",
+    storeId: activeStoreId || "preview-store",
+    locale: activeLocale,
+    topic: presetTopic || null,
+    primaryKeyword: presetPrimaryKeyword || null,
+    sourceId: presetSourceId || null,
+    targetWordCount: activeTargetWordCount,
+    availableInternalLinks: dashboard.articles.length,
+    availableExternalReferences: searchConsole.snapshots.length,
+    recentTopicCount: campaigns.length,
+    searchConsoleConnected: searchConsole.properties.some((property) => property.status === "active"),
+    publishPolicy: "manual_review"
+  });
+  const pythonWorkflowPlan = (await createPythonWorkflowPlan(workflowRequest)) ?? buildCampaignWorkflowPlanFallback(workflowRequest);
+  const workflowSteps = buildCampaignStartSteps(pythonWorkflowPlan);
 
   return (
     <>
@@ -68,6 +98,19 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
         <ErrorState error={storeResult.error} title="店铺选项读取失败" />
         <ErrorState error={languageResult.error} title="语言选项读取失败" />
         {notice ? <FormNotice {...notice} /> : null}
+
+        <StartPathPanel
+          title="先从这里开始"
+          description="系统会先跑一次 Python 预检，再决定这条内容任务该怎么进入 agent 流程。"
+          primaryLabel="去创建任务"
+          primaryHref="#new-campaign"
+          steps={workflowSteps}
+          statusLabel="开工预检"
+          statusValue={pythonWorkflowPlan.blockers.length > 0 ? `${pythonWorkflowPlan.blockers.length} 个阻塞` : "可开工"}
+          statusTone={pythonWorkflowPlan.blockers.length > 0 ? "warn" : "good"}
+          statusHint={pythonWorkflowPlan.next_step}
+          badgeLabel={pythonWorkflowPlan.mode === "article_repair" ? "修复路径" : "新建路径"}
+        />
 
         <div className="insight-strip">
           <StatusPill
@@ -135,6 +178,45 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
             </div>
           </Panel>
         ) : null}
+
+        <Panel title="开工预检" description="先补齐这些条件，再让任务进入队列。">
+          <div className="list">
+            <div className="list-item">
+              <div>
+                <strong>下一步</strong>
+                <small className="muted">{pythonWorkflowPlan.next_step}</small>
+              </div>
+              <Badge tone={pythonWorkflowPlan.blockers.length > 0 ? "warn" : "good"}>
+                {pythonWorkflowPlan.blockers.length > 0 ? "需补齐" : "已通过"}
+              </Badge>
+            </div>
+            <div className="list-item">
+              <div>
+                <strong>工作模式</strong>
+                <small className="muted">{pythonWorkflowPlan.mode === "article_repair" ? "修复现有文章" : "新建内容任务"}</small>
+              </div>
+              <Badge tone="neutral">{pythonWorkflowPlan.publish_policy}</Badge>
+            </div>
+            {pythonWorkflowPlan.blockers.length > 0 ? (
+              pythonWorkflowPlan.blockers.map((blocker) => (
+                <div className="list-item" key={blocker}>
+                  <div>
+                    <strong>{describeWorkflowBlocker(blocker)}</strong>
+                    <small className="muted">先处理这个，再继续后面的 agent 步骤。</small>
+                  </div>
+                  <Badge tone="warn">阻塞</Badge>
+                </div>
+              ))
+            ) : (
+              <div className="list-item">
+                <div>
+                  <strong>当前预检通过</strong>
+                  <small className="muted">可以直接进入任务创建，Python 会继续接住研究、写作、质检和发布流程。</small>
+                </div>
+              </div>
+            )}
+          </div>
+        </Panel>
 
         <Panel
           title="新建内容任务"
@@ -382,4 +464,21 @@ export default async function CampaignsPage({ searchParams }: PageProps) {
       </div>
     </>
   );
+}
+
+function describeWorkflowBlocker(blocker: string) {
+  switch (blocker) {
+    case "topic":
+      return "先选主题或主关键词";
+    case "internal_links":
+      return "先同步商品、集合和文章";
+    case "external_references":
+      return "先准备外部引用";
+    case "recent_topics":
+      return "先积累近期主题";
+    case "search_console":
+      return "先连接 Search Console";
+    default:
+      return blocker;
+  }
 }
