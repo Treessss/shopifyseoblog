@@ -149,6 +149,25 @@ export interface PythonRepairPlan {
   tasks: PythonRepairPlanTask[];
 }
 
+export interface PythonContentReadinessStage {
+  key: string;
+  label: string;
+  badge: string;
+  tone: "critical" | "high" | "medium" | "low";
+  summary: string;
+  required_checks: string[];
+  agent_roles: string[];
+  evidence_required: string[];
+  next_action: string;
+}
+
+export interface PythonContentReadinessDoctrine {
+  stages: PythonContentReadinessStage[];
+  default_sequence: string[];
+  no_guarantee_notice: string;
+  doctrine_sources: string[];
+}
+
 export interface PythonSeoBoardRecommendation {
   title: string;
   reason: string;
@@ -225,6 +244,11 @@ export async function createPythonRepairPlan(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(request)
   });
+}
+
+export async function getPythonContentReadinessDoctrine(): Promise<PythonContentReadinessDoctrine | null> {
+  if (!pythonAgentServiceEnabled()) return null;
+  return pythonAgentFetch<PythonContentReadinessDoctrine>("/api/v1/content/readiness-doctrine");
 }
 
 export async function getPythonSeoBoard(): Promise<PythonSeoBoard | null> {

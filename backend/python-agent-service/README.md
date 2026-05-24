@@ -16,8 +16,10 @@ Available bootstrap endpoints:
 
 - `GET /api/v1/health`
 - `GET /api/v1/agents`
+- `GET /api/v1/content/readiness-doctrine`
 - `POST /api/v1/content/workflow-plan`
 - `POST /api/v1/content/quality-gate`
+- `POST /api/v1/content/repair-plan`
 
 The current Next.js worker still owns live article generation. This service is the staged backend for moving orchestration out of TypeScript.
 

@@ -50,6 +50,25 @@ class ArticleQualityGate(BaseModel):
     doctrine_sources: list[str] = Field(default_factory=list)
 
 
+class ContentReadinessStage(BaseModel):
+    key: str
+    label: str
+    badge: str
+    tone: PriorityLevel = PriorityLevel.medium
+    summary: str
+    required_checks: list[str] = Field(default_factory=list)
+    agent_roles: list[AgentRole] = Field(default_factory=list)
+    evidence_required: list[str] = Field(default_factory=list)
+    next_action: str
+
+
+class ContentReadinessDoctrine(BaseModel):
+    stages: list[ContentReadinessStage]
+    default_sequence: list[str] = Field(default_factory=list)
+    no_guarantee_notice: str
+    doctrine_sources: list[str] = Field(default_factory=list)
+
+
 class ArticleRepairMode(StrEnum):
     pre_publish_repair = "pre_publish_repair"
     publish_and_index = "publish_and_index"
