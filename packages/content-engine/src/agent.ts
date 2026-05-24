@@ -4,6 +4,7 @@ import {
   selectTopicCandidate
 } from "./components";
 import { buildMemoryStrategy, buildTopicMemorySnapshot } from "./memory";
+import { discoverEntityInsights } from "./entities";
 import { planAgentTools } from "./planner";
 import { defaultContentPipelineRegistry, mergeInputSeedKeywords, normalizePipelineInput, runContentPipeline } from "./registry";
 import { buildCommercialSkillDoctrine } from "./skill-doctrine";
@@ -27,6 +28,7 @@ import type {
   KeywordPlan,
   KeywordPlanner,
   KeywordStrategy,
+  MarketInsight,
   NormalizedContentPipelineInput,
   ReflectionReport,
   ResearchBrief,
@@ -78,6 +80,7 @@ export async function runAgentContentPipeline(
   const researchContext = {
     ...baseContext,
     trendSignals: research.trendSignals,
+    entityInsights: research.entityInsights,
     internalLinks: research.internalLinks,
     externalReferences: research.externalReferences,
     imageReferences: research.imageReferences,
@@ -91,6 +94,7 @@ export async function runAgentContentPipeline(
       {
         product: Boolean(baseContext.product),
         collection: Boolean(baseContext.collection),
+        entityInsightCount: research.entityInsights.length,
         internalLinkCount: research.internalLinks.length,
         imageReferenceCount: research.imageReferences.length
       },
@@ -104,8 +108,8 @@ export async function runAgentContentPipeline(
         findPlan(toolPlan, "trend_discovery"),
         researchStageStart,
         { topic: normalized.topic, hotNews: normalized.generationConfig?.hotNews },
-        { trendCount: research.trendSignals.length, riskFlags: research.riskFlags },
-        research.evidence.filter((item) => item.type === "trend"),
+        { trendCount: research.trendSignals.length, entityInsightCount: research.entityInsights.length, riskFlags: research.riskFlags },
+        research.evidence.filter((item) => item.type === "trend" || item.type === "entity_context"),
         researchResult.warnings
       )
     );
@@ -116,8 +120,12 @@ export async function runAgentContentPipeline(
         findPlan(toolPlan, "external_citation_planner"),
         researchStageStart,
         { trendCount: research.trendSignals.length, configuredMaxLinks: normalized.generationConfig?.externalReferences?.maxLinks ?? 3 },
-        { externalReferenceCount: research.externalReferences.length, urls: research.externalReferences.map((reference) => reference.url) },
-        research.evidence.filter((item) => item.type === "external_reference" || item.type === "trend"),
+        {
+          externalReferenceCount: research.externalReferences.length,
+          entityInsightCount: research.entityInsights.length,
+          urls: research.externalReferences.map((reference) => reference.url)
+        },
+        research.evidence.filter((item) => item.type === "external_reference" || item.type === "trend" || item.type === "entity_context"),
         research.externalReferences.length ? [] : ["No external citation candidate was available."]
       )
     );
@@ -132,7 +140,7 @@ export async function runAgentContentPipeline(
       research.evidence,
       researchResult.warnings,
       undefined,
-      "Collected catalog facts, trend/news evidence, internal links, external citation candidates, and product image references.",
+      "Collected catalog facts, trend/news evidence, entity/IP signals, internal links, external citation candidates, and product image references.",
       ["tool_planning"],
       toolCalls.filter((call) => call.stage === "research").map((call) => call.id)
     )
@@ -210,7 +218,9 @@ export async function runAgentContentPipeline(
     topic: topicSelectionV2.selected.topic,
     topicSelection,
     keywordEvidence: topicSelectionV2.selected.evidence,
-    memoryStrategy
+    memoryStrategy,
+    marketInsights: research.marketInsights,
+    competitorAngles: research.competitorAngles
   } satisfies ContentSourceContext;
   toolCalls.push(
     traceToolCall(
@@ -329,6 +339,11 @@ export async function runAgentContentPipeline(
       )
     );
   }
+  const articleContext = {
+    ...topicContext,
+    marketInsights: research.marketInsights,
+    competitorAngles: research.competitorAngles
+  } satisfies ContentSourceContext;
   stages.push(
     stage(
       "draft_generation",
@@ -351,7 +366,7 @@ export async function runAgentContentPipeline(
   );
 
   const reflectionStageStart = nowIso();
-  const reflection = buildReflectionReport(pipelineResult, contentBrief, keywordStrategy, topicContext, topicSelectionV2, normalized);
+  const reflection = buildReflectionReport(pipelineResult, contentBrief, keywordStrategy, articleContext, topicSelectionV2, normalized);
   const reflectionTasks = buildReflectionTasks(reflection, pipelineResult.artifacts.keywordEvidence ?? topicSelectionV2.selected.evidence);
   toolCalls.push(
     traceToolCall(
@@ -444,9 +459,27 @@ async function buildResearchBrief(
     }
   }
 
-  const externalReferences = buildExternalReferences(input, context, trendSignals);
-  const evidenceContext = { ...context, trendSignals, externalReferences } satisfies ContentSourceContext;
+  let entityInsights = context.entityInsights ?? [];
+  if (entityInsights.length === 0) {
+    try {
+      entityInsights = await discoverEntityInsights({
+        topic: input.topic,
+        locale: input.locale,
+        context,
+        fetch: options.fetch
+      });
+    } catch (error) {
+      if (looksLikeEntityTopic(input.topic, context)) {
+        warnings.push(`Entity discovery failed: ${error instanceof Error ? error.message : "unknown error"}`);
+      }
+      entityInsights = [];
+    }
+  }
+  const externalReferences = buildExternalReferences(input, { ...context, entityInsights }, trendSignals);
+  const evidenceContext = { ...context, trendSignals, entityInsights, externalReferences } satisfies ContentSourceContext;
   const evidence = buildKeywordEvidence(input, evidenceContext);
+  const marketInsights = buildMarketInsights(trendSignals, evidence);
+  const competitorAngles = buildCompetitorAngles(context);
   const research: ResearchBrief = {
     sourceContext: {
       product: context.product,
@@ -456,11 +489,9 @@ async function buildResearchBrief(
       seedKeywords: context.seedKeywords
     },
     trendSignals,
-    marketInsights: buildMarketInsights(trendSignals, evidence),
-    competitorAngles: (context.competitorTitles ?? []).slice(0, 8).map((title) => ({
-      title,
-      angle: inferCompetitorAngle(title)
-    })),
+    entityInsights,
+    marketInsights,
+    competitorAngles,
     internalLinks: context.internalLinks ?? [],
     externalReferences,
     imageReferences: context.imageReferences ?? [],
@@ -469,9 +500,12 @@ async function buildResearchBrief(
     riskFlags: researchRiskFlags(input, evidenceContext, trendSignals),
     sourceSummary: {
       trendCount: trendSignals.length,
+      entityInsightCount: entityInsights.length,
       internalLinkCount: context.internalLinks?.length ?? 0,
       externalReferenceCount: externalReferences.length,
       imageReferenceCount: context.imageReferences?.length ?? 0,
+      marketInsightCount: marketInsights.length,
+      competitorAngleCount: competitorAngles.length,
       recentTopicCount: context.recentTopics?.length ?? 0,
       cannibalizationRiskCount: (context.keywordCannibalization ?? []).filter((item) => item.risk !== "low").length
     }
@@ -479,6 +513,9 @@ async function buildResearchBrief(
 
   if (trendSignals.length === 0 && input.generationConfig?.hotNews?.enabled) {
     warnings.push("No usable trend/news signal was found; using evergreen catalog evidence.");
+  }
+  if (entityInsights.length === 0 && looksLikeEntityTopic(input.topic, context)) {
+    warnings.push("Entity/IP context was suggested but no verified or catalog-backed entity insight could be confirmed.");
   }
   if (research.riskFlags.length > 0) warnings.push(...research.riskFlags);
 
@@ -494,9 +531,27 @@ function buildExternalReferences(
 
   const maxLinks = input.generationConfig?.externalReferences?.maxLinks ?? 3;
   const query =
-    firstNonBlank(input.primaryKeyword, input.topic, context.product?.productType, context.collection?.title, context.product?.title) ??
+    firstNonBlank(
+      input.primaryKeyword,
+      context.entityInsights?.[0]?.name,
+      input.topic,
+      context.product?.productType,
+      context.collection?.title,
+      context.product?.title
+    ) ??
     "Shopify ecommerce";
   const fromContext = context.externalReferences ?? [];
+  const fromEntities = (context.entityInsights ?? [])
+    .filter((entity) => entity.url)
+    .map((entity) => ({
+      title: entity.name,
+      url: entity.url as string,
+      source: entity.source || "entity context",
+      snippet: entity.summary,
+      publishedAt: undefined,
+      reason: entity.verified ? "verified entity background" : "catalog-detected entity context",
+      relevanceScore: Math.max(1, Math.round(entity.confidence / 20))
+    }));
   const fromTrends = trendSignals
     .filter((signal) => Boolean(signal.url))
     .map((signal) => ({
@@ -518,7 +573,7 @@ function buildExternalReferences(
 
   const seen = new Set<string>();
   const output: NonNullable<ContentSourceContext["externalReferences"]> = [];
-  for (const reference of [...fromContext, ...fromTrends, fallback]) {
+  for (const reference of [...fromContext, ...fromEntities, ...fromTrends, fallback]) {
     if (!isExternalUrl(reference.url)) continue;
     const key = normalizeReferenceUrl(reference.url);
     if (!key || seen.has(key)) continue;
@@ -555,7 +610,7 @@ async function buildKeywordStrategy(
     {
       name: "Trend expansion",
       intent: "informational",
-      keywords: research.trendSignals.flatMap((signal) => tokenize(signal.title)).slice(0, 8)
+      keywords: [...research.trendSignals.flatMap((signal) => tokenize(signal.title)), ...research.entityInsights.flatMap((entity) => tokenize(entity.name))].slice(0, 8)
     }
   ] satisfies KeywordStrategy["clusters"];
   const clusters = clustersInput.filter((cluster) => cluster.keywords.length > 0);
@@ -667,6 +722,8 @@ function buildContentBrief(
     mustUseEvidenceIds: research.evidence.slice(0, 6).map(evidenceId),
     internalLinkPlan,
     externalCitationPlan,
+    marketInsights: research.marketInsights,
+    competitorAngles: research.competitorAngles,
     imageBrief: {
       prompt: draft.imagePrompt ?? `${keywords.primaryKeyword} ecommerce editorial image`,
       alt: draft.imageAlt ?? keywords.primaryKeyword,
@@ -676,6 +733,15 @@ function buildContentBrief(
     claimsPolicy: [
       "Use trend/news signals only as editorial angles, not as unsupported claims.",
       "Use Shopify product facts as the source of product-specific truth.",
+      ...(research.marketInsights.length > 0
+        ? ["Use market insights to surface shopper motivations, comparison points, and purchase hesitations without overstating demand."]
+        : []),
+      ...(research.entityInsights.length > 0
+        ? ["Treat IP, character, person, and pop-culture context as style/background evidence only unless a verified source explicitly confirms licensing or canon details."]
+        : []),
+      ...(research.competitorAngles.length > 0
+        ? ["Use competitor angles to sharpen the buyer decision and highlight differences, not to inflate rivals or invent claims."]
+        : []),
       "Do not invent discounts, availability, materials, certifications, or compatibility details.",
       ...(research.keywordCannibalization.some((item) => item.risk !== "low")
         ? ["Avoid targeting the same primary keyword as an existing article; reframe the search intent, title promise, and internal-link path."]
@@ -885,16 +951,81 @@ function memoryComplianceViolations(title: string, body: string, strategy: Agent
   return Array.from(new Set(violations)).slice(0, 4);
 }
 
-function buildMarketInsights(signals: TrendSignal[], evidence: KeywordEvidenceItem[]) {
-  return signals.slice(0, 5).map((signal) => ({
-    insight: `${signal.title} can be used as a timely editorial angle when it matches product facts and shopper intent.`,
-    sourceIds: [signal.url ?? signal.title],
-    confidence: clampScore(58 + (signal.relevanceScore ?? 0) * 6 + (signal.traffic ? 8 : 0))
-  })).concat(
-    evidence.some((item) => item.type === "product")
-      ? [{ insight: "Shopify catalog facts provide a stable evergreen content base.", sourceIds: ["shopify_catalog"], confidence: 82 }]
-      : []
-  );
+function buildMarketInsights(signals: TrendSignal[], evidence: KeywordEvidenceItem[]): MarketInsight[] {
+  const insights: MarketInsight[] = signals
+    .slice(0, 5)
+    .map((signal): MarketInsight => ({
+      kind: "trend" as const,
+      insight: `${signal.title} can be used as a timely editorial angle when it matches product facts and shopper intent.`,
+      detail: signal.summary ?? signal.traffic ?? signal.publishedAt ?? undefined,
+      sourceIds: [signal.url ?? signal.title],
+      confidence: clampScore(58 + (signal.relevanceScore ?? 0) * 6 + (signal.traffic ? 8 : 0))
+    }));
+
+  if (evidence.some((item) => item.type === "product")) {
+    insights.push({
+      kind: "catalog",
+      insight: "Shopify catalog facts provide a stable evergreen content base.",
+      detail: "Use these details as the truth source for product-specific claims.",
+      sourceIds: ["shopify_catalog"],
+      confidence: 82
+    });
+  }
+
+  if (evidence.some((item) => item.type === "entity_context")) {
+    insights.push({
+      kind: "entity",
+      insight: "Character or IP context can sharpen a style-led angle, but official licensing and canon details still need verification.",
+      detail: "Treat this as style/background evidence unless verified source data says otherwise.",
+      sourceIds: ["entity_context"],
+      confidence: 76
+    });
+  }
+
+  return insights;
+}
+
+function buildCompetitorAngles(context: ContentSourceContext): Array<{ title: string; url?: string; angle: string }> {
+  return (context.competitorTitles ?? []).slice(0, 8).map((title) => ({
+    title,
+    angle: inferCompetitorAngle(title)
+  }));
+}
+
+function looksLikeEntityTopic(topic: string | undefined, context: ContentSourceContext) {
+  const text = [
+    topic,
+    context.product?.title,
+    context.product?.productType,
+    context.product?.tags?.join(" "),
+    context.collection?.title,
+    context.collection?.description
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return [
+    "anime",
+    "cartoon",
+    "character",
+    "comic",
+    "manga",
+    "movie",
+    "film",
+    "game",
+    "kawaii",
+    "sanrio",
+    "disney",
+    "marvel",
+    "dc comics",
+    "pixar",
+    "联名",
+    "卡通",
+    "动漫",
+    "角色",
+    "人物",
+    "ip"
+  ].some((marker) => marker === "ip" ? /\bip\b/.test(text) : text.includes(marker));
 }
 
 function researchRiskFlags(input: NormalizedContentPipelineInput, context: ContentSourceContext, signals: TrendSignal[]): string[] {

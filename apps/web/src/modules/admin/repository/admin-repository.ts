@@ -7,7 +7,10 @@ import type {
   DeleteStoreInput,
   PublishLogCreateInput,
   QueueArticlePublishInput,
+  QueueArticleRepairInput,
   QueueStoreSyncInput,
+  QueueSearchConsoleSyncInput,
+  QueueSearchConsoleArticleSyncInput,
   UpsertAiProviderInput,
   UpsertBrandVoiceInput,
   UpsertLanguageInput,
@@ -128,6 +131,654 @@ export function findBrandVoices(organizationId: string) {
   });
 }
 
+export function findSearchConsoleProperties(organizationId: string, take = 50) {
+  return prisma.searchConsoleProperty.findMany({
+    where: { organizationId },
+    orderBy: [{ updatedAt: "desc" }],
+    take,
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      snapshots: {
+        select: {
+          id: true
+        }
+      },
+      queryRows: {
+        select: {
+          id: true
+        }
+      }
+    }
+  });
+}
+
+export function findSearchConsoleSnapshots(organizationId: string, take = 50) {
+  return prisma.articleSeoPerformanceSnapshot.findMany({
+    where: { organizationId },
+    orderBy: [{ syncedAt: "desc" }],
+    take,
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      article: {
+        select: {
+          id: true,
+          title: true
+        }
+      },
+      property: {
+        select: {
+          id: true,
+          siteUrl: true
+        }
+      }
+    }
+  });
+}
+
+export function findPerformanceReviewSnapshots(organizationId: string, take = 200) {
+  return prisma.articleSeoPerformanceSnapshot.findMany({
+    where: { organizationId },
+    orderBy: [{ syncedAt: "desc" }],
+    take,
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      article: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          seoScore: true,
+          canonicalUrl: true,
+          primaryKeyword: true,
+          updatedAt: true
+        }
+      },
+      property: {
+        select: {
+          id: true,
+          siteUrl: true
+        }
+      }
+    }
+  });
+}
+
+export function findPerformanceReviewQueryRows(organizationId: string, take = 400) {
+  return prisma.articleSeoQueryPerformance.findMany({
+    where: { organizationId },
+    orderBy: [{ syncedAt: "desc" }],
+    take,
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      article: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          seoScore: true,
+          canonicalUrl: true,
+          primaryKeyword: true,
+          updatedAt: true
+        }
+      },
+      property: {
+        select: {
+          id: true,
+          siteUrl: true
+        }
+      },
+      snapshot: {
+        select: {
+          id: true,
+          performanceScore: true,
+          syncedAt: true
+        }
+      }
+    }
+  });
+}
+
+export function findPriorityDashboardArticles(organizationId: string, take = 100) {
+  return prisma.blogArticle.findMany({
+    where: { organizationId },
+    orderBy: [{ updatedAt: "desc" }],
+    take,
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      campaign: {
+        select: {
+          id: true,
+          title: true,
+          brandVoice: {
+            select: {
+              id: true,
+              audience: true,
+              tone: true,
+              bannedWords: true,
+              examples: true
+            }
+          }
+        }
+      },
+      seoTopicRuns: {
+        orderBy: { createdAt: "desc" },
+        take: 2,
+        include: {
+          steps: {
+            orderBy: { sequence: "asc" },
+            take: 20
+          },
+          reflectionTasks: {
+            orderBy: { createdAt: "asc" },
+            take: 20
+          },
+          evidenceItems: {
+            orderBy: { createdAt: "asc" },
+            take: 20
+          }
+        }
+      },
+      seoPerformanceSnapshots: {
+        orderBy: { syncedAt: "desc" },
+        take: 3,
+        include: {
+          property: {
+            select: {
+              id: true,
+              siteUrl: true
+            }
+          }
+        }
+      }
+    }
+  });
+}
+
+export function findPriorityDashboardTopicRuns(organizationId: string, take = 50) {
+  return prisma.seoTopicRun.findMany({
+    where: { organizationId },
+    orderBy: [{ updatedAt: "desc" }],
+    take,
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      campaign: {
+        select: {
+          id: true,
+          title: true,
+          brandVoice: {
+            select: {
+              id: true,
+              audience: true,
+              tone: true,
+              bannedWords: true,
+              examples: true
+            }
+          }
+        }
+      },
+      article: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          seoScore: true,
+          canonicalUrl: true,
+          primaryKeyword: true
+        }
+      },
+      candidates: {
+        orderBy: { score: "desc" },
+        take: 20
+      },
+      selectedCandidate: true,
+      steps: {
+        orderBy: { sequence: "asc" },
+        take: 30
+      },
+      reflectionTasks: {
+        orderBy: { createdAt: "asc" },
+        take: 30
+      },
+      evidenceItems: {
+        orderBy: { createdAt: "asc" },
+        take: 20
+      }
+    }
+  });
+}
+
+export function findPriorityDashboardMemories(organizationId: string, take = 100) {
+  return prisma.agentMemory.findMany({
+    where: { organizationId },
+    orderBy: [{ updatedAt: "desc" }],
+    take,
+    include: {
+      article: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          seoScore: true,
+          canonicalUrl: true
+        }
+      },
+      campaign: {
+        select: {
+          id: true,
+          title: true,
+          brandVoice: {
+            select: {
+              id: true,
+              audience: true,
+              tone: true,
+              bannedWords: true,
+              examples: true
+            }
+          }
+        }
+      },
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      }
+    }
+  });
+}
+
+export function findPriorityDashboardReflectionTasks(organizationId: string, take = 100) {
+  return prisma.agentReflectionTask.findMany({
+    where: { organizationId },
+    orderBy: [{ createdAt: "desc" }],
+    take,
+    include: {
+      article: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          seoScore: true,
+          canonicalUrl: true
+        }
+      },
+      campaign: {
+        select: {
+          id: true,
+          title: true,
+          brandVoice: {
+            select: {
+              id: true,
+              audience: true,
+              tone: true,
+              bannedWords: true,
+              examples: true
+            }
+          }
+        }
+      },
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      topicRun: {
+        select: {
+          id: true,
+          runId: true,
+          status: true,
+          selectedTopic: true,
+          agentVersion: true
+        }
+      }
+    }
+  });
+}
+
+export function findPriorityDashboardSteps(organizationId: string, take = 100) {
+  return prisma.agentStep.findMany({
+    where: { organizationId },
+    orderBy: [{ createdAt: "desc" }],
+    take,
+    include: {
+      article: {
+        select: {
+          id: true,
+          title: true,
+          status: true,
+          seoScore: true,
+          canonicalUrl: true
+        }
+      },
+      campaign: {
+        select: {
+          id: true,
+          title: true,
+          brandVoice: {
+            select: {
+              id: true,
+              audience: true,
+              tone: true,
+              bannedWords: true,
+              examples: true
+            }
+          }
+        }
+      },
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      topicRun: {
+        select: {
+          id: true,
+          runId: true,
+          status: true,
+          selectedTopic: true,
+          agentVersion: true
+        }
+      }
+    }
+  });
+}
+
+export function findSearchConsolePropertyById(organizationId: string, propertyId: string, db: AdminDbClient = prisma) {
+  return db.searchConsoleProperty.findFirst({
+    where: { id: propertyId, organizationId },
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      snapshots: {
+        select: {
+          id: true
+        }
+      },
+      queryRows: {
+        select: {
+          id: true
+        }
+      }
+    }
+  });
+}
+
+export function findActiveSearchConsoleProperty(organizationId: string, storeId: string, db: AdminDbClient = prisma) {
+  return db.searchConsoleProperty.findFirst({
+    where: { organizationId, storeId, status: "active" },
+    include: {
+      store: {
+        select: {
+          id: true,
+          name: true
+        }
+      },
+      snapshots: {
+        select: {
+          id: true
+        }
+      },
+      queryRows: {
+        select: {
+          id: true
+        }
+      }
+    },
+    orderBy: { updatedAt: "desc" }
+  });
+}
+
+export async function upsertSearchConsoleProperty(
+  organizationId: string,
+  input: {
+    id?: string;
+    storeId: string;
+    siteUrl: string;
+    status: "active" | "needs_auth" | "disconnected" | "archived";
+    permissionLevel?: string;
+    scopes: string[];
+    googleClientId?: string;
+    googleClientSecret?: string;
+    accessToken?: string;
+    refreshToken?: string;
+    tokenExpiresAt?: string;
+  },
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const data = {
+      organizationId,
+      storeId: input.storeId,
+      siteUrl: input.siteUrl,
+      status: input.status,
+      permissionLevel: input.permissionLevel,
+      scopes: input.scopes,
+      googleClientId: input.googleClientId,
+      googleClientSecretEncrypted: input.googleClientSecret ? encryptSecret(input.googleClientSecret) : undefined,
+      accessTokenEncrypted: input.accessToken ? encryptSecret(input.accessToken) : undefined,
+      refreshTokenEncrypted: input.refreshToken ? encryptSecret(input.refreshToken) : undefined,
+      tokenExpiresAt: input.tokenExpiresAt ? new Date(input.tokenExpiresAt) : undefined,
+      lastSyncError: null
+    };
+
+    const property = input.id
+      ? await tx.searchConsoleProperty.update({
+          where: { id: input.id },
+          data
+        })
+      : await tx.searchConsoleProperty.upsert({
+          where: {
+            storeId_siteUrl: {
+              storeId: input.storeId,
+              siteUrl: input.siteUrl
+            }
+          },
+          update: data,
+          create: data
+        });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        userId: requestContext.requestedByUserId,
+        action: "update",
+        entityType: "search_console_property",
+        entityId: property.id,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: compactJsonObject({
+          siteUrl: input.siteUrl,
+          status: input.status,
+          scopes: input.scopes
+        })
+      }
+    });
+
+    return property;
+  });
+}
+
+export async function createSearchConsoleSyncJob(
+  organizationId: string,
+  input: QueueSearchConsoleSyncInput & { propertyId: string },
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const property = await findSearchConsolePropertyById(organizationId, input.propertyId, tx);
+    if (!property) return null;
+
+    const runAt = new Date();
+    const job = await tx.publishJob.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        type: "sync_search_console",
+        status: "queued",
+        runAt,
+        payload: compactJsonObject({
+          organizationId,
+          storeId: input.storeId,
+          propertyId: property.id,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          days: input.days,
+          dataState: input.dataState ?? "final",
+          rowLimit: input.rowLimit,
+          queue: "seo-performance",
+          jobName: "gsc.store.sync"
+        })
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        userId: requestContext.requestedByUserId,
+        action: "sync",
+        entityType: "search_console_property",
+        entityId: property.id,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: compactJsonObject({
+          propertyId: property.id,
+          siteUrl: property.siteUrl,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          days: input.days,
+          dataState: input.dataState,
+          rowLimit: input.rowLimit,
+          jobId: job.id
+        })
+      }
+    });
+
+    return job;
+  });
+}
+
+export async function createSearchConsoleArticleSyncJob(
+  organizationId: string,
+  input: QueueSearchConsoleArticleSyncInput & { storeId: string; articleId: string; propertyId: string },
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const article = await findArticleById(organizationId, input.articleId, tx);
+    const property = await findSearchConsolePropertyById(organizationId, input.propertyId, tx);
+    if (!article || !property) return null;
+
+    const runAt = new Date();
+    const job = await tx.publishJob.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        articleId: article.id,
+        type: "sync_search_console",
+        status: "queued",
+        runAt,
+        payload: compactJsonObject({
+          organizationId,
+          storeId: input.storeId,
+          articleId: article.id,
+          propertyId: property.id,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          days: input.days,
+          dataState: input.dataState ?? "final",
+          rowLimit: input.rowLimit,
+          queue: "seo-performance",
+          jobName: "gsc.article.sync"
+        })
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: input.storeId,
+        userId: requestContext.requestedByUserId,
+        action: "sync",
+        entityType: "blog_article",
+        entityId: article.id,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: compactJsonObject({
+          articleId: article.id,
+          propertyId: property.id,
+          siteUrl: property.siteUrl,
+          startDate: input.startDate,
+          endDate: input.endDate,
+          days: input.days,
+          dataState: input.dataState,
+          rowLimit: input.rowLimit,
+          jobId: job.id
+        })
+      }
+    });
+
+    return job;
+  });
+}
+
+export async function markSearchConsoleJobEnqueued(jobId: string, externalJobId: string) {
+  return prisma.publishJob.update({
+    where: { id: jobId },
+    data: {
+      externalJobId,
+      status: "queued",
+      errorMessage: null
+    }
+  });
+}
+
+export async function markSearchConsoleJobQueueFailed(jobId: string, errorMessage: string) {
+  return prisma.publishJob.update({
+    where: { id: jobId },
+    data: {
+      status: "failed",
+      lockedAt: null,
+      errorMessage
+    }
+  });
+}
+
 export function findBrandVoiceById(organizationId: string, brandVoiceId: string, db: AdminDbClient = prisma) {
   return db.brandVoice.findFirst({
     where: { id: brandVoiceId, organizationId }
@@ -173,6 +824,18 @@ export function findArticles(organizationId: string, take = 50) {
           id: true,
           title: true
         }
+      },
+      seoPerformanceSnapshots: {
+        orderBy: { syncedAt: "desc" },
+        take: 1,
+        select: {
+          syncedAt: true,
+          clicks: true,
+          impressions: true,
+          ctr: true,
+          position: true,
+          performanceScore: true
+        }
       }
     }
   });
@@ -200,6 +863,18 @@ export function findPriorityArticles(organizationId: string, take = 8) {
           id: true,
           title: true
         }
+      },
+      seoPerformanceSnapshots: {
+        orderBy: { syncedAt: "desc" },
+        take: 1,
+        select: {
+          syncedAt: true,
+          clicks: true,
+          impressions: true,
+          ctr: true,
+          position: true,
+          performanceScore: true
+        }
       }
     }
   });
@@ -224,7 +899,16 @@ export function findArticleForReview(organizationId: string, articleId: string) 
       campaign: {
         select: {
           id: true,
-          title: true
+          title: true,
+          brandVoice: {
+            select: {
+              id: true,
+              audience: true,
+              tone: true,
+              bannedWords: true,
+              examples: true
+            }
+          }
         }
       },
       assets: {
@@ -251,6 +935,25 @@ export function findArticleForReview(organizationId: string, articleId: string) 
               status: true
             }
           }
+        }
+      },
+      publishJobs: {
+        where: {
+          type: "generate_article"
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5
+      },
+      seoPerformanceSnapshots: {
+        orderBy: { syncedAt: "desc" },
+        take: 1,
+        select: {
+          syncedAt: true,
+          clicks: true,
+          impressions: true,
+          ctr: true,
+          position: true,
+          performanceScore: true
         }
       },
       seoTopicRuns: {
@@ -293,6 +996,11 @@ export async function getDashboardStats(organizationId: string) {
     pendingManualReview,
     failedArticles,
     failedJobs,
+    queuedJobs,
+    runningJobs,
+    retryingJobs,
+    pendingJobs,
+    latestFailedJob,
     pendingSeo
   ] = await Promise.all([
     prisma.shopifyStore.count({ where: { organizationId, status: "active" } }),
@@ -336,6 +1044,45 @@ export async function getDashboardStats(organizationId: string) {
         status: "failed"
       }
     }),
+    prisma.publishJob.count({
+      where: {
+        organizationId,
+        status: "queued"
+      }
+    }),
+    prisma.publishJob.count({
+      where: {
+        organizationId,
+        status: "running"
+      }
+    }),
+    prisma.publishJob.count({
+      where: {
+        organizationId,
+        status: "retrying"
+      }
+    }),
+    prisma.publishJob.count({
+      where: {
+        organizationId,
+        status: {
+          in: ["queued", "running", "retrying"]
+        }
+      }
+    }),
+    prisma.publishJob.findFirst({
+      where: {
+        organizationId,
+        status: "failed"
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      select: {
+        id: true,
+        type: true,
+        errorMessage: true,
+        updatedAt: true
+      }
+    }),
     prisma.blogArticle.aggregate({
       where: {
         organizationId,
@@ -361,6 +1108,11 @@ export async function getDashboardStats(organizationId: string) {
     pendingManualReview,
     failedArticles,
     failedJobs,
+    queuedJobs,
+    runningJobs,
+    retryingJobs,
+    pendingJobs,
+    latestFailedJob,
     averagePendingSeoScore: pendingSeo._avg.seoScore
   };
 }
@@ -1061,6 +1813,18 @@ export async function createArticlePublishJob(
             id: true,
             title: true
           }
+        },
+        seoPerformanceSnapshots: {
+          orderBy: { syncedAt: "desc" },
+          take: 1,
+          select: {
+            syncedAt: true,
+            clicks: true,
+            impressions: true,
+            ctr: true,
+            position: true,
+            performanceScore: true
+          }
         }
       }
     });
@@ -1095,6 +1859,127 @@ export async function createArticlePublishJob(
         metadata: compactJsonObject({
           jobId: job.id,
           publishAt: runAt.toISOString()
+        })
+      }
+    });
+
+    return { article, updatedArticle, job };
+  });
+}
+
+export async function createArticleRepairJob(
+  organizationId: string,
+  input: QueueArticleRepairInput,
+  requestContext: AdminRequestContextInput
+) {
+  return prisma.$transaction(async (tx: AdminDbClient) => {
+    const article = await findArticleById(organizationId, input.articleId, tx);
+    if (!article) return null;
+
+    const runAt = new Date();
+    const generationConfig = mergeRepairGenerationConfig(article.generationMetadata);
+    const job = await tx.publishJob.create({
+      data: {
+        organizationId,
+        storeId: article.storeId,
+        articleId: article.id,
+        type: "generate_article",
+        status: "queued",
+        runAt,
+        payload: compactJsonObject({
+          organizationId,
+          storeId: article.storeId,
+          articleId: article.id,
+          campaignId: article.campaignId,
+          locale: article.locale,
+          sourceType: article.sourceType,
+          sourceId: article.sourceId,
+          topic: article.title ?? article.primaryKeyword,
+          publishPolicy: article.publishPolicy,
+          targetWordCount: estimateRepairTargetWordCount(article.bodyHtml),
+          primaryKeyword: article.primaryKeyword,
+          keywords: [article.primaryKeyword, ...article.secondaryKeywords].filter(Boolean),
+          generationConfig,
+          generationMode: "article_repair",
+          repairReason: input.repairReason,
+          publishAfterRepair: article.status === "published" || Boolean(input.publishAt),
+          publishAt: input.publishAt,
+          queue: "blog-generation",
+          jobName: "blog.generate"
+        })
+      }
+    });
+
+    const updatedArticle = await tx.blogArticle.update({
+      where: { id: article.id },
+      data: {
+        status: article.status === "published" ? article.status : "draft",
+        failureReason: null
+      },
+      include: {
+        store: {
+          select: {
+            id: true,
+            name: true
+          }
+        },
+        campaign: {
+          select: {
+            id: true,
+            title: true
+          }
+        },
+        seoPerformanceSnapshots: {
+          orderBy: { syncedAt: "desc" },
+          take: 1,
+          select: {
+            syncedAt: true,
+            clicks: true,
+            impressions: true,
+            ctr: true,
+            position: true,
+            performanceScore: true
+          }
+        }
+      }
+    });
+
+    await tx.publishLog.create({
+      data: {
+        organizationId,
+        storeId: article.storeId,
+        articleId: article.id,
+        jobId: job.id,
+        event: "queued",
+        level: "info",
+        message: `Queued AI repair for article ${article.title ?? article.id}.`,
+        payload: compactJsonObject({
+          articleId: article.id,
+          jobType: job.type,
+          generationMode: "article_repair",
+          repairReason: input.repairReason,
+          publishAfterRepair: article.status === "published" || Boolean(input.publishAt),
+          publishAt: input.publishAt
+        })
+      }
+    });
+
+    await tx.auditLog.create({
+      data: {
+        organizationId,
+        storeId: article.storeId,
+        userId: requestContext.requestedByUserId,
+        action: "generate",
+        entityType: "blog_article",
+        entityId: article.id,
+        ipAddress: requestContext.ipAddress,
+        userAgent: requestContext.userAgent,
+        metadata: compactJsonObject({
+          jobId: job.id,
+          generationMode: "article_repair",
+          repairReason: input.repairReason,
+          publishAfterRepair: article.status === "published" || Boolean(input.publishAt),
+          publishAt: input.publishAt
         })
       }
     });
@@ -1362,6 +2247,82 @@ function compactJsonObject(input: Record<string, unknown>): Record<string, unkno
   }
 
   return output;
+}
+
+function mergeRepairGenerationConfig(generationMetadata: unknown): Record<string, unknown> {
+  const metadata = isRecord(generationMetadata) ? generationMetadata : {};
+  const contentEngine = isRecord(metadata.contentEngine) ? metadata.contentEngine : {};
+  const artifacts = isRecord(contentEngine.artifacts) ? contentEngine.artifacts : {};
+  const contextConfig = isRecord(metadata.generationConfig)
+    ? metadata.generationConfig
+    : isRecord(contentEngine.generationConfig)
+      ? contentEngine.generationConfig
+      : isRecord(artifacts.generationConfig)
+        ? artifacts.generationConfig
+        : {};
+
+  return compactJsonObject({
+    ...contextConfig,
+    topicDiscovery: {
+      ...(isRecord(contextConfig.topicDiscovery) ? contextConfig.topicDiscovery : {}),
+      enabled: false
+    },
+    hotNews: {
+      ...(isRecord(contextConfig.hotNews) ? contextConfig.hotNews : {}),
+      enabled: true,
+      lookbackDays: numberFromConfig(contextConfig.hotNews, "lookbackDays") ?? 14,
+      maxItems: numberFromConfig(contextConfig.hotNews, "maxItems") ?? 5,
+      sources: ["google_news", "google_trends"]
+    },
+    internalLinks: {
+      ...(isRecord(contextConfig.internalLinks) ? contextConfig.internalLinks : {}),
+      enabled: true,
+      maxLinks: numberFromConfig(contextConfig.internalLinks, "maxLinks") ?? 4
+    },
+    externalReferences: {
+      ...(isRecord(contextConfig.externalReferences) ? contextConfig.externalReferences : {}),
+      enabled: true,
+      minLinks: numberFromConfig(contextConfig.externalReferences, "minLinks") ?? 1,
+      maxLinks: numberFromConfig(contextConfig.externalReferences, "maxLinks") ?? 3,
+      requireEveryArticle: true
+    },
+    imageGeneration: {
+      ...(isRecord(contextConfig.imageGeneration) ? contextConfig.imageGeneration : {}),
+      enabled: false
+    },
+    qualityGate: {
+      ...(isRecord(contextConfig.qualityGate) ? contextConfig.qualityGate : {}),
+      enabled: true,
+      minSeoScore: numberFromConfig(contextConfig.qualityGate, "minSeoScore") ?? 78,
+      minEditorialScore: numberFromConfig(contextConfig.qualityGate, "minEditorialScore") ?? 72,
+      rejectTemplatePatterns: true
+    },
+    aiSearchReview: {
+      ...(isRecord(contextConfig.aiSearchReview) ? contextConfig.aiSearchReview : {}),
+      enabled: true,
+      minTrafficScore: numberFromConfig(contextConfig.aiSearchReview, "minTrafficScore") ?? 84,
+      maxRevisionPasses: numberFromConfig(contextConfig.aiSearchReview, "maxRevisionPasses") ?? 3
+    }
+  });
+}
+
+function numberFromConfig(value: unknown, key: string): number | undefined {
+  const record = isRecord(value) ? value : {};
+  const item = record[key];
+  return typeof item === "number" && Number.isFinite(item) ? item : undefined;
+}
+
+function estimateRepairTargetWordCount(bodyHtml: string | null): number {
+  const text = (bodyHtml ?? "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const latinWords = text.match(/[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*/g)?.length ?? 0;
+  const cjkChars = text.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  const estimated = latinWords + Math.ceil(cjkChars / 2);
+  return Math.max(900, Math.min(3500, Math.round((estimated || 1400) * 1.12)));
 }
 
 function shopDomainMetadata(shop: ShopifyShopInfo): Record<string, unknown> {

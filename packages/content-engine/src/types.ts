@@ -40,6 +40,18 @@ export interface TrendSignal {
   relevanceScore?: number;
 }
 
+export interface EntityInsight {
+  name: string;
+  type: "ip_character" | "person" | "brand" | "pop_culture" | "style_theme";
+  source: string;
+  url?: string;
+  summary?: string;
+  query?: string;
+  confidence: number;
+  evidence: string[];
+  verified: boolean;
+}
+
 export interface InternalLinkCandidate {
   title: string;
   url: string;
@@ -65,7 +77,7 @@ export interface ExternalReferenceCandidate {
 }
 
 export interface KeywordEvidenceItem {
-  type: "product" | "collection" | "seed_keyword" | "trend" | "internal_link" | "external_reference";
+  type: "product" | "collection" | "seed_keyword" | "trend" | "entity_context" | "internal_link" | "external_reference";
   source: string;
   label: string;
   value: string;
@@ -150,6 +162,9 @@ export interface ContentSourceContext {
   seedKeywords?: string[];
   competitorTitles?: string[];
   trendSignals?: TrendSignal[];
+  entityInsights?: EntityInsight[];
+  marketInsights?: MarketInsight[];
+  competitorAngles?: Array<{ title: string; url?: string; angle: string }>;
   internalLinks?: InternalLinkCandidate[];
   externalReferences?: ExternalReferenceCandidate[];
   imageReferences?: ImageReference[];
@@ -374,11 +389,14 @@ export interface MarketInsight {
   insight: string;
   sourceIds: string[];
   confidence: number;
+  kind?: "trend" | "catalog" | "entity" | "competitor";
+  detail?: string;
 }
 
 export interface ResearchBrief {
   sourceContext: Pick<ContentSourceContext, "product" | "collection" | "brandVoice" | "topic" | "seedKeywords">;
   trendSignals: TrendSignal[];
+  entityInsights: EntityInsight[];
   marketInsights: MarketInsight[];
   competitorAngles: Array<{ title: string; url?: string; angle: string }>;
   internalLinks: InternalLinkCandidate[];
@@ -389,9 +407,12 @@ export interface ResearchBrief {
   riskFlags: string[];
   sourceSummary: {
     trendCount: number;
+    entityInsightCount: number;
     internalLinkCount: number;
     externalReferenceCount: number;
     imageReferenceCount: number;
+    marketInsightCount: number;
+    competitorAngleCount: number;
     recentTopicCount: number;
     cannibalizationRiskCount: number;
   };
@@ -440,6 +461,8 @@ export interface ContentBrief {
   mustUseEvidenceIds: string[];
   internalLinkPlan: Array<{ url: string; anchor: string; placement: string }>;
   externalCitationPlan: Array<{ url: string; title: string; source: string; placement: string }>;
+  marketInsights: MarketInsight[];
+  competitorAngles: Array<{ title: string; url?: string; angle: string }>;
   imageBrief?: { prompt: string; alt: string; references: ImageReference[] };
   memoryGuidance: AgentMemoryGuidance[];
   claimsPolicy: string[];

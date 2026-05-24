@@ -4,6 +4,7 @@ import { maybeDecryptSecret, prisma } from "@shopify-ai-blog/db";
 import {
   defaultQualityGate,
   defaultSeoScorer,
+  discoverEntityInsights,
   discoverTrendSignals,
   runAgentContentPipeline,
   runContentPipeline,
@@ -16,10 +17,12 @@ import {
   type ExternalReferenceCandidate,
   type HtmlAssemblyResult,
   type InternalLinkCandidate,
+  type KeywordPlan,
   type KeywordCannibalizationSignal,
   type KeywordEvidenceItem,
   type QualityGateResult,
   selectTopicCandidate,
+  type EntityInsight,
   type TopicHistoryItem,
   type TopicSelectionResult,
   type TrendSignal
@@ -41,6 +44,7 @@ import {
   articleUpdate,
   createShopifyGraphQLClient,
   getShopInfo,
+  ShopifyUserError,
   uploadImageFile,
   type ShopifyArticleImageInput,
   type ShopifyGraphQLClient,
@@ -51,6 +55,7 @@ import {
 import {
   BLOG_GENERATION_JOB_NAMES,
   QUEUE_NAMES,
+  enqueueSearchConsoleArticleSync,
   type ArticlePublishJobData,
   type BlogGenerationJobName,
   type BlogGenerationJobData,
@@ -152,6 +157,34 @@ interface PublishableArticleRow {
   generationMetadata?: unknown;
 }
 
+interface ExistingArticleRepairRow {
+  id: string;
+  campaignId: string | null;
+  locale: string;
+  sourceType: SourceType;
+  sourceId: string | null;
+  status: string;
+  publishPolicy: PublishPolicy;
+  title: string | null;
+  handle: string | null;
+  summary: string | null;
+  bodyHtml: string | null;
+  primaryKeyword: string | null;
+  secondaryKeywords: string[];
+  tags: string[];
+  seoScore: number | null;
+  qualityPassed: boolean;
+  qualityReport: unknown;
+  seoTitle: string | null;
+  seoDescription: string | null;
+  shopifyBlogId: string | null;
+  shopifyArticleId: string | null;
+  canonicalUrl: string | null;
+  publishedAt: Date | null;
+  scheduledAt: Date | null;
+  generationMetadata: unknown;
+}
+
 interface ParsedGenerationInput {
   organizationId: string;
   storeId: string;
@@ -241,6 +274,9 @@ interface GenerationProgressUpdate {
   detail?: string;
   articleId?: string;
   status?: string;
+  stage?: string;
+  nextStep?: string;
+  recoverable?: boolean;
 }
 
 export interface GenerationProgressPayload extends Record<string, unknown> {
@@ -250,6 +286,9 @@ export interface GenerationProgressPayload extends Record<string, unknown> {
   detail?: string;
   articleId?: string;
   status?: string;
+  stage?: string;
+  nextStep?: string;
+  recoverable?: boolean;
   bullJobId?: string;
   updatedAt: string;
   previousStep?: string;
@@ -336,6 +375,10 @@ async function generateBlogArticle(
   let articleId = job.data.articleId;
 
   try {
+    if (job.data.generationMode === "article_repair") {
+      return repairBlogArticle(job);
+    }
+
     const context = await loadGenerationContext(job.data);
     const campaignId = context.campaign?.id ?? job.data.campaignId;
     const updateProgress: GenerationProgressCallback = (progress) =>
@@ -450,10 +493,19 @@ async function generateBlogArticle(
         provider: aiProvider.safeMetadata,
         ai: aiResult.metadata,
         aiSearchReview: aiResult.aiSearchReview,
+        brandVoice: context.sourceContext.brandVoice
+          ? {
+              audience: context.sourceContext.brandVoice.audience ?? undefined,
+              tone: context.sourceContext.brandVoice.tone ?? undefined,
+              bannedWords: context.sourceContext.brandVoice.bannedWords ?? [],
+              examples: context.sourceContext.brandVoice.examples ?? []
+            }
+          : undefined,
         imageAssets: aiResult.imageAssets?.map(serializeImageAssetDraft) ?? [],
         imageAsset: aiResult.imageAsset
           ? serializeImageAssetDraft(aiResult.imageAsset)
           : null,
+        entityInsights: context.sourceContext.entityInsights ?? [],
         contentEngine: {
           artifacts: pipelineResult.artifacts,
           finalQuality: aiResult.quality,
@@ -593,6 +645,239 @@ async function generateBlogArticle(
   }
 }
 
+async function repairBlogArticle(
+  job: Job<BlogGenerationJobData, WorkerJobResult, typeof BLOG_GENERATION_JOB_NAMES.blogGeneration>
+): Promise<WorkerJobResult> {
+  await job.updateProgress({ step: "article:repair_queued", percent: 5, label: "AI 修复任务已进入队列", articleId: job.data.articleId });
+  await job.log(`Repairing blog article ${job.data.articleId ?? "unknown"}`);
+
+  let publishJob: Awaited<ReturnType<typeof startPublishJob>> | undefined;
+  let articleId = job.data.articleId;
+
+  try {
+    if (!job.data.articleId) {
+      throw domainError("ARTICLE_ID_REQUIRED", "Article repair requires articleId.", { retryable: false });
+    }
+
+    const context = await loadGenerationContext(job.data);
+    const article = context.article as ExistingArticleRepairRow | null;
+    if (!article) {
+      throw domainError("ARTICLE_NOT_FOUND", `Article ${job.data.articleId} was not found for repair.`, { retryable: false });
+    }
+    if (!article.bodyHtml || stripHtmlForReview(article.bodyHtml).length < 80) {
+      throw domainError("ARTICLE_BODY_MISSING", "Article repair requires an existing bodyHtml draft.", { retryable: false });
+    }
+    articleId = article.id;
+
+    const updateProgress: GenerationProgressCallback = (progress) =>
+      recordGenerationProgress(job, undefined, publishJob?.id, progress);
+    await updateProgress({
+      step: "repair:context_loaded",
+      percent: 14,
+      label: "已读取原文、证据和店铺上下文",
+      detail: article.title ?? article.primaryKeyword ?? context.sourceContext.topic,
+      articleId: article.id,
+      status: article.status
+    });
+
+    const input = mergeGenerationInput(job.data, context.campaign, context.sourceContext.topic, context.resolvedSource);
+    const parsedInput = blogCampaignInputSchema.safeParse(input);
+    if (!parsedInput.success) {
+      throw domainError("BLOG_REPAIR_INPUT_INVALID", "Article repair input is invalid.", {
+        retryable: false,
+        details: parsedInput.error.flatten()
+      });
+    }
+    const generationInput = parsedInput.data;
+
+    publishJob = await startPublishJob({
+      jobId: job.data.publishJobId,
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      type: "generate_article",
+      externalJobId: externalJobId(
+        QUEUE_NAMES.blogGeneration,
+        BLOG_GENERATION_JOB_NAMES.blogGeneration,
+        job
+      ),
+      articleId: article.id,
+      payload: {
+        articleId: article.id,
+        generationMode: "article_repair",
+        repairReason: job.data.repairReason,
+        sourceType: generationInput.sourceType,
+        sourceId: generationInput.sourceId,
+        topic: generationInput.topic,
+        locale: generationInput.locale,
+        publishAfterRepair: job.data.publishAfterRepair,
+        publishAt: job.data.publishAt
+      }
+    });
+
+    await writePublishLog({
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      jobId: publishJob.id,
+      articleId: article.id,
+      event: "started",
+      message: "AI article repair started.",
+      payload: { bullJobId: job.id, generationMode: "article_repair", repairReason: job.data.repairReason }
+    });
+    await updateProgress({
+      step: "repair:analysis_started",
+      percent: 24,
+      label: "正在分析现有内容缺口",
+      detail: "对齐 seomachine analyze-existing / rewrite / optimize 流程",
+      articleId: article.id,
+      status: article.status
+    });
+
+    const aiProvider = resolveAiProvider(context.aiProvider);
+    const seedArticle = articleToGeneratedArticle(article, generationInput);
+    const repairPipeline = buildRepairPipelineResult(seedArticle, context.sourceContext, generationInput, job.data.repairReason);
+    const aiResult = await repairArticleWithAi(aiProvider, generationInput, context.sourceContext, repairPipeline, seedArticle, updateProgress);
+    const generated = aiResult.article;
+    const status = resolveRepairStatus(article.status, generated.qualityPassed, Boolean(job.data.publishAfterRepair));
+
+    await updateProgress({
+      step: "repair:saving",
+      percent: 88,
+      label: "正在保存修复稿和证据链",
+      detail: generated.title,
+      articleId: article.id,
+      status
+    });
+
+    const updatedArticle = await persistRepairedArticle({
+      article,
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      sourceType: generationInput.sourceType,
+      sourceId: generationInput.sourceId,
+      publishPolicy: generationInput.publishPolicy,
+      generated,
+      status,
+      qualityReport: aiResult.quality,
+      generationMetadata: {
+        generator: "openai-compatible",
+        generationMode: "article_repair",
+        provider: aiProvider.safeMetadata,
+        ai: aiResult.metadata,
+        aiSearchReview: aiResult.aiSearchReview,
+        brandVoice: context.sourceContext.brandVoice
+          ? {
+              audience: context.sourceContext.brandVoice.audience ?? undefined,
+              tone: context.sourceContext.brandVoice.tone ?? undefined,
+              bannedWords: context.sourceContext.brandVoice.bannedWords ?? [],
+              examples: context.sourceContext.brandVoice.examples ?? []
+            }
+          : undefined,
+        repair: buildRepairMetadata(article, generated, aiResult, job.data.repairReason),
+        entityInsights: context.sourceContext.entityInsights ?? [],
+        contentEngine: {
+          artifacts: repairPipeline.artifacts,
+          finalQuality: aiResult.quality,
+          finalSeo: aiResult.seo,
+          aiSearchReview: aiResult.aiSearchReview
+        },
+        queue: {
+          bullJobId: job.id,
+          correlationId: job.data.correlationId
+        }
+      }
+    });
+
+    await completePublishJob(publishJob.id, {
+      articleId: updatedArticle.id,
+      generationMode: "article_repair",
+      status,
+      seoScore: generated.seoScore,
+      qualityPassed: generated.qualityPassed,
+      publishAfterRepair: job.data.publishAfterRepair
+    });
+    await writePublishLog({
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      jobId: publishJob.id,
+      articleId: updatedArticle.id,
+      event: generated.qualityPassed ? "succeeded" : "skipped",
+      level: generated.qualityPassed ? "info" : "warn",
+      message: generated.qualityPassed
+        ? "AI article repair completed."
+        : "AI article repair completed but still needs manual review.",
+      payload: {
+        generationMode: "article_repair",
+        status,
+        seoScore: generated.seoScore,
+        aiSearchScore: aiResult.aiSearchReview?.final.score,
+        repairReason: job.data.repairReason
+      }
+    });
+    await writeAuditLog({
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      action: "generate",
+      entityType: "BlogArticle",
+      entityId: updatedArticle.id,
+      userId: job.data.requestedByUserId,
+      metadata: {
+        generationMode: "article_repair",
+        status,
+        aiProviderConfigId: context.aiProvider?.id,
+        aiModel: aiResult.metadata.model,
+        repairReason: job.data.repairReason
+      }
+    });
+
+    await updateProgress({
+      step: "repair:completed",
+      percent: 100,
+      label: generated.qualityPassed ? "文章修复完成" : "文章已修复，仍需人工复核",
+      detail: generated.title,
+      articleId: updatedArticle.id,
+      status
+    });
+
+    if (job.data.publishAfterRepair && generated.qualityPassed) {
+      await publishRepairedArticle(job, updatedArticle.id, job.data.publishAt);
+      await updateProgress({
+        step: "repair:publish_queued",
+        percent: 100,
+        label: "修复稿已排入发布/更新队列",
+        detail: updatedArticle.title ?? generated.title,
+        articleId: updatedArticle.id,
+        status
+      });
+    }
+
+    await job.updateProgress({
+      step: "repair:completed",
+      percent: 100,
+      label: generated.qualityPassed ? "文章修复完成" : "文章已修复，仍需人工复核",
+      articleId: updatedArticle.id,
+      status,
+      qualityPassed: generated.qualityPassed
+    });
+
+    return {
+      ok: true,
+      queue: QUEUE_NAMES.blogGeneration,
+      jobName: BLOG_GENERATION_JOB_NAMES.blogGeneration,
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      message: "AI article repair completed.",
+      processedAt: new Date().toISOString(),
+      counts: {
+        articles: 1
+      },
+      articleId: updatedArticle.id
+    };
+  } catch (error) {
+    await recordGenerationFailure(job, error, publishJob?.id, articleId);
+    throwForBullMQ(error);
+  }
+}
+
 function throwUnsupportedBlogGenerationJob(jobName: never): never {
   throw new Error(`Unsupported blog generation job: ${String(jobName)}`);
 }
@@ -703,6 +988,9 @@ export function buildGenerationProgressPayload(
     detail: update.detail,
     articleId: update.articleId,
     status: update.status,
+    stage: update.stage ?? progressStageForStep(update.step),
+    nextStep: update.nextStep ?? progressNextStepForStep(update.step),
+    recoverable: update.recoverable ?? progressRecoverableForStep(update.step),
     bullJobId,
     updatedAt
   };
@@ -799,17 +1087,53 @@ function seedProgressHistory(previous: Record<string, unknown>): GenerationProgr
 }
 
 function toProgressHistoryEntry(
-  progress: Pick<GenerationProgressPayload, "step" | "label" | "percent" | "status" | "updatedAt">,
+  progress: Pick<GenerationProgressPayload, "step" | "label" | "percent" | "status" | "updatedAt" | "stage">,
   stale = false
 ): GenerationProgressHistoryEntry {
   return {
     step: progress.step,
-    label: progress.label,
+    label: progress.stage ? `${progress.stage} · ${progress.label ?? progress.step}` : progress.label,
     percent: clampProgressPercent(progress.percent),
     status: progress.status,
     updatedAt: progress.updatedAt,
     stale
   };
+}
+
+function progressStageForStep(step: string): string {
+  if (step.startsWith("context") || step.startsWith("input") || step.startsWith("job")) return "准备";
+  if (step.startsWith("research") || step.startsWith("brief")) return "研究";
+  if (step.startsWith("ai:drafting") || step.startsWith("ai:draft") || step.startsWith("ai:revision")) return "写作";
+  if (step.startsWith("ai:review") || step.startsWith("ai:final") || step.startsWith("quality")) return "质检";
+  if (step.startsWith("image") || step.startsWith("assets")) return "素材";
+  if (step.startsWith("article:sav") || step.startsWith("agent")) return "保存";
+  if (step.startsWith("repair")) return "修复";
+  if (step.includes("failed")) return "失败";
+  if (step.includes("generated") || step.includes("completed")) return "完成";
+  return "执行";
+}
+
+function progressNextStepForStep(step: string): string {
+  if (step.startsWith("context") || step.startsWith("input") || step.startsWith("job")) return "进入研究和选题。";
+  if (step.startsWith("research")) return "生成内容简报和关键词策略。";
+  if (step.startsWith("brief")) return "调用 AI 写正文。";
+  if (step.startsWith("ai:drafting")) return "等待 AI 返回结构化文章。";
+  if (step.startsWith("ai:draft")) return "进入 AI 搜索评分。";
+  if (step.startsWith("ai:review")) return "根据评分决定是否自动改稿。";
+  if (step.startsWith("ai:revision")) return "继续改稿直到达到流量分阈值或用完回合。";
+  if (step.startsWith("image")) return "生成图片并插入正文。";
+  if (step.startsWith("ai:final")) return "复核配图后的最终版本。";
+  if (step.startsWith("quality")) return "保存文章和质量报告。";
+  if (step.startsWith("article:sav")) return "写入 Agent 轨迹和素材记录。";
+  if (step.startsWith("agent")) return "完成生成并更新任务状态。";
+  if (step.startsWith("repair")) return "按原文分析、重写、优化和复盘闭环推进。";
+  if (step.includes("failed")) return "查看日志或重新触发修复。";
+  if (step.includes("generated") || step.includes("completed")) return "打开文章审核、发布或继续复盘。";
+  return "继续等待 worker 更新。";
+}
+
+function progressRecoverableForStep(step: string): boolean {
+  return step.startsWith("ai:") || step.startsWith("image") || step.startsWith("repair") || step.includes("failed");
 }
 
 function stripJsonFence(content: string): string {
@@ -1057,6 +1381,86 @@ async function generateArticleWithAi(
       model: result.model ?? provider.textModel,
       finishReason: result.finishReason,
       usage: result.usage
+    }
+  };
+}
+
+async function repairArticleWithAi(
+  provider: ResolvedAiProvider,
+  input: ParsedGenerationInput,
+  context: ContentSourceContext,
+  pipelineResult: ContentPipelineResult,
+  seedArticle: GeneratedArticle,
+  onProgress?: GenerationProgressCallback
+): Promise<{
+  article: GeneratedArticle;
+  seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>;
+  quality: QualityGateResult & { aiSearchReview?: AiSearchReviewWorkflow; highScoreStructure?: HighScoreStructureReport };
+  aiSearchReview?: AiSearchReviewWorkflow;
+  metadata: {
+    id?: string;
+    model?: string;
+    finishReason?: string;
+    usage?: GenerateTextResult["usage"];
+  };
+}> {
+  const client = createOpenAICompatibleClient({
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: provider.textModel,
+    timeoutMs: aiTextTimeoutMs()
+  });
+
+  await onProgress?.({
+    step: "repair:reviewing",
+    percent: 44,
+    label: "正在评分原文搜索潜力",
+    detail: seedArticle.title
+  });
+  let aiSearchReview = await runAiSearchReviewWorkflow(client, provider, seedArticle, input, context, pipelineResult, onProgress).catch((error) =>
+    recoverAiSearchReviewFailure(error, input, "repair-initial-review")
+  );
+
+  let finalArticle = enforceRequiredLinks(aiSearchReview.revisedArticle ?? seedArticle, context);
+  await onProgress?.({
+    step: "repair:optimizing",
+    percent: 76,
+    label: "正在复核修复稿",
+    detail: finalArticle.title
+  });
+  aiSearchReview = await finalizeAiSearchReviewWorkflow(client, provider, aiSearchReview, finalArticle, input, context, pipelineResult, onProgress).catch(
+    (error) => recoverAiSearchReviewFailure(error, input, "repair-final-review", aiSearchReview)
+  );
+  if (aiSearchReview.revisedArticle) {
+    finalArticle = enforceRequiredLinks(aiSearchReview.revisedArticle, context);
+  }
+  finalArticle = enforceRequiredLinks(finalArticle, context);
+
+  await onProgress?.({
+    step: "repair:quality_gate",
+    percent: 84,
+    label: "正在计算修复稿 SEO 和质量门槛",
+    detail: finalArticle.title
+  });
+  const qualityInput = normalizeFinalQualityInput(input);
+  const finalSeo = await scoreFinalArticle(finalArticle, qualityInput);
+  const localQuality = await defaultQualityGate.evaluate(toHtmlAssembly(finalArticle), finalSeo, qualityInput, context);
+  const finalStructure = evaluateHighScoreArticleStructure(finalArticle, qualityInput, context);
+  const finalQuality = applyAiSearchReviewGate(localQuality, aiSearchReview.workflow, finalStructure);
+
+  return {
+    article: {
+      ...finalArticle,
+      seoScore: finalSeo.score,
+      qualityPassed: finalQuality.passed
+    },
+    seo: finalSeo,
+    quality: finalQuality,
+    aiSearchReview: aiSearchReview.workflow,
+    metadata: {
+      model: provider.textModel,
+      finishReason: "repair-workflow",
+      usage: undefined
     }
   };
 }
@@ -1874,6 +2278,7 @@ function contextForAiEditing(context: ContentSourceContext): ContentSourceContex
     topic: context.topic,
     seedKeywords: context.seedKeywords?.slice(0, 8),
     competitorTitles: context.competitorTitles?.slice(0, 8),
+    entityInsights: context.entityInsights?.slice(0, 4).map(compactEntityInsight),
     trendSignals: relevantTrendSignals(context).slice(0, 6).map(compactTrendSignal),
     internalLinks: mixInternalLinkCandidates([context.internalLinks ?? []], context.generationConfig?.internalLinks?.maxLinks ?? 4).map(
       compactInternalLinkCandidate
@@ -1959,6 +2364,14 @@ function compactTrendSignal(signal: TrendSignal): TrendSignal {
     ...signal,
     title: trimForPrompt(signal.title, 220),
     summary: signal.summary ? trimForPrompt(signal.summary, 360) : undefined
+  };
+}
+
+function compactEntityInsight(entity: EntityInsight): EntityInsight {
+  return {
+    ...entity,
+    summary: entity.summary ? trimForPrompt(entity.summary, 360) : undefined,
+    evidence: entity.evidence.slice(0, 4).map((item) => trimForPrompt(item, 180))
   };
 }
 
@@ -2252,12 +2665,23 @@ function externalReferenceCandidates(context: ContentSourceContext): ExternalRef
   const query =
     firstNonBlank(
       context.topic,
+      context.entityInsights?.[0]?.name,
       context.seedKeywords?.[0],
       context.product?.productType,
       context.collection?.title,
       context.product?.title,
       "Shopify ecommerce"
     ) ?? "Shopify ecommerce";
+  const entityReferences = (context.entityInsights ?? [])
+    .filter((entity) => Boolean(entity.url))
+    .map((entity) => ({
+      title: entity.name,
+      url: entity.url as string,
+      source: entity.source || "entity context",
+      snippet: entity.summary,
+      reason: entity.verified ? "verified entity background" : "catalog-detected entity context",
+      relevanceScore: Math.max(1, Math.round(entity.confidence / 20))
+    }));
   const trendReferences = relevantTrendSignals(context)
     .filter((signal) => Boolean(signal.url))
     .map((signal) => ({
@@ -2279,7 +2703,7 @@ function externalReferenceCandidates(context: ContentSourceContext): ExternalRef
 
   const seen = new Set<string>();
   const output: ExternalReferenceCandidate[] = [];
-  for (const reference of [...(context.externalReferences ?? []), ...trendReferences, fallback]) {
+  for (const reference of [...(context.externalReferences ?? []), ...entityReferences, ...trendReferences, fallback]) {
     if (!isHttpUrl(reference.url)) continue;
     const key = normalizeExternalReferenceUrl(reference.url);
     if (!key || seen.has(key)) continue;
@@ -2524,14 +2948,18 @@ function normalizeFinalQualityInput(input: ParsedGenerationInput) {
 }
 
 async function scoreFinalArticle(article: GeneratedArticle, input: ReturnType<typeof normalizeFinalQualityInput>) {
-  return defaultSeoScorer.score(toHtmlAssembly(article), {
+  return defaultSeoScorer.score(toHtmlAssembly(article), keywordPlanForArticle(article, input), input);
+}
+
+function keywordPlanForArticle(article: GeneratedArticle, input: ReturnType<typeof normalizeFinalQualityInput>): KeywordPlan {
+  return {
     locale: article.locale,
     primaryKeyword: article.primaryKeyword,
     secondaryKeywords: article.secondaryKeywords,
     longTailKeywords: [],
     searchIntent: input.sourceType === "manual_topic" ? "informational" : "commercial",
     audienceNeed: ""
-  }, input);
+  };
 }
 
 function toHtmlAssembly(article: GeneratedArticle): HtmlAssemblyResult {
@@ -2759,6 +3187,13 @@ async function publishArticle(
         handle: published.handle
       }
     });
+    await schedulePostPublishSearchConsoleSync({
+      organizationId: job.data.organizationId,
+      storeId: store.id,
+      articleId: article.id,
+      parentPublishJobId: publishJob.id,
+      requestedByUserId: job.data.requestedByUserId
+    });
     await writeAuditLog({
       organizationId: job.data.organizationId,
       storeId: job.data.storeId,
@@ -2790,6 +3225,72 @@ async function publishArticle(
     await recordPublishFailure(job, error, publishJob?.id, articleId);
     throwForBullMQ(error);
   }
+}
+
+async function schedulePostPublishSearchConsoleSync(input: {
+  organizationId: string;
+  storeId: string;
+  articleId: string;
+  parentPublishJobId?: string;
+  requestedByUserId?: string;
+}) {
+  const property = await prisma.searchConsoleProperty.findFirst({
+    where: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      status: "active"
+    },
+    select: { id: true }
+  });
+
+  if (!property) {
+    await writePublishLog({
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      jobId: input.parentPublishJobId,
+      articleId: input.articleId,
+      event: "skipped",
+      level: "info",
+      message: "Post-publish Search Console sync was skipped because no active property is configured.",
+      payload: { workflow: "publish -> performance-review", reason: "no_active_search_console_property" }
+    });
+    return;
+  }
+
+  const delayMs = parseIntegerEnv("GSC_POST_PUBLISH_DELAY_MS", 24 * 60 * 60 * 1000);
+  const days = parseIntegerEnv("GSC_POST_PUBLISH_SYNC_DAYS", 14);
+  const syncJob = await enqueueSearchConsoleArticleSync(
+    {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      articleId: input.articleId,
+      propertyId: property.id,
+      requestedByUserId: input.requestedByUserId,
+      days,
+      dataState: "all"
+    },
+    {
+      jobId: `gsc-post-publish:${input.articleId}:${property.id}`,
+      delay: delayMs
+    }
+  );
+
+  await writePublishLog({
+    organizationId: input.organizationId,
+    storeId: input.storeId,
+    jobId: input.parentPublishJobId,
+    articleId: input.articleId,
+    event: "queued",
+    level: "info",
+    message: "Post-publish Search Console sync queued for the SEO performance review loop.",
+    payload: {
+      workflow: "publish -> Search Console -> performance-review",
+      searchConsolePropertyId: property.id,
+      searchConsoleJobId: syncJob.id,
+      delayMs,
+      days
+    }
+  });
 }
 
 async function loadStoreForJob(organizationId: string, storeId: string) {
@@ -3476,15 +3977,24 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     agentMemories,
     generationConfig
   } satisfies ContentSourceContext;
+  const entityInsights = await discoverEntityInsights({
+    topic: fallbackTopicSeed ?? "Shopify blog topic",
+    locale,
+    context: sourceContextBase
+  });
+  const entityAwareContextBase = {
+    ...sourceContextBase,
+    entityInsights
+  } satisfies ContentSourceContext;
   const [trendSignals, internalLinks, imageReferences, keywordCannibalization] = await Promise.all([
     discoverTrendSignals({
       topic: fallbackTopicSeed ?? "Shopify blog topic",
       locale,
       generationConfig,
-      context: sourceContextBase
+      context: entityAwareContextBase
     }),
     loadInternalLinks(storefrontHost, data.storeId, effectiveSourceType, effectiveSourceId, generationConfig, data.articleId),
-    loadImageReferences(data.storeId, sourceContextBase, generationConfig),
+    loadImageReferences(data.storeId, entityAwareContextBase, generationConfig),
     loadKeywordCannibalizationSignals({
       organizationId: data.organizationId,
       storeId: data.storeId,
@@ -3501,11 +4011,11 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     })
   ]);
   const externalReferences = externalReferenceCandidates({
-    ...sourceContextBase,
+    ...entityAwareContextBase,
     trendSignals
   });
   const enrichedContextBase = {
-    ...sourceContextBase,
+    ...entityAwareContextBase,
     trendSignals,
     externalReferences,
     internalLinks,
@@ -3536,7 +4046,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
     aiProvider,
     resolvedSource,
     sourceContext: {
-      ...sourceContextBase,
+      ...entityAwareContextBase,
       brandVoice: brandVoice
         ? {
             locale,
@@ -3548,6 +4058,7 @@ async function loadGenerationContext(data: BlogGenerationJobData) {
         : undefined,
       topic: resolvedTopic,
       seedKeywords,
+      entityInsights,
       trendSignals,
       externalReferences,
       internalLinks,
@@ -4308,6 +4819,20 @@ function resolveGenerationConfig(jobConfig: unknown, campaignMetadata: unknown):
   if (!candidate) return undefined;
 
   return {
+    seoAgent: isRecord(candidate.seoAgent)
+      ? {
+          enabled: candidate.seoAgent.enabled !== false,
+          agentMode:
+            candidate.seoAgent.agentMode === "standard" || candidate.seoAgent.agentMode === "commercial"
+              ? candidate.seoAgent.agentMode
+              : undefined,
+          targetOrganicGrowthPct: numberValue(candidate.seoAgent.targetOrganicGrowthPct),
+          memoryWindowDays: numberValue(candidate.seoAgent.memoryWindowDays),
+          minOpportunityScore: numberValue(candidate.seoAgent.minOpportunityScore),
+          maxResearchQueries: numberValue(candidate.seoAgent.maxResearchQueries),
+          requireEvidenceTrace: candidate.seoAgent.requireEvidenceTrace !== false
+        }
+      : undefined,
     topicDiscovery: isRecord(candidate.topicDiscovery)
       ? {
           enabled: candidate.topicDiscovery.enabled !== false,
@@ -4641,6 +5166,271 @@ async function upsertGeneratedArticle(input: {
     update: data,
     create: data
   });
+}
+
+async function persistRepairedArticle(input: {
+  article: ExistingArticleRepairRow;
+  organizationId: string;
+  storeId: string;
+  sourceType: SourceType;
+  sourceId?: string;
+  publishPolicy: PublishPolicy;
+  generated: GeneratedArticle;
+  status: "ready_to_publish" | "quality_failed" | "published";
+  qualityReport: unknown;
+  generationMetadata: unknown;
+}) {
+  const previousMetadata = isRecord(input.article.generationMetadata) ? input.article.generationMetadata : {};
+  const handle =
+    input.article.shopifyArticleId || input.article.canonicalUrl
+      ? input.article.handle ?? input.generated.handle
+      : await resolveUniqueArticleHandle({
+          articleId: input.article.id,
+          campaignId: input.article.campaignId ?? undefined,
+          storeId: input.storeId,
+          locale: input.generated.locale,
+          requestedHandle: input.generated.handle
+        });
+
+  return prisma.blogArticle.update({
+    where: { id: input.article.id },
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      campaignId: input.article.campaignId,
+      locale: input.generated.locale,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      status: input.status,
+      publishPolicy: input.publishPolicy,
+      title: input.generated.title,
+      handle,
+      summary: input.generated.summary,
+      bodyHtml: input.generated.bodyHtml,
+      primaryKeyword: input.generated.primaryKeyword,
+      secondaryKeywords: input.generated.secondaryKeywords,
+      tags: input.generated.tags,
+      seoTitle: input.generated.title,
+      seoDescription: input.generated.summary,
+      seoScore: input.generated.seoScore,
+      qualityPassed: input.generated.qualityPassed,
+      qualityReport: toPrismaJson(input.qualityReport),
+      generationMetadata: toPrismaJson({
+        ...previousMetadata,
+        ...(isRecord(input.generationMetadata) ? input.generationMetadata : {}),
+        previousGenerationMetadata: summarizePreviousGenerationMetadata(previousMetadata)
+      }),
+      lastGeneratedAt: new Date(),
+      failureReason: input.generated.qualityPassed ? null : "AI repair did not pass the quality gate."
+    }
+  });
+}
+
+function articleToGeneratedArticle(article: ExistingArticleRepairRow, input: ParsedGenerationInput): GeneratedArticle {
+  return {
+    title: article.title ?? input.topic ?? article.primaryKeyword ?? "Untitled article",
+    handle: article.handle ?? fallbackArticleHandle({ articleId: article.id, campaignId: article.campaignId ?? undefined }),
+    summary: article.summary ?? stripHtmlForReview(article.bodyHtml ?? "").slice(0, 260),
+    bodyHtml: article.bodyHtml ?? "",
+    primaryKeyword: article.primaryKeyword ?? input.primaryKeyword ?? input.topic ?? "article",
+    secondaryKeywords: article.secondaryKeywords ?? [],
+    tags: article.tags ?? [],
+    locale: normalizeLocale(article.locale),
+    seoScore: Math.round(article.seoScore ?? 0),
+    qualityPassed: article.qualityPassed
+  };
+}
+
+function buildRepairPipelineResult(
+  article: GeneratedArticle,
+  context: ContentSourceContext,
+  input: ParsedGenerationInput,
+  repairReason: string | undefined
+): ContentPipelineResult {
+  const keywordEvidence = filterKeywordEvidence(context.keywordEvidence)?.slice(0, 12) ?? [];
+  const prompts = {
+    system:
+      "You are a senior ecommerce SEO editor repairing an existing Shopify blog article. Follow the analyze-existing, rewrite, optimize, and performance-review loop. Keep factual claims grounded in supplied evidence.",
+    outlinePrompt: "Analyze the current article for SEO gaps, search intent mismatch, stale evidence, weak internal links, missing citations, and buyer usefulness gaps.",
+    draftPrompt: [
+      "Rewrite the existing article in place.",
+      repairReason ? `Repair reason: ${repairReason}` : "",
+      "Preserve accurate product facts, useful image figures, canonical intent, and any live article identity.",
+      "Add missing evidence, internal links, citations, answer-first section, decision table, choose/skip guidance, FAQ, and a complete buyer-facing conclusion."
+    ]
+      .filter(Boolean)
+      .join(" ")
+  };
+
+  return {
+    article,
+    artifacts: {
+      keywords: {
+        locale: input.locale,
+        primaryKeyword: article.primaryKeyword,
+        secondaryKeywords: article.secondaryKeywords,
+        longTailKeywords: [],
+        searchIntent: "commercial",
+        audienceNeed: "Repair an existing Shopify blog article so it better satisfies search intent, evidence quality, and buyer decision support.",
+        evidence: keywordEvidence.map((item) => item.value),
+        evidenceItems: keywordEvidence
+      },
+      topicSelection: context.topicSelection,
+      keywordEvidence,
+      prompts,
+      draft: {
+        title: article.title,
+        summary: article.summary,
+        intro: stripHtmlForReview(article.bodyHtml).slice(0, 420),
+        sections: [],
+        conclusion: "",
+        tags: article.tags,
+        imagePrompt: article.imagePrompt,
+        imageAlt: article.imageAlt
+      },
+      html: toHtmlAssembly(article),
+      seo: {
+        score: article.seoScore,
+        checks: [
+          {
+            id: "repair-baseline",
+            label: "Existing article baseline",
+            passed: article.qualityPassed,
+            points: article.seoScore,
+            maxPoints: 100
+          }
+        ],
+        recommendations: []
+      },
+      quality: {
+        passed: article.qualityPassed,
+        minSeoScore: input.generationConfig?.qualityGate?.minSeoScore ?? 78,
+        seoScore: article.seoScore,
+        wordCount: estimateReviewWordCount(stripHtmlForReview(article.bodyHtml), article.locale),
+        reasons: [],
+        warnings: []
+      }
+    }
+  };
+}
+
+function resolveRepairStatus(
+  previousStatus: string,
+  qualityPassed: boolean,
+  publishAfterRepair: boolean
+): "ready_to_publish" | "quality_failed" | "published" {
+  if (!qualityPassed) return "quality_failed";
+  if (previousStatus === "published" && publishAfterRepair) return "published";
+  return "ready_to_publish";
+}
+
+function buildRepairMetadata(
+  previous: ExistingArticleRepairRow,
+  generated: GeneratedArticle,
+  aiResult: { seo: Awaited<ReturnType<typeof defaultSeoScorer.score>>; aiSearchReview?: AiSearchReviewWorkflow },
+  repairReason: string | undefined
+) {
+  return {
+    repairedAt: new Date().toISOString(),
+    repairReason,
+    workflow: ["analyze-existing", "rewrite", "optimize", "performance-review"],
+    before: {
+      title: previous.title,
+      handle: previous.handle,
+      status: previous.status,
+      seoScore: previous.seoScore,
+      qualityPassed: previous.qualityPassed,
+      wordCount: estimateReviewWordCount(stripHtmlForReview(previous.bodyHtml ?? ""), normalizeLocale(previous.locale))
+    },
+    after: {
+      title: generated.title,
+      handle: generated.handle,
+      seoScore: generated.seoScore,
+      qualityPassed: generated.qualityPassed,
+      aiSearchScore: aiResult.aiSearchReview?.final.score,
+      wordCount: estimateReviewWordCount(stripHtmlForReview(generated.bodyHtml), generated.locale)
+    },
+    preservedLiveFields: {
+      shopifyArticleId: previous.shopifyArticleId,
+      shopifyBlogId: previous.shopifyBlogId,
+      canonicalUrl: previous.canonicalUrl,
+      publishedAt: previous.publishedAt?.toISOString()
+    }
+  };
+}
+
+function summarizePreviousGenerationMetadata(metadata: Record<string, unknown>) {
+  return {
+    generator: stringValue(metadata.generator),
+    generationMode: stringValue(metadata.generationMode),
+    repairedAt: stringValue(isRecord(metadata.repair) ? metadata.repair.repairedAt : undefined),
+    queue: isRecord(metadata.queue) ? metadata.queue : undefined
+  };
+}
+
+async function publishRepairedArticle(
+  job: Job<BlogGenerationJobData, WorkerJobResult, typeof BLOG_GENERATION_JOB_NAMES.blogGeneration>,
+  articleId: string,
+  publishAt?: string
+) {
+  const jobRecord = await prisma.publishJob.create({
+    data: {
+      organizationId: job.data.organizationId,
+      storeId: job.data.storeId,
+      articleId,
+      type: "publish_article",
+      status: "queued",
+      runAt: publishAt ? new Date(publishAt) : new Date(),
+      payload: toPrismaJson({
+        organizationId: job.data.organizationId,
+        storeId: job.data.storeId,
+        articleId,
+        locale: normalizeLocale(job.data.locale),
+        publishPolicy: job.data.publishPolicy,
+        publishAt,
+        queue: "blog-generation",
+        jobName: "article.publish",
+        source: "article_repair"
+      })
+    }
+  });
+
+  await writePublishLog({
+    organizationId: job.data.organizationId,
+    storeId: job.data.storeId,
+    jobId: jobRecord.id,
+    articleId,
+    event: "queued",
+    message: "Queued publish after AI repair.",
+    payload: {
+      source: "article_repair",
+      publishAt
+    }
+  });
+
+  await prisma.blogArticle.update({
+    where: { id: articleId },
+    data: {
+      status: "publishing",
+      scheduledAt: publishAt ? new Date(publishAt) : undefined
+    }
+  });
+
+  return import("../queues").then(({ enqueueArticlePublish }) =>
+    enqueueArticlePublish(
+      {
+        organizationId: job.data.organizationId,
+        storeId: job.data.storeId,
+        publishJobId: jobRecord.id,
+        requestedByUserId: job.data.requestedByUserId,
+        articleId,
+        locale: job.data.locale,
+        publishPolicy: job.data.publishPolicy,
+        publishAt
+      },
+      { jobId: jobRecord.id }
+    )
+  );
 }
 
 async function persistSeoAgentRun(input: {
@@ -5243,6 +6033,22 @@ function fallbackArticleHandle(input: { campaignId?: string; articleId?: string 
 async function markArticleFailed(articleId: string | undefined, failureReason: string) {
   if (!articleId) return;
 
+  const article = await prisma.blogArticle.findUnique({
+    where: { id: articleId },
+    select: { status: true, shopifyArticleId: true, canonicalUrl: true }
+  });
+  if (article?.status === "published" || article?.shopifyArticleId || article?.canonicalUrl) {
+    await prisma.blogArticle
+      .update({
+        where: { id: articleId },
+        data: {
+          failureReason
+        }
+      })
+      .catch(() => undefined);
+    return;
+  }
+
   await prisma.blogArticle
     .update({
       where: { id: articleId },
@@ -5280,10 +6086,23 @@ async function publishToShopify(
   };
 
   if (article.shopifyArticleId) {
-    return articleUpdate(client, article.shopifyArticleId, input);
+    try {
+      return await articleUpdate(client, article.shopifyArticleId, input);
+    } catch (error) {
+      if (!isMissingRemoteShopifyArticleError(error)) throw error;
+      return articleCreate(client, input);
+    }
   }
 
   return articleCreate(client, input);
+}
+
+function isMissingRemoteShopifyArticleError(error: unknown) {
+  if (error instanceof ShopifyUserError) {
+    return error.mutation === "articleUpdate" && error.userErrors.some((item) => item.message.toLowerCase().includes("article does not exist"));
+  }
+
+  return error instanceof Error && error.message.toLowerCase().includes("articleupdate returned user errors: article does not exist");
 }
 
 async function failPublishGracefully(

@@ -21,6 +21,8 @@ import type {
   TopicSelectionResult
 } from "./types";
 
+export { detectEntityCandidates, discoverEntityInsights } from "./entities";
+
 interface DraftAngle {
   locale: SupportedLocale;
   topic: string;
@@ -86,6 +88,9 @@ export const defaultPromptBuilder: PromptBuilder = {
       ? `Avoid these words: ${context.brandVoice.bannedWords.join(", ")}.`
       : "Avoid unsupported claims and exaggerated guarantees.";
     const trendContext = trendContextLine(context);
+    const entityContext = entityContextLine(context);
+    const marketContext = marketInsightsLine(context);
+    const competitorContext = competitorAnglesLine(context);
     const internalLinks = internalLinkInstruction(context);
     const externalReferences = externalReferenceInstruction(context, keywords, input.locale);
     const imageBrief = imagePromptInstruction(context);
@@ -121,7 +126,10 @@ export const defaultPromptBuilder: PromptBuilder = {
         "Keep the SEO skeleton, but write like a shopping inspiration guide: real routines, gifting moments, outfit/desk/travel scenarios, and practical hesitations a buyer would recognize.",
         "Vary paragraph rhythm and examples. Avoid generic filler, repetitive sentence starts, obvious template phrasing, and meta phrases such as 'this article will', 'search intent', 'SEO', or 'content strategy'.",
         productContextLine(context),
+        entityContext,
         trendContext,
+        marketContext,
+        competitorContext,
         internalLinks,
         externalReferences,
         memoryGuidance,
@@ -147,6 +155,9 @@ export const defaultHtmlAssembler: HtmlAssembler = {
       `<p>${escapeHtml(draft.intro)}</p>`,
       searchIntentCoverageHtml(input, context, keywords),
       sections,
+      entityContextHtml(context, input.locale),
+      marketInsightsHtml(context, input.locale),
+      competitorAnglesHtml(context, input.locale),
       verifiedFactsHtml(context, input.locale),
       decisionMatrixHtml(context, keywords, input.locale),
       relatedLinksHtml(context, input.locale),
@@ -185,19 +196,30 @@ export const defaultSeoScorer: SeoScorer = {
     const contextualLinks = countMatches(article.bodyHtml, /<a\b/gi);
     const externalCitations = countExternalCitationLinks(article.bodyHtml);
     const searchIntentCoverage = hasSearchIntentCoverage(article.bodyHtml, bodyText, input.locale);
+    const h2Headings = extractHeadingTexts(article.bodyHtml, 2);
+    const h2IntentHits = h2Headings.filter((heading) => keywordTokenCoverage(heading, keywords.primaryKeyword) >= 0.35 || heading.toLowerCase().includes(primary)).length;
+    const faqCount = faqQuestionCount(article.bodyHtml, bodyText, input.locale);
+    const descriptiveAnchors = descriptiveAnchorCount(article.bodyHtml);
+    const hasImageAlt = !article.imageAlt || isDescriptiveImageAlt(article.imageAlt, keywords.primaryKeyword);
+    const [summaryMin, summaryMax] = summaryLengthBounds(article.summary);
     const checks: SeoCheck[] = [
       check("title-primary", "Primary keyword in title", titlePrimaryPassed, 16),
       check("summary-primary", "Primary keyword in summary", summary.includes(primary), 10),
       check("body-primary", "Primary keyword in body", body.includes(primary), 14),
       check("heading-depth", "At least three H2 sections", headingCount >= 3, 10),
+      check("heading-intent", "At least one H2 carries the primary intent", h2IntentHits >= 1, 6),
       check("target-depth", "Draft has useful depth", wordCount >= targetDepth, 16),
       check("decision-support", "Article helps the shopper make a decision", hasDecisionSupport, 12),
       check("evidence-support", "Article separates facts from unknowns", hasEvidenceSupport, 10),
       check("title-length", "Title is scannable", article.title.length >= 8 && article.title.length <= 72, 6),
+      check("summary-length", "Summary is meta-ready", article.summary.length >= summaryMin && article.summary.length <= summaryMax, 6),
       check("secondary-coverage", "Secondary keyword coverage", secondaryHits >= Math.min(2, keywords.secondaryKeywords.length), 8),
       check("internal-context", "Contextual internal links are present when available", contextualLinks > 0 || input.sourceType === "manual_topic", 4),
+      check("descriptive-anchors", "Link anchor text is descriptive", contextualLinks === 0 || descriptiveAnchors === contextualLinks, 5),
       check("external-citations", "External cited sources are present", externalCitations > 0, 6),
       check("search-intent-map", "Article covers the main search-intent stages", searchIntentCoverage, 6),
+      check("faq-depth", "FAQ covers multiple buyer questions", faqCount >= 3, 5),
+      check("image-alt", "Image alt text is descriptive", hasImageAlt, 4),
       check("html-structure", "HTML has semantic sections", article.bodyHtml.includes("<section>") && article.bodyHtml.includes("</section>"), 4)
     ];
 
@@ -247,6 +269,25 @@ export const defaultQualityGate: QualityGate = {
     }
     if (!article.summary) reasons.push("Missing article summary.");
     if (!article.imageAlt) warnings.push("Missing image alt text.");
+    if (article.imageAlt && !isDescriptiveImageAlt(article.imageAlt, input.primaryKeyword ?? article.title)) {
+      reasons.push("Image alt text is too generic for SEO/accessibility.");
+    }
+    const h2Headings = extractHeadingTexts(article.bodyHtml, 2);
+    const h2IntentHits = h2Headings.filter((heading) => keywordTokenCoverage(heading, input.primaryKeyword ?? article.title) >= 0.35).length;
+    if (h2Headings.length < 3) reasons.push("Article needs at least three H2 sections.");
+    if (h2Headings.length >= 3 && h2IntentHits < 1) warnings.push("At least one H2 should carry the primary search intent.");
+    const [summaryMin, summaryMax] = summaryLengthBounds(article.summary ?? "");
+    if (article.summary && (article.summary.length < summaryMin || article.summary.length > summaryMax)) {
+      warnings.push(`Summary should be ${summaryMin}-${summaryMax} characters so it can double as a meta description.`);
+    }
+    if (faqQuestionCount(article.bodyHtml, body, input.locale) < 3) {
+      reasons.push("FAQ needs at least three real search or buyer questions.");
+    }
+    const anchorCount = countMatches(article.bodyHtml, /<a\b/gi);
+    const genericAnchors = genericAnchorLabels(article.bodyHtml);
+    if (anchorCount > 0 && genericAnchors.length > 0) {
+      reasons.push(`Generic link anchor text found: ${genericAnchors.slice(0, 3).join(", ")}.`);
+    }
     if (context.generationConfig?.internalLinks?.enabled && !article.bodyHtml.includes("<a ")) {
       warnings.push("Internal links were requested but no anchor tag was found.");
     }
@@ -278,7 +319,7 @@ export function buildDefaultDraft(
   const locale = normalizeLocale(input.locale);
   const angle = resolveDraftAngle(input, context, keywords);
   const title = buildEditorialTitle(locale, angle);
-  const summary = buildEditorialSummary(locale, angle);
+  const summary = buildEditorialSummary(locale, angle, context);
   const sections = buildEditorialSections(locale, angle);
 
   return {
@@ -296,7 +337,10 @@ export function buildDefaultDraft(
         : `The easiest way to choose ${angle.primaryKeyword} is to start with your real use case, then confirm the details on the product page. That keeps the decision grounded in how you'll actually use it.`,
     tags: [keywords.primaryKeyword, ...keywords.secondaryKeywords.slice(0, 4)],
     imagePrompt: buildDetailedImagePrompt(input, context, keywords),
-    imageAlt: locale === "zh-CN" ? `${keywords.primaryKeyword}真实使用场景` : `${keywords.primaryKeyword} real-life shopping scene`
+    imageAlt:
+      locale === "zh-CN"
+        ? `${keywords.primaryKeyword}在通勤、送礼和日常搭配中的真实使用场景`
+        : `${keywords.primaryKeyword} in a real shopping scene with daily use and gifting context`
   };
 }
 
@@ -480,24 +524,46 @@ function titleFromSelectedTopic(angle: DraftAngle): string | undefined {
   return undefined;
 }
 
-function buildEditorialSummary(locale: SupportedLocale, angle: DraftAngle): string {
+function buildEditorialSummary(locale: SupportedLocale, angle: DraftAngle, context: ContentSourceContext): string {
   if (locale === "zh-CN") {
-    return [
+    const marketLead = usableMarketInsights(context).slice(0, 2);
+    const competitorLead = usableCompetitorAngles(context).slice(0, 2);
+    return trimMetaSummary(
+      [
       `围绕${angle.primaryKeyword}，从${angle.anchorLabel}、${angle.category}和真实买家场景判断适不适合入手。`,
       angle.trendTitle ? `参考「${angle.trendTitle}」这类热点信号，但不把热点当成商品承诺。` : "",
+      marketLead.length ? `市场上最值得注意的是${marketLead.map((item) => item.insight).join("；")}。` : "",
+      competitorLead.length ? `和其他写法相比，重点放在${competitorLead.map((item) => item.angle).join("、")}。` : "",
       "快速看清适用场景、细节风险和下单前要核对的地方。"
-    ]
-      .filter(Boolean)
-      .join("");
+      ]
+        .filter(Boolean)
+        .join(""),
+      locale
+    );
   }
 
-  return [
+  const marketLead = usableMarketInsights(context).slice(0, 2);
+  const competitorLead = usableCompetitorAngles(context).slice(0, 2);
+  return trimMetaSummary(
+    [
     `This article looks at ${angle.primaryKeyword} through ${angle.anchorLabel}, ${angle.category}, and real shopper use cases. `,
     angle.trendTitle ? `It uses “${angle.trendTitle}” as an editorial signal without overstating the facts. ` : "",
+    marketLead.length ? `The most useful market takeaways are ${marketLead.map((item) => item.insight).join("; ")}. ` : "",
+    competitorLead.length ? `Compared with nearby angles, this piece should emphasize ${competitorLead.map((item) => item.angle).join("; ")}. ` : "",
     "Readers get practical fit checks, tradeoffs, and pre-purchase questions instead of a generic buying template."
-  ]
-    .filter(Boolean)
-    .join("");
+    ]
+      .filter(Boolean)
+      .join(""),
+    locale
+  );
+}
+
+function trimMetaSummary(value: string, locale: SupportedLocale): string {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (clean.length <= 180) return clean;
+  const limit = locale === "zh-CN" ? 170 : 176;
+  const trimmed = clean.slice(0, limit).replace(/[，,;；:：]\s*[^，,;；:：]*$/u, "").trim();
+  return trimmed.length >= 80 ? `${trimmed}.`.replace("。.", "。") : clean.slice(0, 180).trim();
 }
 
 function buildEditorialSections(locale: SupportedLocale, angle: DraftAngle) {
@@ -644,6 +710,8 @@ function keywordTokens(value: string): string[] {
 }
 
 const keywordStopWords = new Set(["the", "and", "for", "with", "from", "design", "pattern", "style", "caseease"]);
+const genericAnchorText = new Set(["click here", "here", "read more", "learn more", "link", "source", "this article", "打开链接", "点击这里", "了解更多", "阅读更多", "来源"]);
+const genericImageAlt = new Set(["image", "photo", "picture", "article image", "blog image", "product image", "phone case", "图片", "文章图片", "商品图片"]);
 
 function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
   return values.find((value) => Boolean(value?.trim()))?.trim();
@@ -673,6 +741,19 @@ function productContextLine(context: ContentSourceContext): string {
   ].join(" ");
 }
 
+function entityContextLine(context: ContentSourceContext): string {
+  const entities = usableEntityInsights(context).slice(0, 4);
+  if (entities.length === 0) return "";
+
+  return [
+    "Relevant IP, character, person, or pop-culture context to treat carefully:",
+    ...entities.map((entity, index) =>
+      `${index + 1}. ${entity.name}${entity.source ? ` (${entity.source})` : ""}${entity.url ? ` ${entity.url}` : ""}: ${entity.summary ?? "catalog hint only"}`
+    ),
+    "Use this context as background or style explanation only. Do not claim official licensing, endorsements, story canon, availability, or partnerships unless the product data explicitly confirms it."
+  ].join("\n");
+}
+
 function trendContextLine(context: ContentSourceContext): string {
   const signals = usableTrendSignals(context).slice(0, 5);
   if (signals.length === 0) return "";
@@ -683,6 +764,28 @@ function trendContextLine(context: ContentSourceContext): string {
       `${index + 1}. ${signal.title}${signal.source ? ` (${signal.source})` : ""}${signal.url ? ` ${signal.url}` : ""}`
     ),
     "Mention a trend only when it directly supports the product or category angle; avoid claiming facts beyond the supplied signal."
+  ].join("\n");
+}
+
+function marketInsightsLine(context: ContentSourceContext): string {
+  const insights = usableMarketInsights(context).slice(0, 4);
+  if (insights.length === 0) return "";
+
+  return [
+    "Market insights to turn into concrete buyer guidance:",
+    ...insights.map((insight, index) => `${index + 1}. ${insight.insight}${insight.detail ? ` (${insight.detail})` : ""}`),
+    "Translate these into fit checks, comparison language, and real shopper decisions. Do not repeat them as abstract strategy notes."
+  ].join("\n");
+}
+
+function competitorAnglesLine(context: ContentSourceContext): string {
+  const angles = usableCompetitorAngles(context).slice(0, 4);
+  if (angles.length === 0) return "";
+
+  return [
+    "Competitor angles to use as decision framing, not as facts to exaggerate:",
+    ...angles.map((angle, index) => `${index + 1}. ${angle.title}${angle.url ? ` ${angle.url}` : ""}: ${angle.angle}`),
+    "Use these only to sharpen what makes the current product or article choice different."
   ].join("\n");
 }
 
@@ -750,10 +853,33 @@ function imagePromptInstruction(context: ContentSourceContext): string {
 }
 
 function trendKeywordCandidates(context: ContentSourceContext): string[] {
-  return usableTrendSignals(context)
-    .flatMap((signal) => tokenizeSignal(signal.title))
+  return [
+    ...usableEntityInsights(context).flatMap((entity) => tokenizeSignal(entity.name)),
+    ...usableTrendSignals(context).flatMap((signal) => tokenizeSignal(signal.title))
+  ]
     .filter((token) => token.length >= 3)
     .slice(0, 12);
+}
+
+function usableEntityInsights(context: ContentSourceContext): NonNullable<ContentSourceContext["entityInsights"]> {
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["entityInsights"]> = [];
+  for (const entity of context.entityInsights ?? []) {
+    const normalized = normalizeEntityContextKey(entity.name);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(entity);
+  }
+  return output;
+}
+
+function normalizeEntityContextKey(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^\p{L}\p{N}\s&-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function trendLongTailKeywords(primaryKeyword: string, context: ContentSourceContext, locale: SupportedLocale): string[] {
@@ -806,6 +932,20 @@ export function buildKeywordEvidence(
         .join(" · "),
       metric: context.product.imageUrls.length ? `${context.product.imageUrls.length} product images` : undefined,
       confidence: 82
+    });
+  }
+
+  for (const entity of usableEntityInsights(context).slice(0, 4)) {
+    evidence.push({
+      type: "entity_context",
+      source: entity.source,
+      label: entity.type === "ip_character" ? "IP/character context" : "Pop-culture context",
+      value: entity.name,
+      url: entity.url,
+      snippet: entity.summary ?? entity.evidence.join(" · "),
+      metric: entity.verified ? "verified external entity source" : "catalog-detected entity, needs cautious use",
+      relevanceScore: Math.round(entity.confidence / 20),
+      confidence: entity.confidence
     });
   }
 
@@ -1383,6 +1523,65 @@ function externalCitationsHtml(context: ContentSourceContext, keywords: KeywordP
   return `<section><h2>${heading}</h2><p>${escapeHtml(note)}</p><ul>${items}</ul></section>`;
 }
 
+function entityContextHtml(context: ContentSourceContext, locale: SupportedLocale): string {
+  const entities = usableEntityInsights(context).slice(0, 4);
+  if (entities.length === 0) return "";
+
+  const heading = locale === "zh-CN" ? "IP 与角色背景怎么使用" : "How the IP or character context is used";
+  const note =
+    locale === "zh-CN"
+      ? "这些背景只用来解释风格、送礼语境或搜索兴趣；是否官方授权、联名或具体设定，必须以商品页和可验证来源为准。"
+      : "This background is used only for style, gifting, or search-interest context. Official licensing, collaborations, and story details must come from the product page or a verified source.";
+  const rows = entities
+    .map((entity) => {
+      const source = entity.url
+        ? `<a href="${escapeHtml(entity.url)}" rel="nofollow noopener noreferrer" target="_blank">${escapeHtml(entity.source)}</a>`
+        : escapeHtml(entity.source);
+      return `<tr><th>${escapeHtml(entity.name)}</th><td>${source}</td><td>${escapeHtml(entity.summary ?? entity.evidence.join(" · "))}</td></tr>`;
+    })
+    .join("");
+  return `<section><h2>${escapeHtml(heading)}</h2><p>${escapeHtml(note)}</p><table><tbody>${rows}</tbody></table></section>`;
+}
+
+function marketInsightsHtml(context: ContentSourceContext, locale: SupportedLocale): string {
+  const insights = usableMarketInsights(context).slice(0, 4);
+  if (insights.length === 0) return "";
+
+  const heading = locale === "zh-CN" ? "市场洞察怎么用" : "How to use the market insights";
+  const note =
+    locale === "zh-CN"
+      ? "下面这些不是营销口号，而是帮助读者判断场景、比较替代方案和理解买点的背景。"
+      : "These are not marketing slogans; they help readers judge use cases, compare alternatives, and understand why the item matters.";
+  const rows = insights
+    .map((insight) => {
+      const source = insight.sourceIds.join(" · ");
+      const detail = insight.detail ?? (locale === "zh-CN" ? "可转成买家判断语句" : "can be turned into buyer guidance");
+      return `<tr><th>${escapeHtml(insight.kind ?? "insight")}</th><td>${escapeHtml(insight.insight)}</td><td>${escapeHtml(detail)}</td><td>${escapeHtml(source)}</td></tr>`;
+    })
+    .join("");
+  return `<section><h2>${escapeHtml(heading)}</h2><p>${escapeHtml(note)}</p><table><tbody>${rows}</tbody></table></section>`;
+}
+
+function competitorAnglesHtml(context: ContentSourceContext, locale: SupportedLocale): string {
+  const angles = usableCompetitorAngles(context).slice(0, 4);
+  if (angles.length === 0) return "";
+
+  const heading = locale === "zh-CN" ? "竞品角度怎么写" : "How to frame competitor angles";
+  const note =
+    locale === "zh-CN"
+      ? "不要写成夸张比较，而要写成：为什么这个角度更适合某个买家、哪个替代方案更稳。"
+      : "Do not make this a hype comparison; frame it as which buyer each angle fits better and which alternative is safer.";
+  const rows = angles
+    .map((angle) => {
+      const source = angle.url
+        ? `<a href="${escapeHtml(angle.url)}" rel="nofollow noopener noreferrer" target="_blank">${escapeHtml(angle.title)}</a>`
+        : escapeHtml(angle.title);
+      return `<tr><th>${source}</th><td>${escapeHtml(angle.angle)}</td></tr>`;
+    })
+    .join("");
+  return `<section><h2>${escapeHtml(heading)}</h2><p>${escapeHtml(note)}</p><table><tbody>${rows}</tbody></table></section>`;
+}
+
 function verifiedFactsHtml(context: ContentSourceContext, locale: SupportedLocale): string {
   const facts = [
     context.product?.title ? [locale === "zh-CN" ? "已确认商品" : "Confirmed product", context.product.title] : undefined,
@@ -1571,6 +1770,58 @@ function countMatches(value: string, pattern: RegExp): number {
   return value.match(pattern)?.length ?? 0;
 }
 
+function extractHeadingTexts(html: string, level: number): string[] {
+  const pattern = new RegExp(`<h${level}\\b[^>]*>(.*?)</h${level}>`, "gis");
+  return Array.from(html.matchAll(pattern)).map((match) => stripHtml(match[1] ?? "")).filter(Boolean);
+}
+
+function faqQuestionCount(html: string, text: string, locale: SupportedLocale): number {
+  const headingQuestions = Array.from(html.matchAll(/<h[23]\b[^>]*>(.*?)<\/h[23]>/gis))
+    .map((match) => stripHtml(match[1] ?? ""))
+    .filter((heading) => looksLikeQuestion(heading, locale));
+  const inlineQuestions = text.match(/[^.?!。？！]{6,90}[?？]/g) ?? [];
+  return Math.max(headingQuestions.length, inlineQuestions.length);
+}
+
+function looksLikeQuestion(value: string, locale: SupportedLocale): boolean {
+  if (/[?？]/.test(value)) return true;
+  if (locale === "zh-CN") return /吗|怎么|如何|哪些|什么时候|为什么/.test(value);
+  return /^(what|how|when|why|which|who|is|are|can|should|does|do)\b/i.test(value.trim());
+}
+
+function descriptiveAnchorCount(html: string): number {
+  return anchorLabels(html).filter((label) => isDescriptiveAnchor(label)).length;
+}
+
+function genericAnchorLabels(html: string): string[] {
+  return anchorLabels(html).filter((label) => !isDescriptiveAnchor(label));
+}
+
+function anchorLabels(html: string): string[] {
+  return Array.from(html.matchAll(/<a\b[^>]*>(.*?)<\/a>/gis))
+    .map((match) => stripHtml(match[1] ?? ""))
+    .filter(Boolean);
+}
+
+function isDescriptiveAnchor(label: string): boolean {
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return false;
+  if (genericAnchorText.has(normalized)) return false;
+  return normalized.length >= 6 || /[\u3400-\u9fff]{3,}/u.test(label);
+}
+
+function isDescriptiveImageAlt(alt: string, primaryKeyword: string): boolean {
+  const normalized = alt.trim().toLowerCase();
+  if (!normalized || genericImageAlt.has(normalized)) return false;
+  if (normalized.length < 8) return false;
+  return keywordTokenCoverage(alt, primaryKeyword) >= 0.25 || normalized.length >= 16;
+}
+
+function summaryLengthBounds(value: string): [number, number] {
+  const cjkChars = value.match(/[\u3400-\u9fff]/gu)?.length ?? 0;
+  return cjkChars >= 10 ? [40, 160] : [80, 180];
+}
+
 function stripHtml(html: string): string {
   return html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
@@ -1646,10 +1897,44 @@ function usableTrendSignals(context: ContentSourceContext) {
   return output;
 }
 
+function usableMarketInsights(context: ContentSourceContext): NonNullable<ContentSourceContext["marketInsights"]> {
+  return (context.marketInsights ?? [])
+    .filter((insight) => Boolean(insight.insight && insight.sourceIds.length))
+    .sort((left, right) => right.confidence - left.confidence);
+}
+
+function usableCompetitorAngles(context: ContentSourceContext): NonNullable<ContentSourceContext["competitorAngles"]> {
+  const seen = new Set<string>();
+  const output: NonNullable<ContentSourceContext["competitorAngles"]> = [];
+  for (const angle of context.competitorAngles ?? []) {
+    const key = `${angle.title}|${angle.angle}`.toLowerCase().trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(angle);
+  }
+  return output;
+}
+
 function externalCitationCandidates(context: ContentSourceContext, keywords: Pick<KeywordPlan, "primaryKeyword">, locale: SupportedLocale) {
   if (context.generationConfig?.externalReferences?.enabled === false) return [];
   const maxLinks = context.generationConfig?.externalReferences?.maxLinks ?? 3;
   const configured = context.externalReferences ?? [];
+  const entities = usableEntityInsights(context)
+    .filter((entity) => Boolean(entity.url))
+    .map((entity) => ({
+      title: entity.name,
+      url: entity.url as string,
+      source: entity.source || "entity context",
+      snippet: entity.summary,
+      reason: entity.verified
+        ? locale === "zh-CN"
+          ? "已验证实体背景来源"
+          : "verified entity background"
+        : locale === "zh-CN"
+          ? "目录识别到的实体背景，需谨慎使用"
+          : "catalog-detected entity context; use cautiously",
+      relevanceScore: Math.max(1, Math.round(entity.confidence / 20))
+    }));
   const trends = usableTrendSignals(context)
     .filter((signal) => Boolean(signal.url))
     .map((signal) => ({
@@ -1669,7 +1954,7 @@ function externalCitationCandidates(context: ContentSourceContext, keywords: Pic
     reason: locale === "zh-CN" ? "用于交叉检查搜索需求变化" : "for cross-checking search demand movement",
     relevanceScore: 1
   };
-  const candidates = [...configured, ...trends, fallback]
+  const candidates = [...configured, ...entities, ...trends, fallback]
     .filter((reference) => isUsableExternalUrl(reference.url))
     .map((reference) => ({
       ...reference,

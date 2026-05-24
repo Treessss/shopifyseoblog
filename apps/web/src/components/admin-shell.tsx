@@ -14,10 +14,12 @@ import {
   Languages,
   LayoutDashboard,
   Megaphone,
+  Radar,
   MessageSquareText,
+  ListTodo,
+  Search,
   Settings2,
   Plus,
-  Search,
   Store
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -30,39 +32,46 @@ const dictionary = getDictionary();
 const navGroups = [
   {
     id: "overview",
-    label: "工作台",
-    description: "总览",
-    icon: LayoutDashboard,
-    items: [{ href: "/dashboard", label: dictionary.nav.dashboard, icon: LayoutDashboard }]
-  },
-  {
-    id: "commerce",
-    label: "店铺运营",
-    description: "Shopify",
-    icon: Store,
+    label: "开始",
+    description: "只留一个起点",
+  icon: LayoutDashboard,
     items: [
-      { href: "/stores", label: dictionary.nav.stores, icon: Store },
-      { href: "/languages", label: dictionary.nav.languages, icon: Languages }
+      { href: "/dashboard", label: dictionary.nav.dashboard, icon: LayoutDashboard },
+      { href: "/agents", label: dictionary.nav.agents, icon: Bot }
     ]
   },
   {
-    id: "content",
-    label: "内容生产",
-    description: "Blog engine",
+    id: "execution",
+    label: "执行",
+    description: "店铺 / 任务 / 文章",
     icon: Boxes,
     items: [
+      { href: "/stores", label: dictionary.nav.stores, icon: Store },
       { href: "/campaigns", label: dictionary.nav.campaigns, icon: Megaphone },
-      { href: "/articles", label: dictionary.nav.articles, icon: FileText },
-      { href: "/brand-voice", label: dictionary.nav.brandVoice, icon: MessageSquareText }
+      { href: "/articles", label: dictionary.nav.articles, icon: FileText }
+    ]
+  },
+  {
+    id: "insights",
+    label: "洞察",
+    description: "研究 / 优先级 / 复盘",
+    icon: Radar,
+    items: [
+      { href: "/research", label: dictionary.nav.research, icon: Radar },
+      { href: "/search-console", label: "Search Console", icon: Search },
+      { href: "/priorities", label: "优先级板", icon: ListTodo },
+      { href: "/performance-review", label: "性能复盘", icon: Activity }
     ]
   },
   {
     id: "platform",
-    label: "平台设置",
-    description: "System",
+    label: "设置",
+    description: "AI / 语言 / 品牌 / 日志",
     icon: Settings2,
     items: [
       { href: "/ai-settings", label: dictionary.nav.aiSettings, icon: Bot },
+      { href: "/languages", label: dictionary.nav.languages, icon: Languages },
+      { href: "/brand-voice", label: dictionary.nav.brandVoice, icon: MessageSquareText },
       { href: "/logs", label: dictionary.nav.logs, icon: Activity }
     ]
   }
@@ -71,7 +80,6 @@ const navGroups = [
 export function AdminShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const activeGroup = navGroups.find((group) => group.items.some((item) => isActivePath(pathname, item.href)));
-  const moduleCount = navGroups.reduce((total, group) => total + group.items.length, 0);
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(["overview", activeGroup?.id ?? "overview"]));
 
   function toggleGroup(groupId: string) {
@@ -153,13 +161,9 @@ export function AdminShell({ children }: { children: ReactNode }) {
         <div className="sidebar__footer">
           <div className="sidebar__footer-row">
             <CheckCircle2 size={16} aria-hidden="true" />
-            <span>{dictionary.common.cnDefault}</span>
+            <span>按“开始 → 执行 → 洞察”走</span>
           </div>
-          <small>{dictionary.common.enReserved}</small>
-          <div className="sidebar__chips" aria-label="系统能力">
-            <span>{moduleCount} modules</span>
-            <span>zh-CN</span>
-          </div>
+          <small>{dictionary.common.cnDefault}，复杂功能都放在次级入口里。</small>
         </div>
       </aside>
 

@@ -1,5 +1,6 @@
 export * from "./agent";
 export * from "./components";
+export * from "./entities";
 export * from "./locales";
 export * from "./memory";
 export * from "./planner";

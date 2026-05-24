@@ -22,7 +22,7 @@ export async function startPublishJob(input: {
   jobId?: string;
   organizationId: string;
   storeId: string;
-  type: "generate_article" | "publish_article" | "sync_product" | "sync_collection";
+  type: "generate_article" | "publish_article" | "sync_product" | "sync_collection" | "sync_search_console";
   externalJobId?: string;
   articleId?: string;
   payload?: Record<string, unknown>;

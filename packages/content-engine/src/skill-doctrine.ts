@@ -21,6 +21,11 @@ export function buildCommercialSkillDoctrine(locale: SupportedLocale): SkillDoct
         name: "affiliate-skills flywheel",
         url: "https://github.com/Affitor/affiliate-skills",
         lesson: "Close the loop from research to content to analytics, and feed outcomes back into future planning."
+      },
+      {
+        name: "SEO Machine",
+        url: "https://github.com/TheCraigHewitt/seomachine",
+        lesson: "Mirror the research-write-rewrite-analyze-publish-review loop with specialized commands, role clarity, and performance feedback."
       }
     ],
     requiredArticleModules: zh
@@ -52,7 +57,8 @@ export function buildCommercialSkillDoctrine(locale: SupportedLocale): SkillDoct
       "Use trends as editorial leads only when relevance is clear; do not force unrelated Google Trends topics into copy.",
       "Every publishable article should cite approved external references; never invent source URLs.",
       "Prefer concrete shopper decisions over broad benefits: fit, variant, finish, care, gifting, styling, and not-confirmed details.",
-      "Never optimize for AI-detector evasion; optimize for specificity, evidence, usefulness, and natural rhythm."
+      "Never optimize for AI-detector evasion; optimize for specificity, evidence, usefulness, and natural rhythm.",
+      "Use market insights and competitor angles to sharpen the buyer decision, not to pad the copy."
     ],
     scoringRubric: [
       { dimension: "Search intent fit", weight: 22, passSignal: "The title, answer block, H2s, and FAQ match the same query intent." },

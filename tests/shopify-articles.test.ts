@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { articleCreate, articleUpdate, uploadImageFile, type ShopifyGraphQLClient } from "../packages/shopify/src";
+import { articleCreate, articleUpdate, ShopifyUserError, uploadImageFile, type ShopifyGraphQLClient } from "../packages/shopify/src";
 
 describe("Shopify article GraphQL wrappers", () => {
   it("does not send publishDate for immediate publish creates", async () => {
@@ -39,6 +39,30 @@ describe("Shopify article GraphQL wrappers", () => {
     expect(call?.variables).not.toHaveProperty("redirectNewHandle");
     expect(article.redirectNewHandle).toBe(true);
     expect(article.blogId).toBe("gid://shopify/Blog/2");
+  });
+
+  it("exposes articleUpdate user errors so the worker can recover missing remote articles", async () => {
+    const client = {
+      request: async () => ({
+        articleUpdate: {
+          article: null,
+          userErrors: [{ message: "Article does not exist" }]
+        }
+      })
+    } as unknown as ShopifyGraphQLClient;
+
+    await expect(
+      articleUpdate(client, {
+        id: "gid://shopify/Article/404",
+        blogId: "gid://shopify/Blog/2",
+        title: "Recovered Article",
+        bodyHtml: "<p>Recovered</p>",
+        isPublished: true
+      })
+    ).rejects.toMatchObject({
+      mutation: "articleUpdate",
+      userErrors: [{ message: "Article does not exist" }]
+    } satisfies Partial<ShopifyUserError>);
   });
 
   it("maps SEO metadata, brand author, and cover image into Shopify article input", async () => {

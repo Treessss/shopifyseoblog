@@ -1,6 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, FileText, ScrollText, Sparkles } from "lucide-react";
 import { Badge, ProgressBar, TableEmpty } from "@/components/ui";
 import type { AdminCampaignView } from "@/lib/admin-client";
 
@@ -106,8 +108,46 @@ export function CampaignProgressTable({ initialCampaigns, query, status }: Campa
                         <ProgressBar value={campaign.progress} />
                         <span>{campaign.progress}%</span>
                       </div>
-                      <small>{campaign.progressLabel}</small>
+                      <small>
+                        {campaign.progressStage ? `${campaign.progressStage} · ` : ""}
+                        {campaign.progressLabel}
+                      </small>
                       {campaign.progressDetail ? <em>{campaign.progressDetail}</em> : null}
+                      {campaign.progressNextStep ? <em>下一步：{campaign.progressNextStep}</em> : null}
+                      {campaign.progressIsStale ? (
+                        <div className="progress-alert" role="status">
+                          <AlertTriangle size={14} aria-hidden="true" />
+                          <span>
+                            {campaign.progressStaleReason ??
+                              `任务较久没有进度心跳${campaign.progressStaleMinutes !== null ? `（${campaign.progressStaleMinutes} 分钟）` : ""}，建议先查看日志。`}
+                          </span>
+                        </div>
+                      ) : campaign.progressRecoverable ? (
+                        <Badge tone="warn">可重试/可修复</Badge>
+                      ) : null}
+                      {campaign.progressIsStale ? (
+                        <div className="progress-actions">
+                          <Link className="button button--small" href="/logs?q=blog-generation">
+                            <ScrollText size={14} aria-hidden="true" />
+                            日志
+                          </Link>
+                          {campaign.progressArticleId ? (
+                            <Link className="button button--small" href={`/articles/${campaign.progressArticleId}`}>
+                              <FileText size={14} aria-hidden="true" />
+                              文章
+                            </Link>
+                          ) : null}
+                          {campaign.progressArticleId ? (
+                            <form action={`/api/admin/articles/${campaign.progressArticleId}/repair`} method="post">
+                              <input type="hidden" name="repairReason" value="任务长时间没有进度心跳：按当前草稿、质检状态和 Agent 轨迹继续修复。" />
+                              <button className="button button--small" type="submit">
+                                <Sparkles size={14} aria-hidden="true" />
+                                修复
+                              </button>
+                            </form>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   </td>
                   <td>{campaign.publishPolicy}</td>
@@ -147,6 +187,13 @@ function normalizeCampaign(input: unknown, index: number): AdminCampaignView {
     progressStep: nullableString(record.progressStep ?? record.stage),
     progressDetail: nullableString(record.progressDetail ?? record.detail),
     progressUpdatedAt: nullableString(record.progressUpdatedAt),
+    progressStage: nullableString(record.progressStage),
+    progressNextStep: nullableString(record.progressNextStep),
+    progressRecoverable: Boolean(record.progressRecoverable),
+    progressArticleId: nullableString(record.progressArticleId),
+    progressIsStale: Boolean(record.progressIsStale),
+    progressStaleMinutes: nullableNumber(record.progressStaleMinutes),
+    progressStaleReason: nullableString(record.progressStaleReason),
     publishPolicy: stringValue(record.publishPolicy, "人工复核"),
     targetWordCount: numberValue(record.targetWordCount, 0),
     primaryKeyword: stringValue(record.primaryKeyword, "")
@@ -185,6 +232,15 @@ function stringValue(value: unknown, fallback: string): string {
 
 function nullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
 }
 
 function numberValue(value: unknown, fallback: number): number {

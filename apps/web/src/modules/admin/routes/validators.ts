@@ -4,11 +4,15 @@ import type {
   CreateCampaignInput,
   DeleteStoreInput,
   QueueArticlePublishInput,
+  QueueArticleRepairInput,
+  QueueSearchConsoleArticleSyncInput,
+  QueueSearchConsoleSyncInput,
   QueueStoreSyncInput,
   UpsertAiProviderInput,
   UpsertBrandVoiceInput,
   UpsertLanguageInput,
-  UpsertStoreCredentialsInput
+  UpsertStoreCredentialsInput,
+  SaveSearchConsolePropertyInput
 } from "../contracts";
 
 const SOURCE_TYPES = ["product", "collection", "manual_topic"] as const;
@@ -133,6 +137,76 @@ export async function parseQueueArticlePublishRequest(request: Request): Promise
     articleId: requiredString(body, "articleId"),
     publishAt: optionalDateString(body.publishAt, "publishAt"),
     shopifyBlogId: optionalString(body.shopifyBlogId)
+  };
+}
+
+export async function parseQueueArticleRepairRequest(
+  request: Request,
+  fallbackArticleId?: string
+): Promise<QueueArticleRepairInput> {
+  const body = await readRequestObject(request);
+  const articleId = optionalString(body.articleId) ?? fallbackArticleId;
+  if (!articleId) {
+    throw new AdminApiError(400, "ARTICLEID_REQUIRED", "articleId is required.");
+  }
+
+  return {
+    articleId,
+    repairReason: optionalString(body.repairReason),
+    publishAt: optionalDateString(body.publishAt, "publishAt")
+  };
+}
+
+export async function parseSaveSearchConsolePropertyRequest(request: Request): Promise<SaveSearchConsolePropertyInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    id: optionalString(body.id),
+    storeId: requiredString(body, "storeId"),
+    siteUrl: requiredString(body, "siteUrl"),
+    status: optionalEnum(body.status, ["active", "needs_auth", "disconnected", "archived"] as const, "status") ?? "active",
+    permissionLevel: optionalString(body.permissionLevel),
+    scopes: stringList(body.scopes),
+    googleClientId: optionalString(body.googleClientId),
+    googleClientSecret: optionalString(body.googleClientSecret),
+    accessToken: optionalString(body.accessToken),
+    refreshToken: optionalString(body.refreshToken),
+    tokenExpiresAt: optionalDateString(body.tokenExpiresAt, "tokenExpiresAt")
+  };
+}
+
+export async function parseQueueSearchConsoleSyncRequest(request: Request): Promise<QueueSearchConsoleSyncInput> {
+  const body = await readRequestObject(request);
+
+  return {
+    storeId: requiredString(body, "storeId"),
+    propertyId: optionalString(body.propertyId),
+    startDate: optionalString(body.startDate),
+    endDate: optionalString(body.endDate),
+    days: optionalInteger(body.days, "days", 1, 180),
+    dataState: optionalEnum(body.dataState, ["final", "all"] as const, "dataState"),
+    rowLimit: optionalInteger(body.rowLimit, "rowLimit", 1, 25000)
+  };
+}
+
+export async function parseQueueSearchConsoleArticleSyncRequest(
+  request: Request,
+  fallbackArticleId?: string
+): Promise<QueueSearchConsoleArticleSyncInput & { articleId: string }> {
+  const body = await readRequestObject(request);
+  const articleId = optionalString(body.articleId) ?? fallbackArticleId;
+  if (!articleId) {
+    throw new AdminApiError(400, "ARTICLEID_REQUIRED", "articleId is required.");
+  }
+
+  return {
+    articleId,
+    propertyId: optionalString(body.propertyId),
+    startDate: optionalString(body.startDate),
+    endDate: optionalString(body.endDate),
+    days: optionalInteger(body.days, "days", 1, 180),
+    dataState: optionalEnum(body.dataState, ["final", "all"] as const, "dataState"),
+    rowLimit: optionalInteger(body.rowLimit, "rowLimit", 1, 25000)
   };
 }
 

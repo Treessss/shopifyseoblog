@@ -1,4 +1,15 @@
-import { CheckCircle2, Eye, FileText, Gauge, ListFilter, Megaphone, RefreshCw, Search, Send } from "lucide-react";
+import {
+  Eye,
+  FileText,
+  Gauge,
+  ListFilter,
+  Megaphone,
+  RefreshCw,
+  ScanSearch,
+  Search,
+  Send,
+  Sparkles
+} from "lucide-react";
 import Link from "next/link";
 import { Badge, ErrorState, FormNotice, PageHeader, Panel, StatusPill, TableEmpty } from "@/components/ui";
 import { formatArticleStatus, getArticlesView } from "@/lib/admin-client";
@@ -19,6 +30,7 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
   const qualityFailedCount = articles.filter((article) => article.status === "quality_failed").length;
   const readyCount = articles.filter((article) => article.status === "ready_to_publish").length;
   const publishedCount = articles.filter((article) => article.status === "published").length;
+  const discoverableCount = articles.filter((article) => article.indexReadiness.score >= 75).length;
   const filteredArticles = articles.filter((article) => {
     const matchesQuery = !query || `${article.title} ${article.store} ${article.locale}`.toLowerCase().includes(query);
     const matchesStatus = !status || article.status === status;
@@ -67,10 +79,10 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
             icon={<Send size={18} aria-hidden="true" />}
           />
           <StatusPill
-            label="已发布"
-            value={publishedCount}
-            tone="good"
-            icon={<CheckCircle2 size={18} aria-hidden="true" />}
+            label="收录就绪"
+            value={`${discoverableCount}/${publishedCount}`}
+            tone={discoverableCount > 0 ? "good" : "neutral"}
+            icon={<ScanSearch size={18} aria-hidden="true" />}
           />
           <StatusPill
             label="需处理"
@@ -123,13 +135,14 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
           </form>
 
           <div className="table-wrap">
-            <table>
+            <table className="article-table">
               <thead>
                 <tr>
                   <th>文章</th>
                   <th>店铺</th>
                   <th>语言</th>
                   <th>SEO 分数</th>
+                  <th>收录准备</th>
                   <th>更新时间</th>
                   <th>状态</th>
                   <th>操作</th>
@@ -138,7 +151,7 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
               <tbody>
                 {filteredArticles.length === 0 ? (
                   <TableEmpty
-                    colSpan={7}
+                    colSpan={8}
                     title={articles.length === 0 ? "暂无文章" : "没有匹配的文章"}
                     description={
                       articles.length === 0
@@ -149,13 +162,21 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
                 ) : (
                   filteredArticles.map((article) => (
                     <tr key={article.id}>
-                      <td>
+                      <td className="article-table__title">
                         <strong>{article.title}</strong>
                         {article.failureReason ? <div className="danger-text">{article.failureReason}</div> : null}
                       </td>
                       <td>{article.store}</td>
                       <td className="code">{article.locale}</td>
                       <td>{article.seoScore ?? "暂无"}</td>
+                      <td>
+                        <div className="readiness-cell">
+                          <Badge tone={article.indexReadiness.tone}>
+                            {article.indexReadiness.label} · {article.indexReadiness.score}
+                          </Badge>
+                          <small className="muted">{article.indexReadiness.nextStep}</small>
+                        </div>
+                      </td>
                       <td>{article.updatedAt}</td>
                       <td>
                         <Badge tone={article.statusTone}>{formatArticleStatus(article.status)}</Badge>
@@ -166,6 +187,13 @@ export default async function ArticlesPage({ searchParams }: PageProps) {
                             <Eye size={14} aria-hidden="true" />
                             审核
                           </Link>
+                          <form action={`/api/admin/articles/${article.id}/repair`} method="post">
+                            <input type="hidden" name="repairReason" value="从文章列表触发：优先修复质检、搜索评分和结构问题。" />
+                            <button className="button button--small" type="submit">
+                              <Sparkles size={14} aria-hidden="true" />
+                              AI 修复
+                            </button>
+                          </form>
                           <form action={`/api/admin/articles/${article.id}/publish`} method="post">
                             <button className="button button--small" type="submit" disabled={article.status !== "ready_to_publish"}>
                               <Send size={14} aria-hidden="true" />

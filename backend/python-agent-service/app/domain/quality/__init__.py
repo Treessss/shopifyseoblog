@@ -1,0 +1,1 @@
+"""Shared quality scoring domain."""

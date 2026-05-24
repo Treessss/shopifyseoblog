@@ -11,17 +11,21 @@ import {
 
 const WORKER_QUEUE_PREFIX = process.env.BULLMQ_PREFIX ?? "shopify-ai-blog-local";
 const BLOG_GENERATION_QUEUE = "blog-generation";
+const SEO_PERFORMANCE_QUEUE = "seo-performance";
 const BLOG_GENERATION_JOB = "blog.generate";
 const ARTICLE_PUBLISH_JOB = "article.publish";
+const SEARCH_CONSOLE_STORE_SYNC_JOB = "gsc.store.sync";
+const SEARCH_CONSOLE_ARTICLE_SYNC_JOB = "gsc.article.sync";
 
 type BlogGenerationJobName = typeof BLOG_GENERATION_JOB | typeof ARTICLE_PUBLISH_JOB;
+type SearchConsoleJobName = typeof SEARCH_CONSOLE_STORE_SYNC_JOB | typeof SEARCH_CONSOLE_ARTICLE_SYNC_JOB;
 
 export interface QueueablePublishJob {
   id: string;
   organizationId: string;
   storeId: string;
   articleId?: string | null;
-  type: "generate_article" | "publish_article";
+  type: "generate_article" | "publish_article" | "sync_search_console";
   runAt: Date;
   payload: unknown;
 }
@@ -35,6 +39,10 @@ interface BlogGenerationJobData extends BlogCampaignInput {
   articleId?: string;
   publishJobId?: string;
   requestedByUserId?: string;
+  generationMode?: "new_article" | "article_repair";
+  repairReason?: string;
+  publishAfterRepair?: boolean;
+  publishAt?: string;
 }
 
 interface ArticlePublishJobData {
@@ -49,12 +57,39 @@ interface ArticlePublishJobData {
   publishAt?: string;
 }
 
-type BlogGenerationQueueData = BlogGenerationJobData | ArticlePublishJobData;
-type BlogGenerationQueue = Queue<BlogGenerationQueueData, unknown, BlogGenerationJobName>;
+interface SearchConsoleStoreSyncJobData {
+  organizationId: string;
+  storeId: string;
+  publishJobId?: string;
+  requestedByUserId?: string;
+  propertyId?: string;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  dataState?: "final" | "all";
+  rowLimit?: number;
+}
+
+interface SearchConsoleArticleSyncJobData {
+  organizationId: string;
+  storeId: string;
+  publishJobId?: string;
+  requestedByUserId?: string;
+  articleId: string;
+  propertyId?: string;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  dataState?: "final" | "all";
+  rowLimit?: number;
+}
+
+type BlogGenerationQueue = Queue<BlogGenerationJobData | ArticlePublishJobData, unknown, BlogGenerationJobName>;
+type SearchConsoleQueue = Queue<SearchConsoleStoreSyncJobData | SearchConsoleArticleSyncJobData, unknown, SearchConsoleJobName>;
 
 export interface EnqueuedWorkerJob {
-  queue: typeof BLOG_GENERATION_QUEUE;
-  jobName: BlogGenerationJobName;
+  queue: typeof BLOG_GENERATION_QUEUE | typeof SEO_PERFORMANCE_QUEUE;
+  jobName: BlogGenerationJobName | SearchConsoleJobName;
   bullJobId?: string;
   externalJobId: string;
 }
@@ -62,6 +97,7 @@ export interface EnqueuedWorkerJob {
 const globalForQueues = globalThis as typeof globalThis & {
   adminRedisConnection?: IORedis;
   adminBlogGenerationQueue?: BlogGenerationQueue;
+  adminSearchConsoleQueue?: SearchConsoleQueue;
 };
 
 export async function enqueuePublishJobForWorker(
@@ -73,6 +109,8 @@ export async function enqueuePublishJobForWorker(
       return enqueueBlogGeneration(job, context);
     case "publish_article":
       return enqueueArticlePublish(job, context);
+    case "sync_search_console":
+      return enqueueSearchConsole(job, context);
     default:
       throw new Error("Unsupported worker job type.");
   }
@@ -97,7 +135,11 @@ async function enqueueBlogGeneration(
     publishPolicy: publishPolicyValue(payload.publishPolicy),
     targetWordCount: numberValue(payload.targetWordCount) ?? 1400,
     primaryKeyword: stringValue(payload.primaryKeyword),
-    generationConfig: generationConfigValue(payload.generationConfig)
+    generationConfig: generationConfigValue(payload.generationConfig),
+    generationMode: generationModeValue(payload.generationMode),
+    repairReason: stringValue(payload.repairReason),
+    publishAfterRepair: booleanValue(payload.publishAfterRepair),
+    publishAt: stringValue(payload.publishAt)
   };
 
   return addJob(BLOG_GENERATION_JOB, data, job);
@@ -128,9 +170,50 @@ async function enqueueArticlePublish(
   return addJob(ARTICLE_PUBLISH_JOB, data, job);
 }
 
+async function enqueueSearchConsole(
+  job: QueueablePublishJob,
+  context: EnqueueContext
+): Promise<EnqueuedWorkerJob> {
+  const payload = asRecord(job.payload);
+  const isArticleSync = Boolean(payload.articleId ?? job.articleId);
+  const dataState = payload.dataState === "all" ? "all" : "final";
+  const data: SearchConsoleStoreSyncJobData | SearchConsoleArticleSyncJobData = isArticleSync
+    ? {
+        organizationId: stringValue(payload.organizationId) ?? job.organizationId,
+        storeId: stringValue(payload.storeId) ?? job.storeId,
+        publishJobId: job.id,
+        requestedByUserId: context.requestedByUserId,
+        articleId: stringValue(payload.articleId) ?? job.articleId ?? "",
+        propertyId: stringValue(payload.propertyId),
+        startDate: stringValue(payload.startDate),
+        endDate: stringValue(payload.endDate),
+        days: numberValue(payload.days),
+        dataState,
+        rowLimit: numberValue(payload.rowLimit)
+      }
+    : {
+        organizationId: stringValue(payload.organizationId) ?? job.organizationId,
+        storeId: stringValue(payload.storeId) ?? job.storeId,
+        publishJobId: job.id,
+        requestedByUserId: context.requestedByUserId,
+        propertyId: stringValue(payload.propertyId),
+        startDate: stringValue(payload.startDate),
+        endDate: stringValue(payload.endDate),
+        days: numberValue(payload.days),
+        dataState,
+        rowLimit: numberValue(payload.rowLimit)
+      };
+
+  return addSearchConsoleJob(
+    isArticleSync ? SEARCH_CONSOLE_ARTICLE_SYNC_JOB : SEARCH_CONSOLE_STORE_SYNC_JOB,
+    data,
+    job
+  );
+}
+
 async function addJob(
   jobName: BlogGenerationJobName,
-  data: BlogGenerationQueueData,
+  data: BlogGenerationJobData | ArticlePublishJobData,
   job: QueueablePublishJob
 ): Promise<EnqueuedWorkerJob> {
   const queued = await getBlogGenerationQueue().add(jobName, data, buildJobOptions(job));
@@ -144,6 +227,22 @@ async function addJob(
   };
 }
 
+async function addSearchConsoleJob(
+  jobName: SearchConsoleJobName,
+  data: SearchConsoleStoreSyncJobData | SearchConsoleArticleSyncJobData,
+  job: QueueablePublishJob
+): Promise<EnqueuedWorkerJob> {
+  const queued = await getSearchConsoleQueue().add(jobName, data, buildJobOptions(job));
+  const bullJobId = queued.id ?? job.id;
+
+  return {
+    queue: SEO_PERFORMANCE_QUEUE,
+    jobName,
+    bullJobId: queued.id,
+    externalJobId: `bullmq:${SEO_PERFORMANCE_QUEUE}:${jobName}:${bullJobId}`
+  };
+}
+
 function buildJobOptions(job: QueueablePublishJob): JobsOptions {
   const delay = Math.max(0, job.runAt.getTime() - Date.now());
   return {
@@ -154,13 +253,29 @@ function buildJobOptions(job: QueueablePublishJob): JobsOptions {
 
 function getBlogGenerationQueue(): BlogGenerationQueue {
   if (!globalForQueues.adminBlogGenerationQueue) {
-    globalForQueues.adminBlogGenerationQueue = new Queue<BlogGenerationQueueData, unknown, BlogGenerationJobName>(
+    globalForQueues.adminBlogGenerationQueue = new Queue<
+      BlogGenerationJobData | ArticlePublishJobData,
+      unknown,
+      BlogGenerationJobName
+    >(
       BLOG_GENERATION_QUEUE,
       getQueueOptions()
     );
   }
 
   return globalForQueues.adminBlogGenerationQueue;
+}
+
+function getSearchConsoleQueue(): SearchConsoleQueue {
+  if (!globalForQueues.adminSearchConsoleQueue) {
+    globalForQueues.adminSearchConsoleQueue = new Queue<
+      SearchConsoleStoreSyncJobData | SearchConsoleArticleSyncJobData,
+      unknown,
+      SearchConsoleJobName
+    >(SEO_PERFORMANCE_QUEUE, getQueueOptions());
+  }
+
+  return globalForQueues.adminSearchConsoleQueue;
 }
 
 function getQueueOptions(): QueueOptions {
@@ -242,4 +357,17 @@ function publishPolicyValue(value: unknown): PublishPolicy {
 function generationConfigValue(value: unknown): GenerationConfig | undefined {
   const parsed = generationConfigSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
+}
+
+function booleanValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value === "true") return true;
+    if (value === "false") return false;
+  }
+  return undefined;
+}
+
+function generationModeValue(value: unknown): BlogGenerationJobData["generationMode"] {
+  return value === "article_repair" || value === "new_article" ? value : undefined;
 }

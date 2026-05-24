@@ -56,9 +56,18 @@ export async function discoverTrendSignals(input: DiscoverTrendSignalsInput): Pr
 }
 
 function buildTrendQueries(topic: string, context: ContentSourceContext | undefined, configured?: string) {
+  const entityQueries = (context?.entityInsights ?? []).flatMap((entity) =>
+    [
+      entity.query,
+      `${entity.name} ${context?.product?.productType ?? context?.collection?.title ?? "phone case"}`,
+      `${entity.name} gift ideas`,
+      `${entity.name} trend`
+    ].filter(Boolean)
+  );
   const base = [
     configured,
     topic,
+    ...entityQueries.slice(0, 3),
     context?.seedKeywords?.[0],
     context?.product?.productType,
     context?.product?.title,
@@ -85,6 +94,7 @@ function buildTrendQueries(topic: string, context: ContentSourceContext | undefi
   const queries = uniqueQueries([
     primary,
     anchor,
+    ...entityQueries,
     product,
     category,
     ...(modifierBase ? scenarios.map((modifier) => normalizeQuery([modifierBase, modifier].filter(Boolean).join(" "))) : []),

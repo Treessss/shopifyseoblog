@@ -4,12 +4,16 @@ import { pathToFileURL } from "node:url";
 import {
   BLOG_GENERATION_JOB_NAMES,
   QUEUE_NAMES,
+  SEARCH_CONSOLE_JOB_NAMES,
   SHOPIFY_SYNC_JOB_NAMES,
   WORKER_QUEUE_PREFIX,
+  enqueueSearchConsoleStoreSync,
   closeQueues,
   getRedisConnection,
   type BlogGenerationJobName,
   type BlogGenerationQueueJobData,
+  type SearchConsoleJobName,
+  type SearchConsoleQueueJobData,
   type ShopifySyncJobData,
   type ShopifySyncJobName,
   type WorkerJobData,
@@ -17,11 +21,16 @@ import {
   type WorkerJobResult
 } from "./queues";
 import { processBlogGenerationJob } from "./processors/blog-generation";
+import { processSearchConsoleJob } from "./processors/search-console";
 import { processShopifySyncJob } from "./processors/shopify-sync";
+import { prisma } from "@shopify-ai-blog/db";
+import { parseIntegerEnv } from "./processors/shared";
 
 export interface StartWorkerOptions {
   shopifySyncConcurrency?: number;
   blogGenerationConcurrency?: number;
+  seoPerformanceConcurrency?: number;
+  scheduleSearchConsoleSync?: boolean;
 }
 
 type RunningWorker = Worker<WorkerJobData, WorkerJobResult, WorkerJobName>;
@@ -56,10 +65,26 @@ export function startWorkers(options: StartWorkerOptions = {}): RunningWorker[] 
     concurrency: options.blogGenerationConcurrency ?? getConcurrency("BLOG_GENERATION_CONCURRENCY", 2)
   });
 
+  const seoPerformanceWorker = new Worker<
+    SearchConsoleQueueJobData,
+    WorkerJobResult,
+    SearchConsoleJobName
+  >(QUEUE_NAMES.seoPerformance, processSearchConsoleJob, {
+    ...baseOptions,
+    concurrency: options.seoPerformanceConcurrency ?? getConcurrency("SEO_PERFORMANCE_CONCURRENCY", 1)
+  });
+
   attachWorkerLogging(shopifySyncWorker as RunningWorker);
   attachWorkerLogging(blogGenerationWorker as RunningWorker);
+  attachWorkerLogging(seoPerformanceWorker as RunningWorker);
 
-  runningWorkers.push(shopifySyncWorker as RunningWorker, blogGenerationWorker as RunningWorker);
+  runningWorkers.push(shopifySyncWorker as RunningWorker, blogGenerationWorker as RunningWorker, seoPerformanceWorker as RunningWorker);
+
+  if (options.scheduleSearchConsoleSync !== false) {
+    void scheduleSearchConsoleSyncJobs().catch((error) => {
+      console.error("[worker] failed to schedule Search Console sync jobs", error);
+    });
+  }
 
   return runningWorkers;
 }
@@ -113,7 +138,9 @@ if (isDirectRun()) {
   console.info(
     `[worker] listening queues=${QUEUE_NAMES.shopifySync}:${Object.values(SHOPIFY_SYNC_JOB_NAMES).join(
       ","
-    )} ${QUEUE_NAMES.blogGeneration}:${Object.values(BLOG_GENERATION_JOB_NAMES).join(",")}`
+    )} ${QUEUE_NAMES.blogGeneration}:${Object.values(BLOG_GENERATION_JOB_NAMES).join(",")} ${QUEUE_NAMES.seoPerformance}:${Object.values(
+      SEARCH_CONSOLE_JOB_NAMES
+    ).join(",")}`
   );
 
   process.once("SIGINT", (signal) => {
@@ -145,6 +172,37 @@ function stopKeepAlive(): void {
   keepAliveTimer = undefined;
 }
 
+async function scheduleSearchConsoleSyncJobs(): Promise<void> {
+  const properties = await prisma.searchConsoleProperty.findMany({
+    where: { status: "active" },
+    select: {
+      id: true,
+      organizationId: true,
+      storeId: true
+    },
+    take: parseIntegerEnv("GSC_SCHEDULE_MAX_PROPERTIES", 100)
+  });
+  const intervalMs = parseIntegerEnv("GSC_SYNC_INTERVAL_MS", 24 * 60 * 60 * 1000);
+
+  await Promise.all(
+    properties.map((property) =>
+      enqueueSearchConsoleStoreSync(
+        {
+          organizationId: property.organizationId,
+          storeId: property.storeId,
+          propertyId: property.id,
+          days: parseIntegerEnv("GSC_SYNC_DAYS", 28)
+        },
+        {
+          jobId: `gsc-store-sync:${property.id}`,
+          repeat: { every: intervalMs }
+        }
+      )
+    )
+  );
+}
+
 export * from "./queues";
 export * from "./processors/blog-generation";
+export * from "./processors/search-console";
 export * from "./processors/shopify-sync";

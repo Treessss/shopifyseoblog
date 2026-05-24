@@ -10,10 +10,12 @@ export type JobType =
   | "generate_asset"
   | "publish_article"
   | "sync_product"
-  | "sync_collection";
+  | "sync_collection"
+  | "sync_search_console";
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "retrying";
 export type PublishEvent = "queued" | "started" | "succeeded" | "failed" | "skipped" | "retry_scheduled";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type SearchConsolePropertyStatus = "active" | "needs_auth" | "disconnected" | "archived";
 export type AuditAction =
   | "create"
   | "update"
@@ -105,6 +107,22 @@ export interface AdminMetric {
   tone: "good" | "warn" | "danger" | "neutral";
 }
 
+export interface AdminDashboardQueueHealth {
+  queuedJobs: number;
+  runningJobs: number;
+  retryingJobs: number;
+  failedJobs: number;
+  activeJobs: number;
+  pendingJobs: number;
+  tone: "good" | "warn" | "danger" | "neutral";
+  label: string;
+  nextStep: string;
+  lastFailedJobId: string | null;
+  lastFailedJobType: JobType | null;
+  lastFailedAt: string | null;
+  lastFailedMessage: string | null;
+}
+
 export interface AdminStoreOverview {
   id: string;
   name: string;
@@ -144,6 +162,13 @@ export interface AdminCampaignOverview {
   progressStep: string | null;
   progressDetail: string | null;
   progressUpdatedAt: string | null;
+  progressStage: string | null;
+  progressNextStep: string | null;
+  progressRecoverable: boolean;
+  progressArticleId: string | null;
+  progressIsStale: boolean;
+  progressStaleMinutes: number | null;
+  progressStaleReason: string | null;
   publishPolicy: string;
   publishPolicyCode: PublishPolicy;
   targetWordCount: number;
@@ -175,6 +200,23 @@ export interface AdminArticleOverview {
   canonicalUrl: string | null;
   primaryKeyword: string | null;
   failureReason: string | null;
+  indexReadiness: AdminArticleIndexReadiness;
+}
+
+export interface AdminArticleIndexReadiness {
+  score: number;
+  label: string;
+  tone: "good" | "warn" | "danger" | "neutral";
+  nextStep: string;
+  checks: AdminArticleIndexReadinessCheck[];
+  lastSearchConsoleSyncAt: string | null;
+}
+
+export interface AdminArticleIndexReadinessCheck {
+  key: "content_quality" | "published_url" | "canonical_url" | "search_console";
+  label: string;
+  passed: boolean;
+  detail: string;
 }
 
 export interface AdminArticleAssetOverview {
@@ -203,6 +245,7 @@ export interface AdminArticleReviewOverview extends AdminArticleOverview {
   generationMetadata: unknown;
   assets: AdminArticleAssetOverview[];
   logs: AdminLogEntry[];
+  repairJob: QueuedJobSummary | null;
 }
 
 export interface AdminLogEntry {
@@ -266,6 +309,299 @@ export interface AdminBrandVoiceProfile {
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface AdminSearchConsolePropertyOverview {
+  id: string;
+  storeId: string;
+  store: string;
+  siteUrl: string;
+  status: SearchConsolePropertyStatus;
+  statusTone: "good" | "warn" | "danger" | "neutral";
+  permissionLevel: string | null;
+  scopes: string[];
+  snapshotCount: number;
+  queryRowCount: number;
+  lastSyncedAt: string | null;
+  lastSyncError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdminSearchConsoleSnapshotOverview {
+  id: string;
+  propertyId: string;
+  storeId: string;
+  store: string;
+  articleId: string;
+  article: string;
+  siteUrl: string;
+  pageUrl: string;
+  startDate: string;
+  endDate: string;
+  dataState: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number | null;
+  queryCount: number;
+  topQuery: string | null;
+  performanceScore: number | null;
+  syncedAt: string;
+  source: string;
+}
+
+export interface AdminSearchConsoleView {
+  properties: AdminSearchConsolePropertyOverview[];
+  snapshots: AdminSearchConsoleSnapshotOverview[];
+}
+
+export type AdminPriorityKind =
+  | "quick_win"
+  | "declining"
+  | "low_ctr"
+  | "topic_opportunity"
+  | "reflection_task"
+  | "agent_step"
+  | "memory_risk";
+
+export type AdminPriorityActionType =
+  | "review_article"
+  | "sync_search_console"
+  | "publish_article"
+  | "repair_article"
+  | "open_campaign"
+  | "new_campaign"
+  | "open_search_console"
+  | "view_run";
+
+export type AdminPriorityLevel = "critical" | "high" | "medium" | "low";
+
+export interface AdminCampaignDraft {
+  storeId: string | null;
+  locale: string | null;
+  sourceType: SourceType;
+  sourceId: string | null;
+  topic: string | null;
+  primaryKeyword: string | null;
+  keywords: string[];
+  publishPolicy: PublishPolicy;
+  targetWordCount: number;
+}
+
+export interface AdminPriorityBoardItem {
+  id: string;
+  kind: AdminPriorityKind;
+  level: AdminPriorityLevel;
+  score: number;
+  title: string;
+  summary: string;
+  reason: string;
+  actionLabel: string;
+  actionType: AdminPriorityActionType;
+  actionHref: string | null;
+  repairReason: string | null;
+  articleId: string | null;
+  campaignId: string | null;
+  topicRunId: string | null;
+  storeId: string | null;
+  store: string | null;
+  article: string | null;
+  campaign: string | null;
+  locale: string | null;
+  campaignDraft?: AdminCampaignDraft | null;
+  evidence: string[];
+  metrics: {
+    clicks: number | null;
+    impressions: number | null;
+    ctr: number | null;
+    position: number | null;
+    performanceScore: number | null;
+    changePercent: number | null;
+    opportunityScore: number | null;
+    memoryRisk: number | null;
+    potentialClicks: number | null;
+  };
+  updatedAt: string;
+}
+
+export interface AdminPriorityBoardSummary {
+  quickWins: number;
+  declining: number;
+  lowCtr: number;
+  topicOpportunities: number;
+  reflectionTasks: number;
+  stepWarnings: number;
+  memoryRisks: number;
+  potentialClickGain: number;
+}
+
+export interface AdminPriorityBoardView {
+  organization: AdminOrganizationSummary;
+  generatedAt: string;
+  summary: AdminPriorityBoardSummary;
+  items: AdminPriorityBoardItem[];
+}
+
+export interface AdminPerformanceReviewItem {
+  id: string;
+  kind: "quick_win" | "declining" | "low_ctr" | "topic_opportunity" | "trend" | "memory_risk" | "agent_step";
+  level: AdminPriorityLevel;
+  score: number;
+  title: string;
+  summary: string;
+  reason: string;
+  actionLabel: string;
+  actionType: AdminPriorityBoardItem["actionType"];
+  actionHref: string | null;
+  repairReason: string | null;
+  articleId: string | null;
+  storeId: string | null;
+  store: string | null;
+  article: string | null;
+  locale: string | null;
+  campaignDraft: AdminCampaignDraft | null;
+  evidence: string[];
+  metrics: AdminPriorityBoardItem["metrics"] & {
+    trendPercent: number | null;
+    trafficLoss: number | null;
+    queryCount: number | null;
+  };
+  updatedAt: string;
+}
+
+export interface AdminPerformanceReviewSummary {
+  quickWins: number;
+  declining: number;
+  lowCtr: number;
+  topicOpportunities: number;
+  trends: number;
+  memoryRisks: number;
+  stepWarnings: number;
+  totalPotentialClicks: number;
+}
+
+export interface AdminPerformanceReviewView {
+  organization: AdminOrganizationSummary;
+  generatedAt: string;
+  summary: AdminPerformanceReviewSummary;
+  items: AdminPerformanceReviewItem[];
+}
+
+export type AdminResearchMode =
+  | "overview"
+  | "quick_wins"
+  | "competitor_gaps"
+  | "topic_clusters"
+  | "trends"
+  | "performance_matrix";
+
+export interface AdminResearchSignal {
+  id: string;
+  title: string;
+  subtitle: string;
+  score: number;
+  tone: AdminPriorityLevel;
+  kind: AdminPriorityKind | "trend" | "cluster" | "gap" | "matrix";
+  source: string;
+  actionLabel: string;
+  actionType: AdminPriorityActionType;
+  actionHref: string | null;
+  evidence: string[];
+  metrics: Record<string, number | null>;
+  relatedItems: string[];
+}
+
+export interface AdminResearchCluster {
+  topic: string;
+  primaryKeyword: string;
+  authorityScore: number;
+  authorityLevel: "Strong" | "Moderate" | "Weak" | "Minimal";
+  keywordCount: number;
+  totalImpressions: number;
+  avgPosition: number | null;
+  gapCount: number;
+  topKeywords: string[];
+  gapKeywords: string[];
+  actionHref: string | null;
+  actionLabel: string;
+}
+
+export interface AdminResearchTrend {
+  keyword: string;
+  growthPercent: number;
+  position: number | null;
+  impressions: number;
+  score: number;
+  priority: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  urgency: string;
+  searchIntent: string;
+  actionHref: string | null;
+}
+
+export interface AdminResearchTopicRunAction {
+  id: string;
+  topicRunId: string;
+  title: string;
+  summary: string;
+  reason: string;
+  score: number;
+  level: AdminPriorityLevel;
+  kind: "topic_opportunity" | "topic_refresh" | "topic_gap" | "topic_cluster";
+  source: string;
+  actionLabel: string;
+  actionType: AdminPriorityActionType;
+  actionHref: string | null;
+  articleId: string | null;
+  campaignId: string | null;
+  storeId: string | null;
+  store: string | null;
+  article: string | null;
+  campaign: string | null;
+  locale: string | null;
+  evidence: string[];
+  metrics: AdminPerformanceReviewItem["metrics"];
+  updatedAt: string;
+}
+
+export interface AdminResearchPerformanceMatrixItem {
+  title: string;
+  path: string;
+  category: "Star" | "Overperformer" | "Underperformer" | "Declining";
+  priority: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  avgPosition: number;
+  trendPercent: number;
+  seoScore: number | null;
+  action: string;
+  actionHref: string | null;
+}
+
+export interface AdminResearchView {
+  organization: AdminOrganizationSummary;
+  generatedAt: string;
+  mode: AdminResearchMode;
+  summary: {
+    quickWins: number;
+    competitorGaps: number;
+    clusters: number;
+    trends: number;
+    stars: number;
+    underperformers: number;
+    declining: number;
+    opportunities: number;
+    topicRuns: number;
+    searchConsoleProperties: number;
+  };
+  signals: AdminResearchSignal[];
+  clusters: AdminResearchCluster[];
+  trends: AdminResearchTrend[];
+  performanceMatrix: AdminResearchPerformanceMatrixItem[];
+  topicRunActions: AdminResearchTopicRunAction[];
+  topicRuns: AdminPerformanceReviewItem[];
+  notes: string[];
 }
 
 export interface CreateCampaignInput {
@@ -379,12 +715,46 @@ export interface SaveBrandVoiceInput {
   isDefault: boolean;
 }
 
+export interface SaveSearchConsolePropertyInput {
+  id?: string;
+  storeId: string;
+  siteUrl: string;
+  status: SearchConsolePropertyStatus;
+  permissionLevel?: string;
+  scopes: string[];
+  googleClientId?: string;
+  googleClientSecret?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  tokenExpiresAt?: string;
+}
+
 export interface QueueStoreSyncInput {
   storeId: string;
   fullSync: boolean;
   products: boolean;
   collections: boolean;
   limit?: number;
+}
+
+export interface QueueSearchConsoleSyncInput {
+  storeId: string;
+  propertyId?: string;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  dataState?: "final" | "all";
+  rowLimit?: number;
+}
+
+export interface QueueSearchConsoleArticleSyncInput {
+  articleId: string;
+  propertyId?: string;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  dataState?: "final" | "all";
+  rowLimit?: number;
 }
 
 export interface DeleteStoreInput {
@@ -396,6 +766,12 @@ export interface QueueArticlePublishInput {
   articleId: string;
   publishAt?: string;
   shopifyBlogId?: string;
+}
+
+export interface QueueArticleRepairInput {
+  articleId: string;
+  repairReason?: string;
+  publishAt?: string;
 }
 
 export interface QueuedJobSummary {

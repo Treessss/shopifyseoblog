@@ -13,6 +13,12 @@ coverage
 *.tsbuildinfo
 generated
 .codex-pets
+.venv/
+backend/python-agent-service/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 infra/docker/postgres-data
 infra/docker/redis-data
 infra/docker/minio-data

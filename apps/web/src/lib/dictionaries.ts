@@ -10,11 +10,13 @@ export const dictionaries = {
     workspaceName: "增长内容控制台",
     nav: {
       dashboard: "仪表盘",
+      agents: "Agent 中心",
       stores: "店铺",
       aiSettings: "AI 设置",
       languages: "语言",
       campaigns: "内容任务",
       articles: "文章",
+      research: "研究台",
       brandVoice: "品牌语气",
       logs: "日志"
     },
@@ -32,11 +34,13 @@ export const dictionaries = {
     workspaceName: "Growth Content Console",
     nav: {
       dashboard: "Dashboard",
+      agents: "Agent Center",
       stores: "Stores",
       aiSettings: "AI Settings",
       languages: "Languages",
       campaigns: "Campaigns",
       articles: "Articles",
+      research: "Research",
       brandVoice: "Brand Voice",
       logs: "Logs"
     },

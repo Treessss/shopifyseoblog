@@ -6,7 +6,8 @@ export const WORKER_QUEUE_PREFIX = process.env.BULLMQ_PREFIX ?? "shopify-ai-blog
 
 export const QUEUE_NAMES = {
   shopifySync: "shopify-sync",
-  blogGeneration: "blog-generation"
+  blogGeneration: "blog-generation",
+  seoPerformance: "seo-performance"
 } as const;
 
 export const SHOPIFY_SYNC_JOB_NAMES = {
@@ -19,13 +20,19 @@ export const BLOG_GENERATION_JOB_NAMES = {
   articlePublish: "article.publish"
 } as const;
 
+export const SEARCH_CONSOLE_JOB_NAMES = {
+  storeSync: "gsc.store.sync",
+  articleSync: "gsc.article.sync"
+} as const;
+
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 export type ShopifySyncJobName = (typeof SHOPIFY_SYNC_JOB_NAMES)[keyof typeof SHOPIFY_SYNC_JOB_NAMES];
 export type BlogGenerationJobName =
   (typeof BLOG_GENERATION_JOB_NAMES)[keyof typeof BLOG_GENERATION_JOB_NAMES];
-export type WorkerJobName = ShopifySyncJobName | BlogGenerationJobName;
+export type SearchConsoleJobName = (typeof SEARCH_CONSOLE_JOB_NAMES)[keyof typeof SEARCH_CONSOLE_JOB_NAMES];
+export type WorkerJobName = ShopifySyncJobName | BlogGenerationJobName | SearchConsoleJobName;
 
-export interface WorkerJobMeta {
+export interface WorkerJobMeta extends Record<string, unknown> {
   organizationId: string;
   storeId: string;
   publishJobId?: string;
@@ -53,6 +60,10 @@ export interface BlogGenerationJobData extends BlogCampaignInput {
   publishJobId?: string;
   correlationId?: string;
   requestedByUserId?: string;
+  generationMode?: "new_article" | "article_repair";
+  repairReason?: string;
+  publishAfterRepair?: boolean;
+  publishAt?: string;
 }
 
 export interface ArticlePublishJobData extends WorkerJobMeta {
@@ -63,9 +74,30 @@ export interface ArticlePublishJobData extends WorkerJobMeta {
   publishAt?: string;
 }
 
+export interface SearchConsoleStoreSyncJobData extends WorkerJobMeta {
+  propertyId?: string;
+  articleIds?: string[];
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  dataState?: "final" | "all";
+  rowLimit?: number;
+}
+
+export interface SearchConsoleArticleSyncJobData extends WorkerJobMeta {
+  articleId: string;
+  propertyId?: string;
+  startDate?: string;
+  endDate?: string;
+  days?: number;
+  dataState?: "final" | "all";
+  rowLimit?: number;
+}
+
 export type ShopifySyncJobData = ProductSyncJobData | CollectionSyncJobData;
 export type BlogGenerationQueueJobData = BlogGenerationJobData | ArticlePublishJobData;
-export type WorkerJobData = ShopifySyncJobData | BlogGenerationQueueJobData;
+export type SearchConsoleQueueJobData = SearchConsoleStoreSyncJobData | SearchConsoleArticleSyncJobData;
+export type WorkerJobData = ShopifySyncJobData | BlogGenerationQueueJobData | SearchConsoleQueueJobData;
 
 export interface WorkerJobResult {
   ok: boolean;
@@ -80,6 +112,8 @@ export interface WorkerJobResult {
     collections?: number;
     articles?: number;
     published?: number;
+    queries?: number;
+    snapshots?: number;
   };
   articleId?: string;
 }
@@ -90,10 +124,16 @@ export type BlogGenerationQueue = Queue<
   WorkerJobResult,
   BlogGenerationJobName
 >;
+export type SearchConsoleQueue = Queue<
+  SearchConsoleQueueJobData,
+  WorkerJobResult,
+  SearchConsoleJobName
+>;
 
 let redisConnection: IORedis | undefined;
 let shopifySyncQueue: ShopifySyncQueue | undefined;
 let blogGenerationQueue: BlogGenerationQueue | undefined;
+let searchConsoleQueue: SearchConsoleQueue | undefined;
 
 export function getRedisConnection(): IORedis {
   if (!redisConnection) {
@@ -141,10 +181,23 @@ export function getBlogGenerationQueue(): BlogGenerationQueue {
   return blogGenerationQueue;
 }
 
+export function getSearchConsoleQueue(): SearchConsoleQueue {
+  if (!searchConsoleQueue) {
+    searchConsoleQueue = new Queue<
+      SearchConsoleQueueJobData,
+      WorkerJobResult,
+      SearchConsoleJobName
+    >(QUEUE_NAMES.seoPerformance, getQueueOptions());
+  }
+
+  return searchConsoleQueue;
+}
+
 export async function closeQueues(): Promise<void> {
-  const queues = [shopifySyncQueue, blogGenerationQueue].filter(isDefined);
+  const queues = [shopifySyncQueue, blogGenerationQueue, searchConsoleQueue].filter(isDefined);
   shopifySyncQueue = undefined;
   blogGenerationQueue = undefined;
+  searchConsoleQueue = undefined;
 
   await Promise.all(queues.map((queue) => queue.close()));
   await closeRedisConnection();
@@ -164,6 +217,14 @@ export function enqueueBlogGeneration(data: BlogGenerationJobData, options?: Job
 
 export function enqueueArticlePublish(data: ArticlePublishJobData, options?: JobsOptions) {
   return getBlogGenerationQueue().add(BLOG_GENERATION_JOB_NAMES.articlePublish, data, options);
+}
+
+export function enqueueSearchConsoleStoreSync(data: SearchConsoleStoreSyncJobData, options?: JobsOptions) {
+  return getSearchConsoleQueue().add(SEARCH_CONSOLE_JOB_NAMES.storeSync, data, options);
+}
+
+export function enqueueSearchConsoleArticleSync(data: SearchConsoleArticleSyncJobData, options?: JobsOptions) {
+  return getSearchConsoleQueue().add(SEARCH_CONSOLE_JOB_NAMES.articleSync, data, options);
 }
 
 function getQueueOptions(): QueueOptions {

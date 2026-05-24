@@ -1,52 +1,139 @@
 import Link from "next/link";
-import { Activity, FileText, Languages, RefreshCw, Store } from "lucide-react";
 import {
-  Badge,
-  EmptyState,
-  ErrorState,
-  MetricCard,
-  PageHeader,
-  Panel,
-  ProgressBar,
-  StatusPill,
-  TableEmpty
-} from "@/components/ui";
-import {
-  formatArticleStatus,
-  formatCampaignStatus,
-  formatJobStatus,
-  getDashboardView
-} from "@/lib/admin-client";
+  Activity,
+  AlertTriangle,
+  ArrowRight,
+  Bot,
+  CircleCheckBig,
+  FileText,
+  Layers3,
+  Megaphone,
+  PlayCircle,
+  RefreshCw,
+  Search,
+  Store
+} from "lucide-react";
+import { Badge, EmptyState, ErrorState, PageHeader, Panel, StatusPill } from "@/components/ui";
+import { getDashboardView } from "@/lib/admin-client";
 
 export default async function DashboardPage() {
   const { data, error } = await getDashboardView();
   const healthyStores = data.stores.filter((store) => store.statusTone === "good").length;
-  const runningCampaigns = data.campaigns.filter((campaign) => campaign.status === "active").length;
+  const activeCampaigns = data.campaigns.filter((campaign) => campaign.status === "active").length;
+  const stalledCampaigns = data.campaigns.filter((campaign) => campaign.progressIsStale).length;
   const readyArticles = data.articles.filter((article) => article.status === "ready_to_publish").length;
-  const enabledLocales = new Set([
-    ...data.campaigns.map((campaign) => campaign.locale),
-    ...data.articles.map((article) => article.locale),
-    ...data.stores.map((store) => store.locale)
-  ]).size;
+  const primaryActionHref = healthyStores > 0 ? "/campaigns#new-campaign" : "/stores";
+  const primaryActionLabel = healthyStores > 0 ? "开始新任务" : "先连接店铺";
+  const queueHealthTone = data.queueHealth.tone;
+  const queueHealthIcon =
+    queueHealthTone === "danger" ? <AlertTriangle size={18} aria-hidden="true" /> : queueHealthTone === "good" ? <CircleCheckBig size={18} aria-hidden="true" /> : <PlayCircle size={18} aria-hidden="true" />;
+  const failedJobContext = buildFailedJobContext(
+    data.queueHealth.lastFailedJobType,
+    data.queueHealth.lastFailedAt,
+    data.queueHealth.lastFailedMessage
+  );
 
   return (
     <>
       <PageHeader
-        eyebrow="Dashboard"
-        title="内容增长仪表盘"
-        description="集中查看多店铺内容生产、质量门槛、发布状态和近期异常，默认以简体中文呈现。"
+        eyebrow="Start here"
+        title="先从一个动作开始"
+        description="这个控制台默认只给你一条最清晰的路：先确认店铺，再创建内容任务，最后看结果和复盘。"
         action={
-          <Link href="/dashboard" className="button">
-            <RefreshCw size={16} aria-hidden="true" />
-            刷新数据
-          </Link>
+          <div className="toolbar">
+            <Link href={primaryActionHref} className="button button--primary">
+              <PlayCircle size={16} aria-hidden="true" />
+              {primaryActionLabel}
+            </Link>
+            <Link href="/agents" className="button">
+              <Bot size={16} aria-hidden="true" />
+              Agent 中心
+            </Link>
+            <Link href="/research" className="button">
+              <Search size={16} aria-hidden="true" />
+              看研究信号
+            </Link>
+            <Link href="/dashboard" className="button button--ghost" aria-label="刷新首页数据">
+              <RefreshCw size={16} aria-hidden="true" />
+            </Link>
+          </div>
         }
       />
 
       <div className="stack">
-        <ErrorState error={error} title="仪表盘数据读取失败" />
+        <ErrorState error={error} title="首页数据读取失败" />
 
-        <div className="insight-strip">
+        <Panel
+          title="推荐路径"
+          description="只保留最关键的三步，别让首页自己变成一个负担。"
+          action={
+            <div className="toolbar">
+              <Link href={primaryActionHref} className="button button--primary">
+                <Megaphone size={16} aria-hidden="true" />
+                {primaryActionLabel}
+              </Link>
+              <Link href="/articles" className="button">
+                <FileText size={16} aria-hidden="true" />
+                看文章
+              </Link>
+            </div>
+          }
+        >
+          <div className="dashboard-hero">
+            <div className="dashboard-hero__main">
+              <h2>1. 连店铺 2. 建任务 3. 看结果</h2>
+              <p>
+                你现在应该优先做的只有一件事。首页负责告诉你下一步，Agent 中心负责告诉你卡在哪个智能体，文章页负责告诉你能不能发。
+              </p>
+              <div className="hero-path__steps">
+                <div className="hero-path__step">
+                  <strong>1</strong>
+                  <div>
+                    <span>确认店铺</span>
+                    <small className="muted">没有连接时，先去店铺页。</small>
+                  </div>
+                </div>
+                <div className="hero-path__step">
+                  <strong>2</strong>
+                  <div>
+                    <span>创建内容任务</span>
+                    <small className="muted">把主题、语言和发布策略一次选好。</small>
+                  </div>
+                </div>
+                <div className="hero-path__step">
+                  <strong>3</strong>
+                  <div>
+                    <span>查看结果</span>
+                    <small className="muted">文章页看收录准备，复盘页看低 CTR 和下滑词。</small>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="dashboard-hero__aside">
+              <StatusPill
+                label="当前起点"
+                value={healthyStores > 0 ? "可以建任务" : "先连店铺"}
+                tone={healthyStores > 0 ? "good" : "warn"}
+                icon={<Store size={18} aria-hidden="true" />}
+              />
+              <StatusPill
+                label="队列健康"
+                value={data.queueHealth.label}
+                tone={queueHealthTone}
+                icon={queueHealthIcon}
+              />
+              <StatusPill
+                label="下一步"
+                value={data.queueHealth.nextStep}
+                tone="neutral"
+                icon={<ArrowRight size={18} aria-hidden="true" />}
+              />
+            </div>
+          </div>
+        </Panel>
+
+        <div className="grid grid--metrics">
           <StatusPill
             label="健康店铺"
             value={`${healthyStores}/${data.stores.length}`}
@@ -54,88 +141,75 @@ export default async function DashboardPage() {
             icon={<Store size={18} aria-hidden="true" />}
           />
           <StatusPill
-            label="运行任务"
-            value={runningCampaigns}
-            tone={runningCampaigns > 0 ? "warn" : "neutral"}
-            icon={<Activity size={18} aria-hidden="true" />}
+            label="进行中任务"
+            value={activeCampaigns}
+            tone={stalledCampaigns > 0 ? "danger" : activeCampaigns > 0 ? "warn" : "neutral"}
+            icon={<Megaphone size={18} aria-hidden="true" />}
           />
           <StatusPill
-            label="待发布"
+            label="待发布文章"
             value={readyArticles}
             tone={readyArticles > 0 ? "good" : "neutral"}
             icon={<FileText size={18} aria-hidden="true" />}
           />
           <StatusPill
-            label="语言覆盖"
-            value={enabledLocales || "zh-CN"}
+            label="处理方式"
+            value="Agent 中心统筹"
             tone="neutral"
-            icon={<Languages size={18} aria-hidden="true" />}
+            icon={<Bot size={18} aria-hidden="true" />}
           />
         </div>
 
-        <div className="grid grid--metrics">
-          {data.metrics.map((item) => (
-            <MetricCard key={item.label} {...item} />
-          ))}
-        </div>
-
         <div className="grid grid--two">
-          <Panel title="活跃内容任务" description="按任务进度、发布策略和语种追踪生产节奏。">
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>任务</th>
-                    <th>店铺</th>
-                    <th>语言</th>
-                    <th>进度</th>
-                    <th>状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.campaigns.length === 0 ? (
-                    <TableEmpty colSpan={5} title="暂无内容任务" description="创建任务后会在这里显示生成进度和发布策略。" />
-                  ) : (
-                    data.campaigns.slice(0, 6).map((campaign) => (
-                      <tr key={campaign.id}>
-                        <td>
-                          <strong>{campaign.name}</strong>
-                          <div className="muted">{campaign.source}</div>
-                        </td>
-                        <td>{campaign.store}</td>
-                        <td className="code">{campaign.locale}</td>
-                        <td>
-                          <div className="progress-cell">
-                            <ProgressBar value={campaign.progress} />
-                            <span>{campaign.progress}%</span>
-                          </div>
-                        </td>
-                        <td>
-                          <Badge tone={campaign.statusTone}>{formatCampaignStatus(campaign.status)}</Badge>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
-
           <Panel
-            title="系统动态"
-            description="最近生成、同步与发布事件。"
+            title="队列健康"
+            description="让你知道现在是卡住、重试，还是已经可以继续往前。"
             action={
               <Link href="/logs" className="button button--ghost">
                 <Activity size={16} aria-hidden="true" />
-                查看日志
+                看日志
               </Link>
             }
           >
             <div className="list">
+              <div className="list-item">
+                <div>
+                  <strong>{data.queueHealth.queuedJobs} 个排队任务</strong>
+                  <small className="muted">worker 正在按顺序取任务，不一定是坏掉。</small>
+                </div>
+                <Badge tone={data.queueHealth.queuedJobs > 0 ? "warn" : "good"}>{data.queueHealth.queuedJobs > 0 ? "排队中" : "空闲"}</Badge>
+              </div>
+              <div className="list-item">
+                <div>
+                  <strong>{data.queueHealth.runningJobs + data.queueHealth.retryingJobs} 个执行中任务</strong>
+                  <small className="muted">
+                    {stalledCampaigns > 0
+                      ? `${stalledCampaigns} 个内容任务较久没有进度心跳，先去内容任务页处理。`
+                      : "如果你刚点了生成、发布或修复，这里会先保持忙碌。"}
+                  </small>
+                </div>
+                <Badge tone={stalledCampaigns > 0 ? "danger" : data.queueHealth.activeJobs > 0 ? "warn" : "neutral"}>
+                  {stalledCampaigns > 0 ? "可能卡住" : data.queueHealth.activeJobs > 0 ? "处理中" : "空闲"}
+                </Badge>
+              </div>
+              <div className="list-item">
+                <div>
+                  <strong>{data.queueHealth.failedJobs} 个失败任务</strong>
+                  <small className="muted">
+                    {failedJobContext ?? "如果这里不是 0，先看失败日志和文章状态。"}
+                  </small>
+                </div>
+                <Badge tone={data.queueHealth.failedJobs > 0 ? "danger" : "good"}>{data.queueHealth.failedJobs > 0 ? "先处理" : "正常"}</Badge>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel title="最近状态" description="只保留能判断当前是否可以继续的信号。">
+            <div className="list">
               {data.logs.length === 0 ? (
-                <EmptyState title="暂无系统动态" description="生成、同步和发布事件会进入日志接口。" />
+                <EmptyState title="暂无系统状态" description="生成、同步和发布事件会显示在这里。" />
               ) : (
-                data.logs.slice(0, 5).map((log) => (
+                data.logs.slice(0, 4).map((log) => (
                   <div className="list-item" key={log.id}>
                     <div>
                       <strong>{log.message}</strong>
@@ -143,7 +217,7 @@ export default async function DashboardPage() {
                         {log.time} · {log.module}
                       </small>
                     </div>
-                    <Badge tone={log.statusTone}>{formatJobStatus(log.status)}</Badge>
+                    <Badge tone={log.statusTone}>{log.status}</Badge>
                   </div>
                 ))
               )}
@@ -151,80 +225,55 @@ export default async function DashboardPage() {
           </Panel>
         </div>
 
-        <div className="grid grid--two">
-          <Panel
-            title="重点店铺"
-            description="优先关注授权、同步和内容覆盖情况。"
-            action={
-              <Link href="/stores" className="button button--ghost">
-                <Store size={16} aria-hidden="true" />
-                管理店铺
-              </Link>
-            }
-          >
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>店铺</th>
-                    <th>语言</th>
-                    <th>商品</th>
-                    <th>状态</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.stores.length === 0 ? (
-                    <TableEmpty colSpan={4} title="暂无店铺数据" description="连接 Shopify 店铺后会展示授权和同步状态。" />
-                  ) : (
-                    data.stores.slice(0, 6).map((store) => (
-                      <tr key={store.id}>
-                        <td>
-                          <strong>{store.name}</strong>
-                          <div className="muted code">{store.domain}</div>
-                        </td>
-                        <td className="code">{store.locale}</td>
-                        <td>{store.products.toLocaleString("zh-CN")}</td>
-                        <td>
-                          <Badge tone={store.statusTone}>{store.status}</Badge>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </Panel>
-
-          <Panel
-            title="待处理文章"
-            description="质量失败或待发布内容会优先展示。"
-            action={
-              <Link href="/articles" className="button button--ghost">
-                <FileText size={16} aria-hidden="true" />
-                查看文章
-              </Link>
-            }
-          >
-            <div className="list">
-              {data.articles.length === 0 ? (
-                <EmptyState title="暂无文章数据" description="内容任务生成文章后会展示 SEO 分数和发布状态。" />
-              ) : (
-                data.articles.slice(0, 5).map((article) => (
-                  <Link className="list-item" href="/articles" key={article.id}>
-                    <div>
-                      <strong>{article.title}</strong>
-                      <small className="muted">
-                        {article.store} · SEO {article.seoScore ?? "-"}
-                      </small>
-                    </div>
-                    <Badge tone={article.statusTone}>{formatArticleStatus(article.status)}</Badge>
-                  </Link>
-                ))
-              )}
-            </div>
-          </Panel>
-        </div>
+        <Panel title="更多入口" description="这些入口还在，但不再抢主注意力。">
+          <div className="compact-links">
+            <Link href="/campaigns" className="compact-link">
+              <Megaphone size={16} aria-hidden="true" />
+              内容任务
+            </Link>
+            <Link href="/articles" className="compact-link">
+              <FileText size={16} aria-hidden="true" />
+              文章
+            </Link>
+            <Link href="/research" className="compact-link">
+              <Search size={16} aria-hidden="true" />
+              研究台
+            </Link>
+            <Link href="/priorities" className="compact-link">
+              <Layers3 size={16} aria-hidden="true" />
+              优先级板
+            </Link>
+          </div>
+        </Panel>
       </div>
     </>
   );
+}
+
+function buildFailedJobContext(type: string | null, failedAt: string | null, message: string | null) {
+  if (!type && !failedAt && !message) return null;
+  const parts = [type ? `最后失败：${formatDashboardJobType(type)}` : "最后失败", failedAt ? formatDashboardDate(failedAt) : null].filter(Boolean);
+  return `${parts.join(" · ")}${message ? `。${message}` : ""}`;
+}
+
+function formatDashboardJobType(type: string) {
+  if (type === "generate_article") return "生成文章";
+  if (type === "translate_article") return "翻译文章";
+  if (type === "generate_asset") return "生成素材";
+  if (type === "publish_article") return "发布文章";
+  if (type === "sync_product") return "同步商品";
+  if (type === "sync_collection") return "同步集合";
+  if (type === "sync_search_console") return "同步 Search Console";
+  return type;
+}
+
+function formatDashboardDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
 }

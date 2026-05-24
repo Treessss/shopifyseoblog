@@ -100,6 +100,7 @@ enum JobType {
   publish_article
   sync_product
   sync_collection
+  sync_search_console
 }
 
 enum JobStatus {
@@ -152,6 +153,17 @@ enum AgentMemoryOutcome {
   failed
   published
   rejected
+}
+
+enum SearchConsolePropertyStatus {
+  active
+  needs_auth
+  disconnected
+  archived
+}
+
+enum SeoPerformanceSource {
+  google_search_console
 }
 
 enum PublishEvent {
@@ -215,6 +227,9 @@ model Organization {
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
   agentSteps           AgentStep[]
+  searchConsoleProperties SearchConsoleProperty[]
+  seoPerformanceSnapshots ArticleSeoPerformanceSnapshot[]
+  seoQueryPerformanceRows ArticleSeoQueryPerformance[]
 
   @@index([status])
 }
@@ -297,6 +312,9 @@ model ShopifyStore {
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
   agentSteps           AgentStep[]
+  searchConsoleProperties SearchConsoleProperty[]
+  seoPerformanceSnapshots ArticleSeoPerformanceSnapshot[]
+  seoQueryPerformanceRows ArticleSeoQueryPerformance[]
 
   @@index([organizationId, status])
 }
@@ -458,6 +476,8 @@ model BlogArticle {
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
   agentSteps           AgentStep[]
+  seoPerformanceSnapshots ArticleSeoPerformanceSnapshot[]
+  seoQueryPerformanceRows ArticleSeoQueryPerformance[]
 
   @@unique([storeId, locale, handle])
   @@index([organizationId, status])
@@ -714,6 +734,106 @@ model AgentEvidence {
   @@index([storeId, locale, evidenceType])
   @@index([normalizedKeyword])
   @@index([expiresAt])
+}
+
+model SearchConsoleProperty {
+  id                         String                      @id @default(cuid())
+  organizationId             String
+  storeId                    String
+  siteUrl                    String
+  status                     SearchConsolePropertyStatus @default(active)
+  permissionLevel            String?
+  scopes                     String[]                    @default([])
+  googleClientId             String?
+  googleClientSecretEncrypted String?
+  accessTokenEncrypted       String?
+  refreshTokenEncrypted      String?
+  tokenExpiresAt             DateTime?
+  lastSyncedAt               DateTime?
+  lastSyncError              String?                     @db.Text
+  metadata                   Json?
+  createdAt                  DateTime                    @default(now())
+  updatedAt                  DateTime                    @updatedAt
+
+  organization Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore                    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  snapshots    ArticleSeoPerformanceSnapshot[]
+  queryRows    ArticleSeoQueryPerformance[]
+
+  @@unique([storeId, siteUrl])
+  @@index([organizationId, status])
+  @@index([storeId, status])
+}
+
+model ArticleSeoPerformanceSnapshot {
+  id             String               @id @default(cuid())
+  organizationId String
+  storeId        String
+  articleId      String
+  propertyId     String
+  source         SeoPerformanceSource @default(google_search_console)
+  pageUrl        String               @db.Text
+  startDate      DateTime
+  endDate        DateTime
+  dataState      String               @default("final")
+  clicks         Float                @default(0)
+  impressions    Float                @default(0)
+  ctr            Float                @default(0)
+  position       Float?
+  queryCount     Int                  @default(0)
+  topQuery       String?
+  performanceScore Float?
+  syncedAt       DateTime             @default(now())
+  metadata       Json?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  article      BlogArticle                  @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  property     SearchConsoleProperty        @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  queryRows    ArticleSeoQueryPerformance[]
+
+  @@unique([propertyId, articleId, startDate, endDate, dataState])
+  @@index([organizationId, syncedAt])
+  @@index([storeId, startDate, endDate])
+  @@index([articleId, syncedAt])
+  @@index([performanceScore])
+}
+
+model ArticleSeoQueryPerformance {
+  id             String               @id @default(cuid())
+  organizationId String
+  storeId        String
+  articleId      String
+  propertyId     String
+  snapshotId     String?
+  source         SeoPerformanceSource @default(google_search_console)
+  pageUrl        String               @db.Text
+  query          String
+  startDate      DateTime
+  endDate        DateTime
+  dataState      String               @default("final")
+  clicks         Float                @default(0)
+  impressions    Float                @default(0)
+  ctr            Float                @default(0)
+  position       Float?
+  syncedAt       DateTime             @default(now())
+  metadata       Json?
+  dedupeHash     String
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  organization Organization                   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore                   @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  article      BlogArticle                    @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  property     SearchConsoleProperty          @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  snapshot     ArticleSeoPerformanceSnapshot? @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+
+  @@unique([storeId, dedupeHash])
+  @@index([propertyId, startDate, endDate])
+  @@index([articleId, impressions])
+  @@index([query])
 }
 
 model ArticleTranslation {

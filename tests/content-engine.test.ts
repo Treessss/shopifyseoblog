@@ -4,6 +4,7 @@ import {
   defaultSeoScorer,
   defaultQualityGate,
   estimateWordCount,
+  discoverEntityInsights,
   discoverTrendSignals,
   generateArticle,
   runAgentContentPipeline,
@@ -12,6 +13,36 @@ import {
   type NormalizedContentPipelineInput
 } from "../packages/content-engine/src";
 import { blogCampaignInputSchema } from "../packages/shared/src";
+
+function makeEntityAwareFetchMock() {
+  return (async (url: URL | RequestInfo) => {
+    const requestUrl = new URL(String(url));
+    if (requestUrl.hostname.includes("wikipedia.org")) {
+      const title = decodeURIComponent(requestUrl.pathname.split("/").pop() ?? "Curious_George").replace(/_/g, " ");
+      return new Response(
+        JSON.stringify({
+          title,
+          extract: `${title} is a character or pop-culture signal used as style context for ecommerce topics.`,
+          content_urls: {
+            desktop: {
+              page: `https://en.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`
+            }
+          }
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    }
+
+    const query = requestUrl.searchParams.get("q") ?? "phone case trend";
+    const xml = `<rss><channel><item><title>${query} trend report</title><link>https://news.example.com/${encodeURIComponent(query)}</link><description>${query} for character-led cases</description><pubDate>${new Date().toUTCString()}</pubDate></item></channel></rss>`;
+    return new Response(xml, { status: 200 });
+  }) as typeof fetch;
+}
 
 describe("content engine", () => {
   it("defaults generated articles to zh-CN", async () => {
@@ -82,6 +113,27 @@ describe("content engine", () => {
     expect(result.article.bodyHtml).toContain("https://news.example.com/mobile-accessory-trend");
     expect(result.article.bodyHtml).toContain("External references");
     expect(result.article.bodyHtml).not.toContain("https://cdn.example.com/raw-product.jpg");
+  });
+
+  it("detects IP or character signals from catalog context and carries them into evidence", async () => {
+    const insights = await discoverEntityInsights({
+      topic: "Curious George phone case",
+      context: {
+        product: {
+          id: "gid://shopify/Product/42",
+          title: "Curious George Cartoon Phone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["curious george", "cartoon", "kids"],
+          imageUrls: []
+        }
+      },
+      fetch: makeEntityAwareFetchMock()
+    });
+
+    expect(insights[0]?.name).toBe("Curious George");
+    expect(insights[0]?.verified).toBe(true);
+    expect(insights[0]?.source).toContain("Wikipedia");
   });
 
   it("accepts external reference and multi-image generation config", () => {
@@ -274,6 +326,53 @@ describe("content engine", () => {
     expect(result.article.imagePrompt).toContain("Apple-like clean editorial product photography");
   });
 
+  it("threads entity signals into trend discovery queries for character-led phone cases", async () => {
+    const requestedUrls: string[] = [];
+    const baseFetch = makeEntityAwareFetchMock();
+    const fetchMock = (async (url: URL | RequestInfo) => {
+      const requestUrl = new URL(String(url));
+      requestedUrls.push(requestUrl.toString());
+      return baseFetch(url);
+    }) as typeof fetch;
+
+    await discoverTrendSignals({
+      topic: "Curious George phone case trend",
+      locale: "en-US",
+      fetch: fetchMock,
+      generationConfig: {
+        hotNews: {
+          enabled: true,
+          sources: ["google_news"],
+          maxItems: 3,
+          query: "character phone cases"
+        }
+      },
+      context: {
+        product: {
+          id: "gid://shopify/Product/44",
+          title: "Curious George Cartoon Phone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["curious george", "cartoon"],
+          imageUrls: []
+        },
+        entityInsights: [
+          {
+            name: "Curious George",
+            type: "ip_character",
+            source: "catalog hint",
+            confidence: 88,
+            evidence: ["Curious George Cartoon Phone Case"],
+            query: "Curious George phone case",
+            verified: false
+          }
+        ]
+      }
+    });
+
+    expect(requestedUrls.some((url) => new URL(url).searchParams.get("q")?.includes("Curious George"))).toBe(true);
+  });
+
   it("expands Google trend discovery into multiple product-aware query seeds", async () => {
     const requestedUrls: string[] = [];
     const fetchMock = (async (url: URL | RequestInfo) => {
@@ -412,13 +511,88 @@ describe("content engine", () => {
     expect(result.artifacts.agentRun.toolPlan.length).toBeGreaterThan(3);
     expect(result.artifacts.agentRun.toolCalls.some((call) => call.toolName === "trend_discovery")).toBe(true);
     expect(result.artifacts.agentRun.skillDoctrine.sources.map((source) => source.name)).toContain("superseo write-content");
+    expect(result.artifacts.agentRun.skillDoctrine.sources.map((source) => source.name)).toContain("SEO Machine");
     expect(result.artifacts.agentRun.stages.every((stage) => stage.agentRole)).toBe(true);
     expect(result.artifacts.research.trendSignals.length).toBeGreaterThan(0);
+    expect(result.artifacts.research.marketInsights.length).toBeGreaterThan(0);
+    expect(result.artifacts.research.sourceSummary.marketInsightCount).toBe(result.artifacts.research.marketInsights.length);
     expect(result.artifacts.keywordStrategy.primaryKeyword).toBe("clear phone case");
     expect(result.artifacts.topicSelectionV2.selected.scoring.opportunity).toBeGreaterThan(0);
     expect(result.artifacts.contentBrief.internalLinkPlan[0]?.url).toContain("caseease.com");
+    expect(result.artifacts.contentBrief.marketInsights.length).toBeGreaterThan(0);
+    expect(result.artifacts.contentBrief.claimsPolicy.join(" ")).toContain("market insights");
     expect(result.article.bodyHtml).toContain("https://www.caseease.com/collections/clear-cases");
+    expect(result.article.bodyHtml).toContain("How to use the market insights");
     expect(result.artifacts.reflection.publishDecision).toMatch(/ready|revise|reject/);
+  });
+
+  it("carries competitor SERP angles into the brief and generated body", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Phone Case Comparison",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["clear phone case"],
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", minOpportunityScore: 50 },
+          topicDiscovery: { enabled: true, maxCandidates: 3 }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/9",
+          title: "Clear MagSafe iPhone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["clear", "magsafe"],
+          imageUrls: []
+        },
+        competitorTitles: ["Clear phone case vs silicone case: which one should you buy?", "Mistakes to check before buying a clear case"]
+      }
+    );
+
+    expect(result.artifacts.research.competitorAngles).toHaveLength(2);
+    expect(result.artifacts.research.sourceSummary.competitorAngleCount).toBe(2);
+    expect(result.artifacts.contentBrief.competitorAngles.map((angle) => angle.angle)).toEqual(["comparison", "risk"]);
+    expect(result.artifacts.contentBrief.claimsPolicy.join(" ")).toContain("competitor angles");
+    expect(result.article.bodyHtml).toContain("How to frame competitor angles");
+    expect(result.article.bodyHtml).toContain("Clear phone case vs silicone case");
+  });
+
+  it("records entity insights in the agent research brief for character-led topics", async () => {
+    const result = await runAgentContentPipeline(
+      {
+        locale: "en-US",
+        sourceType: "product",
+        topic: "Curious George phone case trend",
+        publishPolicy: "manual_review",
+        targetWordCount: 900,
+        keywords: ["curious george phone case"],
+        generationConfig: {
+          seoAgent: { enabled: true, agentMode: "commercial", maxResearchQueries: 3, minOpportunityScore: 60 },
+          hotNews: { enabled: true, sources: ["google_news"], maxItems: 2 },
+          topicDiscovery: { enabled: true, maxCandidates: 3, preferTrendSignals: true }
+        }
+      },
+      {
+        product: {
+          id: "gid://shopify/Product/77",
+          title: "Curious George Cartoon Phone Case",
+          productType: "Phone Case",
+          vendor: "Caseease",
+          tags: ["curious george", "cartoon"],
+          imageUrls: []
+        }
+      },
+      { fetch: makeEntityAwareFetchMock() }
+    );
+
+    expect(result.artifacts.research.entityInsights.length).toBeGreaterThan(0);
+    expect(result.artifacts.research.sourceSummary.entityInsightCount).toBeGreaterThan(0);
+    expect(result.artifacts.keywords.evidence?.join(" ")).toContain("Curious George");
+    expect(result.artifacts.contentBrief.claimsPolicy.join(" ")).toContain("Treat IP, character");
   });
 
   it("uses long-term agent memories as warnings in topic selection", async () => {
@@ -1206,13 +1380,19 @@ describe("content engine", () => {
       }
     };
     const body = Array.from({ length: 140 }, (_, index) => `useful shopper detail ${index}`).join(" ");
+    const bodyHtml = [
+      `<section><h2>Matte phone case checks</h2><p>Quick answer: choose this if confirmed matte finish, fit, and daily grip checks match your routine.</p><p>${body}</p></section>`,
+      "<section><h2>Matte phone case verified facts</h2><p>Confirmed product facts, synced tags, and not confirmed protection details stay separate.</p></section>",
+      "<section><h2>Who should choose or skip it</h2><table><tbody><tr><th>Choose this if</th><td>You want a shopper check based on catalog facts.</td></tr><tr><th>Skip this if</th><td>You need waterproofing or certifications that are not confirmed.</td></tr></tbody></table></section>",
+      "<section><h2>FAQ</h2><h3>Is a matte phone case good for daily use?</h3><p>It can be, when the synced finish, fit, and grip details match the buyer's daily use case.</p><h3>What should shoppers verify first?</h3><p>They should verify model fit, material notes, variants, and any not confirmed protection claims.</p><h3>When should shoppers skip it?</h3><p>They should skip when they need waterproofing, certified drop protection, or current pricing that is not confirmed.</p></section>"
+    ].join("");
     const article = {
       title: "Matte Phone Case Buying Checks",
       handle: "matte-phone-case-buying-checks",
-      summary: "Matte phone case buying checks for shoppers.",
-      bodyHtml: `<section><h2>Matte phone case checks</h2><p>${body}</p></section>`,
+      summary: "Matte phone case buying checks for shoppers comparing daily grip, verified facts, FAQ answers, and not confirmed protection claims.",
+      bodyHtml,
       tags: [],
-      imageAlt: "Matte phone case"
+      imageAlt: "Matte phone case daily shopper comparison scene"
     };
     const seo = await defaultSeoScorer.score(
       article,

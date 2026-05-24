@@ -5,7 +5,11 @@ import {
   FileText,
   Gauge,
   Image as ImageIcon,
+  ListChecks,
   Link as LinkIcon,
+  ScanSearch,
+  Sparkles,
+  Search,
   Send,
   ShieldCheck,
   Tags
@@ -13,7 +17,18 @@ import {
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Badge, EmptyState, ErrorState, PageHeader, Panel, StatusPill } from "@/components/ui";
+import { ArticleAgentCenter } from "@/components/article-agent-center";
+import {
+  createPythonQualityGate,
+  createPythonRepairPlan,
+  type PythonQualityGate,
+  type PythonQualityGateCheck,
+  type PythonQualityGateRequest,
+  type PythonRepairPlan,
+  type PythonRepairPlanTask
+} from "@/lib/agent-center/python-agent-client";
 import { formatArticleStatus, getArticleReviewView } from "@/lib/admin-client";
+import type { AdminArticleReviewView } from "@/lib/admin-client";
 import { sanitizeArticleHtml } from "@/lib/sanitize-html";
 
 type PageProps = {
@@ -29,11 +44,11 @@ export default async function ArticleReviewPage({ params }: PageProps) {
 
   const sanitizedBody = sanitizeArticleHtml(article?.bodyHtml ?? "");
   const canPublish = article?.status === "ready_to_publish";
+  const canSyncSearchConsole = Boolean(article?.canonicalUrl);
+  const qualityGateReady = Boolean(article?.qualityPassed);
   const qualityReport = asRecord(article?.qualityReport);
   const generationMetadata = asRecord(article?.generationMetadata);
   const generationQuality = asRecord(generationMetadata.quality);
-  const provider = asRecord(generationMetadata.provider);
-  const ai = asRecord(generationMetadata.ai);
   const aiSearchReview = asRecord(qualityReport.aiSearchReview ?? generationMetadata.aiSearchReview);
   const aiSearchInitial = asRecord(aiSearchReview.initial);
   const aiSearchFinal = asRecord(aiSearchReview.final);
@@ -41,6 +56,9 @@ export default async function ArticleReviewPage({ params }: PageProps) {
   const aiSearchRevisions = recordArray(aiSearchReview.revisions);
   const aiSearchActionItems = recordArray(aiSearchFinal.actionItems);
   const seoAgent = asRecord(generationMetadata.seoAgent);
+  const brandVoice = asRecord(generationMetadata.brandVoice);
+  const brandVoiceExamples = stringArray(brandVoice.examples);
+  const brandVoiceBannedWords = stringArray(brandVoice.bannedWords);
   const agentStages = recordArray(seoAgent.stages);
   const agentToolCalls = recordArray(seoAgent.toolCalls);
   const agentReflectionTasks = recordArray(seoAgent.reflectionTasks);
@@ -60,13 +78,84 @@ export default async function ArticleReviewPage({ params }: PageProps) {
       : agentSteps.length || agentStages.length || visibleAgentToolCalls.length + visibleReflectionTasks.length;
   const topicSelection = generationMetadata.topicSelection;
   const keywordEvidence = generationMetadata.keywordEvidence;
+  const trendSignals = generationMetadata.trendSignals;
+  const entityInsights = generationMetadata.entityInsights;
+  const externalReferences = generationMetadata.externalReferences;
+  const marketInsights = generationMetadata.marketInsights;
+  const competitorAngles = generationMetadata.competitorAngles;
+  const sourceSummary = generationMetadata.sourceSummary;
+  const contentBrief = asRecord(generationMetadata.contentBrief);
+  const articleImageAltTexts = article?.assets.map((asset) => asset.altText).filter((value): value is string => Boolean(value?.trim())) ?? [];
+  const pythonQualityRequest: PythonQualityGateRequest = {
+    title: article?.title ?? "",
+    body_html: article?.bodyHtml ?? "",
+    summary: article?.summary ?? null,
+    primary_keyword: article?.primaryKeyword ?? null,
+    seo_title: article?.seoTitle ?? null,
+    seo_description: article?.seoDescription ?? null,
+    seo_score: article?.seoScore ?? null,
+    ai_search_score: aiSearchScore,
+    editorial_score: numberValue(generationQuality.editorialScore),
+    expert_panel_score: numberValue(generationQuality.expertPanelScore),
+    has_canonical_url: Boolean(article?.canonicalUrl),
+    has_internal_links: Boolean(recordArray(qualityReport.internalLinks).length || article?.bodyHtml?.includes("<a ")),
+    has_external_references: Boolean(recordArray(externalReferences).length),
+    has_faq: Boolean(recordArray(contentBrief.faqs).length || recordArray(contentBrief.faq).length || article?.bodyHtml?.includes("<h3")),
+    has_decision_support: Boolean(recordArray(contentBrief.decisionSupport).length || recordArray(contentBrief.comparisonMatrix).length),
+    has_images: Boolean(article?.assets.length),
+    image_alt_texts: articleImageAltTexts,
+    quality_passed: Boolean(article?.qualityPassed),
+    brand_voice_banned_words: stringArray(brandVoice.bannedWords)
+  };
   const evidenceSummary =
-    topicSelection || (Array.isArray(keywordEvidence) && keywordEvidence.length > 0)
+    topicSelection ||
+    (Array.isArray(keywordEvidence) && keywordEvidence.length > 0) ||
+    (Array.isArray(trendSignals) && trendSignals.length > 0) ||
+    (Array.isArray(entityInsights) && entityInsights.length > 0) ||
+    (Array.isArray(externalReferences) && externalReferences.length > 0) ||
+    (Array.isArray(marketInsights) && marketInsights.length > 0) ||
+    (Array.isArray(competitorAngles) && competitorAngles.length > 0)
       ? {
           topicSelection,
-          keywordEvidence
+          keywordEvidence,
+          trendSignals,
+          entityInsights,
+          externalReferences,
+          marketInsights,
+          competitorAngles,
+          sourceSummary,
+          contentBrief
         }
       : null;
+  const [pythonQualityGate, pythonRepairPlan] = await Promise.all([
+    createPythonQualityGate(pythonQualityRequest),
+    article
+      ? createPythonRepairPlan({
+          ...pythonQualityRequest,
+          article_id: article.id,
+          canonical_url: article.canonicalUrl,
+          status: article.status,
+          repair_reason: "按质量门禁、Humanizer、Helpful Content 和收录准备生成可执行修复计划。"
+        })
+      : null
+  ]);
+  const qualityGateSummary =
+    pythonQualityGate ??
+    buildLocalQualityGateSummary({
+      article,
+      aiSearchScore,
+      editorialScore: numberValue(generationQuality.editorialScore),
+      expertPanelScore: numberValue(generationQuality.expertPanelScore),
+      hasExternalReferences: Boolean(recordArray(externalReferences).length),
+      hasFaq: Boolean(recordArray(contentBrief.faqs).length || recordArray(contentBrief.faq).length || article?.bodyHtml?.includes("<h3")),
+      hasDecisionSupport: Boolean(recordArray(contentBrief.decisionSupport).length || recordArray(contentBrief.comparisonMatrix).length),
+      imageAltTexts: articleImageAltTexts
+    });
+  const repairPlan = pythonRepairPlan ?? buildLocalRepairPlan(article, qualityGateSummary);
+  const structureChecks = qualityGateSummary.checks.filter((check) =>
+    ["title_intent", "summary_meta", "heading_structure", "faq", "image_alt", "internal_links", "external_references"].includes(check.key)
+  );
+  const readinessHeadline = resolveReadinessHeadline(article, qualityGateSummary);
 
   return (
     <>
@@ -85,6 +174,23 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                 <ExternalLink size={16} aria-hidden="true" />
                 查看线上
               </a>
+            ) : null}
+            {article ? (
+              <form action={`/api/admin/articles/${article.id}/repair`} method="post">
+                <input type="hidden" name="repairReason" value="从文章审核页触发：按 Search Console、AI 搜索评分和质检报告修复正文。" />
+                <button className="button" type="submit">
+                  <Sparkles size={16} aria-hidden="true" />
+                  AI 修复
+                </button>
+              </form>
+            ) : null}
+            {article ? (
+              <form action={`/api/admin/articles/${article.id}/search-console`} method="post">
+                <button className="button" type="submit" disabled={!canSyncSearchConsole}>
+                  <Search size={16} aria-hidden="true" />
+                  同步搜索表现
+                </button>
+              </form>
             ) : null}
             {article ? (
               <form action={`/api/admin/articles/${article.id}/publish`} method="post">
@@ -128,7 +234,312 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                 tone={canPublish ? "good" : "neutral"}
                 icon={<CalendarClock size={18} aria-hidden="true" />}
               />
+              <StatusPill
+                label="收录准备"
+                value={`${article.indexReadiness.label} · ${article.indexReadiness.score}`}
+                tone={article.indexReadiness.tone}
+                icon={<ScanSearch size={18} aria-hidden="true" />}
+              />
             </div>
+
+            <Panel title="发布与收录判断" description="先看能不能发，再看能不能被抓取，最后才谈提权。">
+              <div className="readiness-summary">
+                <div>
+                  <strong>{readinessHeadline}</strong>
+                  <small className="muted">{qualityGateSummary.next_step}</small>
+                </div>
+                <Badge tone={qualityGateSummary.publish_ready ? "good" : "warn"}>{qualityGateSummary.score}/100</Badge>
+              </div>
+              <div className="insight-strip">
+                <StatusPill label="可发布" value={qualityGateSummary.publish_ready ? "是" : "否"} tone={qualityGateSummary.publish_ready ? "good" : "warn"} icon={<ShieldCheck size={18} aria-hidden="true" />} />
+                <StatusPill label="可收录" value={qualityGateSummary.index_ready ? "是" : "否"} tone={qualityGateSummary.index_ready ? "good" : "warn"} icon={<ScanSearch size={18} aria-hidden="true" />} />
+                <StatusPill label="人味分" value={qualityGateSummary.humanizer_score} tone={qualityGateSummary.humanizer_score >= 90 ? "good" : qualityGateSummary.humanizer_score >= 75 ? "warn" : "danger"} icon={<Gauge size={18} aria-hidden="true" />} />
+                <StatusPill label="Helpful 分" value={qualityGateSummary.helpful_content_score} tone={qualityGateSummary.helpful_content_score >= 90 ? "good" : qualityGateSummary.helpful_content_score >= 72 ? "warn" : "danger"} icon={<FileText size={18} aria-hidden="true" />} />
+              </div>
+              <div className="readiness-checks">
+                {qualityGateSummary.checks.map((check) => (
+                  <div className="readiness-check" key={check.key}>
+                    <span className={`readiness-check__mark${check.passed ? " readiness-check__mark--passed" : ""}`}>
+                      <ListChecks size={15} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>{check.label}</strong>
+                      <small className="muted">{check.detail}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel title="Humanizer 评分" description="这里看文章是不是像真人写的，不只是像一篇合格的 SEO 文稿。">
+              <div className="readiness-summary">
+                <div>
+                  <strong>
+                    {qualityGateSummary.humanizer_score >= 90
+                      ? "人味很好"
+                      : qualityGateSummary.humanizer_score >= 75
+                        ? "还有一点模板味"
+                        : "明显需要重写"}
+                  </strong>
+                  <small className="muted">
+                    {qualityGateSummary.humanizer_signals.length > 0
+                      ? qualityGateSummary.humanizer_signals.join(" · ")
+                      : "没有明显的 AI 味或模板句式。"}
+                  </small>
+                </div>
+                <Badge tone={qualityGateSummary.humanizer_score >= 90 ? "good" : qualityGateSummary.humanizer_score >= 75 ? "warn" : "danger"}>
+                  {qualityGateSummary.humanizer_score}/100
+                </Badge>
+              </div>
+              <div className="readiness-checks">
+                {qualityGateSummary.humanizer_recommendations.length > 0 ? (
+                  qualityGateSummary.humanizer_recommendations.map((item) => (
+                    <div className="readiness-check" key={item}>
+                      <span className="readiness-check__mark">
+                        <ListChecks size={15} aria-hidden="true" />
+                      </span>
+                      <div>
+                        <strong>{item}</strong>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="readiness-check">
+                    <span className="readiness-check__mark readiness-check__mark--passed">
+                      <ListChecks size={15} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>暂无明显修改项</strong>
+                      <small className="muted">文章在人味、节奏和信息密度上暂时没有明显问题。</small>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </Panel>
+
+            <Panel title="Helpful Content 评分" description="这里按 Google people-first 内容、ai-marketing-skills 和 seomachine 流程看文章是否真正有用。">
+              <div className="readiness-summary">
+                <div>
+                  <strong>
+                    {qualityGateSummary.helpful_content_score >= 90
+                      ? "内容对用户很扎实"
+                      : qualityGateSummary.helpful_content_score >= 72
+                        ? "内容基本有用，还有增强空间"
+                        : "需要补真实价值和证据"}
+                  </strong>
+                  <small className="muted">
+                    {qualityGateSummary.helpful_content_signals.length > 0
+                      ? qualityGateSummary.helpful_content_signals.join(" · ")
+                      : "已覆盖答案、事实、决策、FAQ、链接和引用等基础信号。"}
+                  </small>
+                </div>
+                <Badge tone={qualityGateSummary.helpful_content_score >= 90 ? "good" : qualityGateSummary.helpful_content_score >= 72 ? "warn" : "danger"}>
+                  {qualityGateSummary.helpful_content_score}/100
+                </Badge>
+              </div>
+              <div className="readiness-checks">
+                {qualityGateSummary.helpful_content_recommendations.length > 0 ? (
+                  qualityGateSummary.helpful_content_recommendations.map((item) => (
+                    <div className="readiness-check" key={item}>
+                      <span className="readiness-check__mark">
+                        <ListChecks size={15} aria-hidden="true" />
+                      </span>
+                      <div>
+                        <strong>{item}</strong>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="readiness-check">
+                    <span className="readiness-check__mark readiness-check__mark--passed">
+                      <ListChecks size={15} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>暂无明显内容价值缺口</strong>
+                      <small className="muted">继续发布后看 Search Console 的真实表现。</small>
+                    </div>
+                  </div>
+                )}
+                {qualityGateSummary.doctrine_sources.length > 0 ? (
+                  <div className="readiness-check">
+                    <span className="readiness-check__mark readiness-check__mark--passed">
+                      <ListChecks size={15} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>参考规范</strong>
+                      <small className="muted">{qualityGateSummary.doctrine_sources.join(" · ")}</small>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </Panel>
+
+            <Panel title="SEO 内容洞察" description="关键词、来源、结构和 agent 轨迹。">
+              <div className="insight-strip">
+                <StatusPill label="质量门禁" value={qualityGateReady ? "通过" : "未通过"} tone={qualityGateReady ? "good" : "danger"} icon={<ShieldCheck size={18} aria-hidden="true" />} />
+                <StatusPill label="收录准备" value={article.indexReadiness.label} tone={article.indexReadiness.tone} icon={<ScanSearch size={18} aria-hidden="true" />} />
+                <StatusPill label="SEO 分" value={article.seoScore ?? "暂无"} tone={(article.seoScore ?? 0) >= 82 ? "good" : "warn"} icon={<Gauge size={18} aria-hidden="true" />} />
+              </div>
+              <div className="readiness-checks">
+                <div className="readiness-check">
+                  <span className={`readiness-check__mark${qualityGateReady ? " readiness-check__mark--passed" : ""}`}>
+                    <ListChecks size={15} aria-hidden="true" />
+                  </span>
+                  <div>
+                    <strong>发布判断</strong>
+                    <small className="muted">
+                      {qualityGateSummary.publish_ready
+                        ? "内容过线，可以进入发布或收录流程。"
+                        : "内容还没过线，先做 AI repair 再发布。"}
+                    </small>
+                  </div>
+                </div>
+                <div className="readiness-check">
+                  <span className={`readiness-check__mark${article.canonicalUrl ? " readiness-check__mark--passed" : ""}`}>
+                    <ListChecks size={15} aria-hidden="true" />
+                  </span>
+                  <div>
+                    <strong>收录判断</strong>
+                    <small className="muted">
+                      {article.canonicalUrl
+                        ? "已经有 canonical URL，可进入 Search Console 同步。"
+                        : "还没有 canonical URL，不能谈真实收录。"}
+                    </small>
+                  </div>
+                </div>
+                {structureChecks.map((check) => (
+                  <div className="readiness-check" key={`structure-${check.key}`}>
+                    <span className={`readiness-check__mark${check.passed ? " readiness-check__mark--passed" : ""}`}>
+                      <ListChecks size={15} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>{check.label}</strong>
+                      <small className="muted">{check.detail}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Panel>
+
+            <Panel title="品牌语气" description="生成和修复会按这里的口径写，避免把品牌词和模板话术塞进正文。">
+              {brandVoice.audience || brandVoice.tone || brandVoiceBannedWords.length > 0 || brandVoiceExamples.length > 0 ? (
+                <dl className="detail-list">
+                  <div>
+                    <dt>受众</dt>
+                    <dd>{stringValue(brandVoice.audience) ?? "未配置"}</dd>
+                  </div>
+                  <div>
+                    <dt>语气</dt>
+                    <dd>{stringValue(brandVoice.tone) ?? "未配置"}</dd>
+                  </div>
+                  <div>
+                    <dt>禁用词</dt>
+                    <dd>{brandVoiceBannedWords.length > 0 ? brandVoiceBannedWords.join(" · ") : "无"}</dd>
+                  </div>
+                  <div>
+                    <dt>示例</dt>
+                    <dd>{brandVoiceExamples.length > 0 ? brandVoiceExamples.join(" · ") : "无"}</dd>
+                  </div>
+                </dl>
+              ) : (
+                <EmptyState title="暂无品牌语气" description="先在品牌语气里配置受众、语气和禁用词，Humanizer 建议会更准。" />
+              )}
+            </Panel>
+
+            <RepairPlanPanel article={article} repairPlan={repairPlan} />
+
+            <Panel
+              title="Google 收录准备"
+              description="这里判断的是收录基础和复盘准备，不承诺 Google 一定收录或排名；真正表现要上线后看 Search Console。"
+              action={
+                article.canonicalUrl ? (
+                  <a className="button button--ghost" href={article.canonicalUrl} target="_blank" rel="noreferrer">
+                    <LinkIcon size={16} aria-hidden="true" />
+                    打开线上
+                  </a>
+                ) : null
+              }
+            >
+              <div className="next-step-strip">
+                <div>
+                  <strong>AI 修复是做什么</strong>
+                  <small className="muted">
+                    修复会读取原文、质检报告、AI 搜索分、内链/引用证据和 Agent 记忆，按 analyze-existing → rewrite → optimize → performance-review 原地改稿，不是简单重跑。
+                  </small>
+                </div>
+                <form action={`/api/admin/articles/${article.id}/repair`} method="post">
+                  <input type="hidden" name="repairReason" value="从 Google 收录准备面板触发：根据内容质量、搜索评分、内链、外部引用和 Agent 记忆规则修复。" />
+                  <button className="button button--small" type="submit" disabled={article.indexReadiness.checks[0]?.passed}>
+                    <Sparkles size={14} aria-hidden="true" />
+                    {article.indexReadiness.checks[0]?.passed ? "内容已过线" : "开始修复"}
+                  </button>
+                </form>
+              </div>
+              <div className="readiness-summary">
+                <div>
+                  <strong>{article.indexReadiness.nextStep}</strong>
+                  <small className="muted">
+                    {article.indexReadiness.lastSearchConsoleSyncAt
+                      ? `上次 Search Console 同步：${article.indexReadiness.lastSearchConsoleSyncAt}`
+                      : "还没有 Search Console 同步记录。"}
+                  </small>
+                </div>
+                <Badge tone={article.indexReadiness.tone}>{article.indexReadiness.score}/100</Badge>
+              </div>
+              <div className="readiness-checks">
+                {article.indexReadiness.checks.map((check) => (
+                  <div className="readiness-check" key={check.key}>
+                    <span className={`readiness-check__mark${check.passed ? " readiness-check__mark--passed" : ""}`}>
+                      <ListChecks size={15} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <strong>{check.label}</strong>
+                      <small className="muted">{check.detail}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="next-step-strip">
+                <div>
+                  <strong>发布后巡检顺序</strong>
+                  <small className="muted">先确认线上可打开，再同步 Search Console；有曝光后看 CTR、平均排名和低点击词。</small>
+                </div>
+                <div className="toolbar">
+                  <form action={`/api/admin/articles/${article.id}/search-console`} method="post">
+                    <button className="button button--small" type="submit" disabled={!canSyncSearchConsole}>
+                      <Search size={14} aria-hidden="true" />
+                      同步搜索表现
+                    </button>
+                  </form>
+                  <Link href="/performance-review" className="button button--small">
+                    <Gauge size={14} aria-hidden="true" />
+                    去复盘
+                  </Link>
+                </div>
+              </div>
+            </Panel>
+
+            <ArticleAgentCenter
+              article={article}
+              qualityReport={qualityReport}
+              aiSearchScore={aiSearchScore}
+              aiSearchReview={aiSearchReview}
+              aiSearchInitial={aiSearchInitial}
+              aiSearchFinal={aiSearchFinal}
+              aiSearchRevisions={aiSearchRevisions}
+              aiSearchActionItems={aiSearchActionItems}
+              seoAgent={seoAgent}
+              agentStages={agentStages}
+              agentToolCalls={agentToolCalls}
+              agentReflectionTasks={agentReflectionTasks}
+              agentMemory={agentMemory}
+              structuredAgentTrace={structuredAgentTrace}
+              agentSteps={agentSteps}
+              visibleAgentToolCalls={visibleAgentToolCalls}
+              visibleReflectionTasks={visibleReflectionTasks}
+              executionStepCount={executionStepCount}
+              evidenceSummary={evidenceSummary}
+            />
 
             <section className="review-layout">
               <div className="stack">
@@ -223,10 +634,6 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                   </div>
                 </Panel>
 
-                <Panel title="选题与关键词依据" compact>
-                  <JsonBlock value={evidenceSummary} empty="暂无关键词依据" />
-                </Panel>
-
                 <Panel title="SEO 摘要" compact>
                   <dl className="detail-list">
                     <div>
@@ -252,131 +659,6 @@ export default async function ArticleReviewPage({ params }: PageProps) {
                     </div>
                   </dl>
                 </Panel>
-
-                <Panel title="AI 搜索流量评审" compact>
-                  {Object.keys(aiSearchReview).length > 0 ? (
-                    <div className="stack">
-                      <dl className="detail-list">
-                        <div>
-                          <dt>最终搜索分</dt>
-                          <dd>{aiSearchScore ?? "暂无"}</dd>
-                        </div>
-                        <div>
-                          <dt>初评分</dt>
-                          <dd>{numberValue(aiSearchInitial.score) ?? "暂无"}</dd>
-                        </div>
-                        <div>
-                          <dt>最低要求</dt>
-                          <dd>{numberValue(aiSearchReview.minTrafficScore) ?? 82}</dd>
-                        </div>
-                        <div>
-                          <dt>自动改稿</dt>
-                          <dd>{aiSearchRevisions.length} 次</dd>
-                        </div>
-                      </dl>
-                      <ScoreGrid review={aiSearchFinal} />
-                      <TextList title="AI 判断" items={[stringValue(aiSearchFinal.summary)].filter(Boolean) as string[]} />
-                      <ActionItemList title="最终待优化点" items={aiSearchActionItems} />
-                      <TextList title="提升建议" items={stringArray(aiSearchFinal.recommendations)} />
-                      <TextList title="改稿指令" items={stringArray(aiSearchFinal.revisionBrief)} />
-                      {aiSearchRevisions.length > 0 ? (
-                        <div className="json-block">
-                          {aiSearchRevisions.map((revision, index) => (
-                            <div key={index} className="stack">
-                              <strong>
-                                第 {numberValue(revision.pass) ?? index + 1} 次：{numberValue(revision.beforeScore) ?? "-"} →{" "}
-                                {numberValue(revision.afterScore) ?? "-"}
-                              </strong>
-                              <TextList title="本轮修改依据" items={stringArray(revision.recommendations)} />
-                              <TextList title="本轮改稿变化" items={stringArray(revision.changes)} />
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <EmptyState title="暂无 AI 搜索评审" description="开启 AI 搜索评分后，生成完成会显示评分、建议和改稿记录。" />
-                  )}
-                </Panel>
-
-                <Panel title="质检报告" compact>
-                  <JsonBlock value={qualityReport} empty="暂无质检报告" />
-                </Panel>
-
-                <Panel title="AI Agent 轨迹" compact>
-                  {agentSteps.length > 0 || agentStages.length > 0 || visibleAgentToolCalls.length > 0 || visibleReflectionTasks.length > 0 ? (
-                    <div className="stack">
-                      <dl className="detail-list">
-                        <div>
-                          <dt>Agent 版本</dt>
-                          <dd className="code">
-                            {stringValue(structuredAgentTrace.agentVersion) ?? stringValue(seoAgent.agentVersion) ?? "未记录"}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>运行状态</dt>
-                          <dd>{stringValue(structuredAgentTrace.status) ?? stringValue(seoAgent.status) ?? "未记录"}</dd>
-                        </div>
-                        <div>
-                          <dt>执行步骤</dt>
-                          <dd>{executionStepCount}</dd>
-                        </div>
-                        <div>
-                          <dt>工具 / 反思</dt>
-                          <dd>
-                            {numberValue(structuredAgentTrace.toolCallCount) ?? visibleAgentToolCalls.length} /{" "}
-                            {numberValue(structuredAgentTrace.reflectionTaskCount) ?? visibleReflectionTasks.length}
-                          </dd>
-                        </div>
-                      </dl>
-                      {agentSteps.length > 0 ? (
-                        <AgentStepTimeline steps={agentSteps} />
-                      ) : agentStages.length > 0 ? (
-                        <AgentTimeline stages={agentStages} />
-                      ) : (
-                        <AgentToolCallTimeline calls={visibleAgentToolCalls} />
-                      )}
-                      <TextList
-                        title="记忆规则"
-                        items={stringArray(agentMemory.learnedRules).concat(
-                          stringArray(agentMemory.blockedAngles).map((angle) => `避开角度：${angle}`)
-                        )}
-                      />
-                      <ActionItemList title="Agent 反思任务" items={visibleReflectionTasks} />
-                      <JsonBlock
-                        value={{
-                          toolCalls: visibleAgentToolCalls.slice(0, 8),
-                          memory: agentMemory,
-                          evidence: recordArray(structuredAgentTrace.evidence).slice(0, 8)
-                        }}
-                        empty="暂无 Agent 运行数据"
-                      />
-                    </div>
-                  ) : (
-                    <EmptyState title="暂无 Agent 轨迹" description="商业级 SEO Agent 运行后会展示阶段、工具、反思任务和记忆命中。" />
-                  )}
-                </Panel>
-
-                <Panel title="生成信息" compact>
-                  <dl className="detail-list">
-                    <div>
-                      <dt>Provider</dt>
-                      <dd>{stringValue(provider.name) ?? "未记录"}</dd>
-                    </div>
-                    <div>
-                      <dt>文本模型</dt>
-                      <dd className="code">{stringValue(provider.textModel) ?? stringValue(ai.model) ?? "未记录"}</dd>
-                    </div>
-                    <div>
-                      <dt>图片模型</dt>
-                      <dd className="code">{stringValue(provider.imageModel) ?? "未配置"}</dd>
-                    </div>
-                    <div>
-                      <dt>最终字数</dt>
-                      <dd>{numberValue(generationQuality.wordCount) ?? numberValue(qualityReport.wordCount) ?? "暂无"}</dd>
-                    </div>
-                  </dl>
-                </Panel>
               </aside>
             </section>
           </>
@@ -392,6 +674,275 @@ function JsonBlock(props: { value: unknown; empty: string }) {
   }
 
   return <pre className="json-block">{JSON.stringify(props.value, null, 2)}</pre>;
+}
+
+function RepairPlanPanel({ article, repairPlan }: { article: AdminArticleReviewView; repairPlan: PythonRepairPlan }) {
+  const activeTasks = repairPlan.tasks.slice(0, 6);
+  const failedChecks = repairPlan.quality_gate.checks.filter((check) => !check.passed).length;
+
+  return (
+    <Panel
+      title="AI 修复任务流"
+      description="这里把 AI 修复拆成负责智能体、具体动作和验收条件，避免流程变成一个黑箱按钮。"
+      action={
+        <form action={`/api/admin/articles/${article.id}/repair`} method="post">
+          <input type="hidden" name="repairReason" value={repairPlan.next_step} />
+          <button className="button button--small" type="submit">
+            <Sparkles size={14} aria-hidden="true" />
+            执行修复
+          </button>
+        </form>
+      }
+    >
+      <div className="next-step-strip">
+        <div>
+          <strong>{repairPlan.next_step}</strong>
+          <small className="muted">
+            {repairPlan.summary} · 未通过检查 {failedChecks} 项 · 模式 {formatRepairMode(repairPlan.mode)}
+          </small>
+        </div>
+        <Badge tone={repairPlan.quality_gate.publish_ready ? "good" : "warn"}>
+          {repairPlan.quality_gate.publish_ready ? "发布线已过" : "需要修复"}
+        </Badge>
+      </div>
+
+      {repairPlan.blockers.length > 0 ? (
+        <div className="readiness-checks">
+          {repairPlan.blockers.slice(0, 4).map((blocker) => (
+            <div className="readiness-check" key={`blocker-${blocker}`}>
+              <span className="readiness-check__mark">
+                <ListChecks size={15} aria-hidden="true" />
+              </span>
+              <div>
+                <strong>{blocker}</strong>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="list">
+        {activeTasks.map((task, index) => (
+          <div className="list-item" key={task.id}>
+            <div>
+              <strong>
+                {index + 1}. {formatAgentRole(task.agent_role)} · {task.issue}
+              </strong>
+              <small className="muted">{task.instruction}</small>
+              <small className="muted">验收：{task.acceptance_check}</small>
+              {task.depends_on.length > 0 ? <small className="muted">依赖：{task.depends_on.join(" / ")}</small> : null}
+            </div>
+            <Badge tone={toneForRepairPriority(task.priority)}>{formatRepairPriority(task.priority)}</Badge>
+          </div>
+        ))}
+      </div>
+
+      {activeTasks.length === 0 ? (
+        <EmptyState title="暂无修复任务" description="当前没有可执行修复项，继续发布或等待 Search Console 数据。" />
+      ) : null}
+    </Panel>
+  );
+}
+
+function buildLocalRepairPlan(article: AdminArticleReviewView | null, qualityGate: PythonQualityGate): PythonRepairPlan {
+  const failedChecks = qualityGate.checks.filter((check) => !check.passed);
+  const tasks: PythonRepairPlanTask[] = failedChecks
+    .filter((check) => ["quality_gate", "content_depth", "title_intent", "summary_meta", "heading_structure", "humanizer", "helpful_content", "internal_links", "external_references", "search_review", "decision_support", "faq", "image_alt", "canonical", "published_url"].includes(check.key))
+    .slice(0, 8)
+    .map((check) => localRepairTask(check));
+
+  if (qualityGate.publish_ready && !qualityGate.index_ready) {
+    tasks.unshift({
+      id: "local-publisher-guard",
+      agent_role: "publisher_guard",
+      priority: "high",
+      issue: "内容已过发布线，但还缺少线上发布或 canonical。",
+      instruction: "发布到 Shopify 后确认 canonical URL，再进入 Search Console 同步。",
+      acceptance_check: "文章有可访问的 canonical URL。",
+      source_check_key: "canonical",
+      depends_on: [],
+      outputs: ["canonical_url"]
+    });
+  }
+
+  if (qualityGate.index_ready) {
+    tasks.push({
+      id: "local-growth-analyst",
+      agent_role: "growth_analyst",
+      priority: "medium",
+      issue: "文章已经具备收录观察基础。",
+      instruction: "同步 Search Console，查看曝光、平均排名、CTR 和查询缺口。",
+      acceptance_check: "生成一组基于真实表现的刷新建议。",
+      source_check_key: "search_console",
+      depends_on: [],
+      outputs: ["search_console_insights"]
+    });
+  }
+
+  return {
+    article_id: article?.id ?? null,
+    canonical_url: article?.canonicalUrl ?? null,
+    status: article?.status ?? null,
+    repair_reason: null,
+    mode: article?.status === "published" ? "post_publish_refresh" : qualityGate.publish_ready ? "publish_and_index" : "pre_publish_repair",
+    summary: `${tasks.length} 个本地保守修复任务`,
+    next_step: tasks[0]?.instruction ?? qualityGate.next_step,
+    blockers: failedChecks.map((check) => check.label).slice(0, 6),
+    quality_gate: qualityGate,
+    tasks
+  };
+}
+
+function localRepairTask(check: PythonQualityGateCheck): PythonRepairPlanTask {
+  const role = ["content_depth", "heading_structure", "decision_support", "faq"].includes(check.key)
+    ? "writer"
+    : ["internal_links", "external_references"].includes(check.key)
+      ? "researcher"
+      : "seo_editor";
+
+  return {
+    id: `local-${check.key}`,
+    agent_role: role,
+    priority: ["quality_gate", "content_depth", "humanizer", "helpful_content"].includes(check.key) ? "high" : "medium",
+    issue: check.label,
+    instruction: localRepairInstruction(check.key),
+    acceptance_check: check.detail,
+    source_check_key: check.key,
+    depends_on: [],
+    outputs: [`${check.key}_revision`]
+  };
+}
+
+function localRepairInstruction(checkKey: string) {
+  const instructions: Record<string, string> = {
+    quality_gate: "按质量门禁失败项重新修正文稿，再重新评分。",
+    content_depth: "补充具体事实、场景、对比和购买前提醒。",
+    title_intent: "重写标题，让主关键词和搜索意图更明确。",
+    summary_meta: "重写摘要或 meta 描述，给出具体承诺。",
+    heading_structure: "重排 H2/H3，让结构更清晰且不跳级。",
+    humanizer: "删掉模板句和 AI 味，改成更自然的短句。",
+    helpful_content: "补 answer-first、verified facts、决策支持、FAQ 和引用。",
+    internal_links: "补相关内部链接，并使用描述性锚文本。",
+    external_references: "补可靠外部引用，把来源和具体事实绑定。",
+    search_review: "围绕搜索意图和内容深度重写关键段落。",
+    decision_support: "补选择/跳过/对比建议。",
+    faq: "补至少 3 个真实买家问题和直接答案。",
+    image_alt: "把图片 alt 改成能描述具体图像内容的句子。",
+    canonical: "发布或补齐 canonical URL。",
+    published_url: "发布到 Shopify 后再进行收录观察。"
+  };
+  return instructions[checkKey] ?? "按检查详情修复并重新验收。";
+}
+
+function formatRepairMode(mode: PythonRepairPlan["mode"]) {
+  if (mode === "publish_and_index") return "发布与收录准备";
+  if (mode === "post_publish_refresh") return "发布后复盘";
+  return "发布前修复";
+}
+
+function formatAgentRole(role: string) {
+  const labels: Record<string, string> = {
+    researcher: "Research Agent",
+    keyword_planner: "Keyword Planner",
+    writer: "Writer Agent",
+    seo_editor: "SEO Gate Agent",
+    publisher_guard: "Publisher Guard",
+    growth_analyst: "Growth Analyst"
+  };
+  return labels[role] ?? role;
+}
+
+function formatRepairPriority(priority: PythonRepairPlanTask["priority"]) {
+  const labels: Record<PythonRepairPlanTask["priority"], string> = {
+    critical: "紧急",
+    high: "高",
+    medium: "中",
+    low: "低"
+  };
+  return labels[priority];
+}
+
+function toneForRepairPriority(priority: PythonRepairPlanTask["priority"]) {
+  if (priority === "critical" || priority === "high") return "danger";
+  if (priority === "medium") return "warn";
+  return "neutral";
+}
+
+function buildLocalQualityGateSummary(input: {
+  article: AdminArticleReviewView | null;
+  aiSearchScore: number | null;
+  editorialScore: number | null;
+  expertPanelScore: number | null;
+  hasExternalReferences: boolean;
+  hasFaq: boolean;
+  hasDecisionSupport: boolean;
+  imageAltTexts: string[];
+}): PythonQualityGate {
+  const article = input.article;
+  const seoScore = article?.seoScore ?? 0;
+  const bodyText = stripHtmlText(article?.bodyHtml ?? "");
+  const h2Count = (article?.bodyHtml.match(/<h2\b/gi) ?? []).length;
+  const hasInternalLinks = Boolean(article?.bodyHtml.includes("<a "));
+  const isPublished = article?.status === "published";
+  const hasCanonical = Boolean(article?.canonicalUrl);
+  const hasDescriptiveAlt = input.imageAltTexts.length === 0 || input.imageAltTexts.every((alt) => alt.trim().length >= 8 && !["image", "photo", "文章图片", "商品图片"].includes(alt.trim().toLowerCase()));
+  const summary = article?.seoDescription ?? article?.summary ?? "";
+  const summaryMin = /[\u3400-\u9fff]/u.test(summary) ? 40 : 80;
+  const summaryMax = /[\u3400-\u9fff]/u.test(summary) ? 160 : 180;
+  const checks: PythonQualityGateCheck[] = [
+    localCheck("quality_gate", "Quality gate", Boolean(article?.qualityPassed) && seoScore >= 82, article?.qualityPassed ? `SEO ${seoScore}; content quality passed.` : "Content quality has not passed."),
+    localCheck("content_depth", "Useful depth", bodyText.length >= 1200, `Body text length is ${bodyText.length} characters.`),
+    localCheck("title_intent", "Title matches intent", Boolean(article?.title && article.title.length >= 8 && article.title.length <= 72), `Title length ${article?.title.length ?? 0}; keep it specific and scannable.`),
+    localCheck("summary_meta", "Summary and meta description", summary.length >= summaryMin && summary.length <= summaryMax, `Summary/meta length ${summary.length}; target ${summaryMin}-${summaryMax} characters.`),
+    localCheck("heading_structure", "Heading structure", h2Count >= 3, `${h2Count} H2 sections found; target at least 3.`),
+    localCheck("internal_links", "Internal links", hasInternalLinks, hasInternalLinks ? "Contextual links are present." : "No contextual anchor tag found in the article body."),
+    localCheck("external_references", "External references", input.hasExternalReferences, input.hasExternalReferences ? "External reference metadata exists." : "No approved external reference metadata found."),
+    localCheck("search_review", "AI search review", (input.aiSearchScore ?? seoScore) >= 82, `AI/search score ${input.aiSearchScore ?? seoScore}; target 82.`),
+    localCheck("decision_support", "Decision support", input.hasDecisionSupport || /choose|skip|适合|不适合|对比|下单前/i.test(bodyText), "Article should help shoppers choose, skip, compare, or continue."),
+    localCheck("faq", "Search-intent FAQ", input.hasFaq, "FAQ should answer real buyer/search questions."),
+    localCheck("image_alt", "Image alt text", hasDescriptiveAlt, input.imageAltTexts.length ? `${input.imageAltTexts.length} image alt text value(s).` : "No image alt text supplied."),
+    localCheck("canonical", "Canonical URL", hasCanonical, hasCanonical ? "Canonical URL is saved." : "Canonical URL is missing."),
+    localCheck("published_url", "Published URL", isPublished, isPublished ? "Article is published." : "Article is not published yet.")
+  ];
+  const requiredPublishKeys = new Set(["quality_gate", "content_depth", "title_intent", "summary_meta", "heading_structure", "internal_links", "external_references", "search_review", "decision_support", "faq", "image_alt"]);
+  const publishReady = checks.filter((check) => requiredPublishKeys.has(check.key)).every((check) => check.passed);
+  const indexReady = publishReady && isPublished && hasCanonical;
+
+  return {
+    publish_ready: publishReady,
+    index_ready: indexReady,
+    score: Math.round((checks.filter((check) => check.passed).length / checks.length) * 100),
+    checks,
+    next_step: !publishReady
+      ? "先做 AI 修复，让内容结构、链接、引用和 FAQ 过线。"
+      : !isPublished
+        ? "先发布到 Shopify，生成线上 URL 后再谈收录。"
+        : !hasCanonical
+          ? "补齐 canonical URL，再同步 Search Console。"
+          : "同步 Search Console，继续看抓取、曝光、排名和 CTR。",
+    humanizer_score: seoScore,
+    humanizer_signals: [],
+    humanizer_recommendations: [],
+    helpful_content_score: seoScore,
+    helpful_content_signals: [],
+    helpful_content_recommendations: [],
+    doctrine_sources: []
+  };
+}
+
+function resolveReadinessHeadline(article: AdminArticleReviewView | null, qualityGate: PythonQualityGate) {
+  if (!qualityGate.publish_ready) return "先修复内容再发布";
+  if (article?.status !== "published") return "可以发布，但还不能判断收录";
+  if (!qualityGate.index_ready) return "已发布，但还要补 canonical 或搜索同步";
+  return "已具备收录观察基础";
+}
+
+function localCheck(key: string, label: string, passed: boolean, detail: string): PythonQualityGateCheck {
+  return { key, label, passed, detail };
+}
+
+function stripHtmlText(value: string): string {
+  return value.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function ScoreGrid({ review }: { review: Record<string, unknown> }) {
@@ -427,8 +978,8 @@ function TextList({ title, items }: { title: string; items: string[] }) {
     <div>
       <strong>{title}</strong>
       <div className="json-block">
-        {items.map((item) => (
-          <div key={item}>
+        {items.map((item, index) => (
+          <div key={`${title}-${index}-${item}`}>
             {item}
           </div>
         ))}
