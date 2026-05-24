@@ -168,6 +168,30 @@ export interface PythonContentReadinessDoctrine {
   doctrine_sources: string[];
 }
 
+export interface PythonContentArticleBlueprintSection {
+  key: string;
+  title: string;
+  agent_role: string;
+  purpose: string;
+  target_words: number;
+  must_have: string[];
+  avoid: string[];
+  quality_gate?: string | null;
+}
+
+export interface PythonContentArticleBlueprint {
+  article_type: string;
+  summary: string;
+  audience: string;
+  target_length: string;
+  outline: PythonContentArticleBlueprintSection[];
+  seo_rules: string[];
+  humanizer_rules: string[];
+  publish_rules: string[];
+  anti_patterns: string[];
+  doctrine_sources: string[];
+}
+
 export interface PythonSeoBoardRecommendation {
   title: string;
   reason: string;
@@ -249,6 +273,11 @@ export async function createPythonRepairPlan(
 export async function getPythonContentReadinessDoctrine(): Promise<PythonContentReadinessDoctrine | null> {
   if (!pythonAgentServiceEnabled()) return null;
   return pythonAgentFetch<PythonContentReadinessDoctrine>("/api/v1/content/readiness-doctrine");
+}
+
+export async function getPythonContentArticleBlueprint(): Promise<PythonContentArticleBlueprint | null> {
+  if (!pythonAgentServiceEnabled()) return null;
+  return pythonAgentFetch<PythonContentArticleBlueprint>("/api/v1/content/article-blueprint");
 }
 
 export async function getPythonSeoBoard(): Promise<PythonSeoBoard | null> {

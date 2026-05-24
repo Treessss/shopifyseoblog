@@ -69,6 +69,30 @@ class ContentReadinessDoctrine(BaseModel):
     doctrine_sources: list[str] = Field(default_factory=list)
 
 
+class ContentArticleBlueprintSection(BaseModel):
+    key: str
+    title: str
+    agent_role: AgentRole
+    purpose: str
+    target_words: int = Field(ge=0)
+    must_have: list[str] = Field(default_factory=list)
+    avoid: list[str] = Field(default_factory=list)
+    quality_gate: str | None = None
+
+
+class ContentArticleBlueprint(BaseModel):
+    article_type: str
+    summary: str
+    audience: str
+    target_length: str
+    outline: list[ContentArticleBlueprintSection]
+    seo_rules: list[str] = Field(default_factory=list)
+    humanizer_rules: list[str] = Field(default_factory=list)
+    publish_rules: list[str] = Field(default_factory=list)
+    anti_patterns: list[str] = Field(default_factory=list)
+    doctrine_sources: list[str] = Field(default_factory=list)
+
+
 class ArticleRepairMode(StrEnum):
     pre_publish_repair = "pre_publish_repair"
     publish_and_index = "publish_and_index"
