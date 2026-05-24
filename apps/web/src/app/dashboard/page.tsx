@@ -14,6 +14,7 @@ import {
   Store
 } from "lucide-react";
 import { Badge, EmptyState, ErrorState, PageHeader, Panel, StatusPill } from "@/components/ui";
+import { StartPathPanel } from "@/components/start-path-panel";
 import { getDashboardView } from "@/lib/admin-client";
 
 export default async function DashboardPage() {
@@ -63,75 +64,34 @@ export default async function DashboardPage() {
       <div className="stack">
         <ErrorState error={error} title="首页数据读取失败" />
 
-        <Panel
+        <StartPathPanel
           title="推荐路径"
           description="只保留最关键的三步，别让首页自己变成一个负担。"
-          action={
-            <div className="toolbar">
-              <Link href={primaryActionHref} className="button button--primary">
-                <Megaphone size={16} aria-hidden="true" />
-                {primaryActionLabel}
-              </Link>
-              <Link href="/articles" className="button">
-                <FileText size={16} aria-hidden="true" />
-                看文章
-              </Link>
-            </div>
-          }
-        >
-          <div className="dashboard-hero">
-            <div className="dashboard-hero__main">
-              <h2>1. 连店铺 2. 建任务 3. 看结果</h2>
-              <p>
-                你现在应该优先做的只有一件事。首页负责告诉你下一步，Agent 中心负责告诉你卡在哪个智能体，文章页负责告诉你能不能发。
-              </p>
-              <div className="hero-path__steps">
-                <div className="hero-path__step">
-                  <strong>1</strong>
-                  <div>
-                    <span>确认店铺</span>
-                    <small className="muted">没有连接时，先去店铺页。</small>
-                  </div>
-                </div>
-                <div className="hero-path__step">
-                  <strong>2</strong>
-                  <div>
-                    <span>创建内容任务</span>
-                    <small className="muted">把主题、语言和发布策略一次选好。</small>
-                  </div>
-                </div>
-                <div className="hero-path__step">
-                  <strong>3</strong>
-                  <div>
-                    <span>查看结果</span>
-                    <small className="muted">文章页看收录准备，复盘页看低 CTR 和下滑词。</small>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="dashboard-hero__aside">
-              <StatusPill
-                label="当前起点"
-                value={healthyStores > 0 ? "可以建任务" : "先连店铺"}
-                tone={healthyStores > 0 ? "good" : "warn"}
-                icon={<Store size={18} aria-hidden="true" />}
-              />
-              <StatusPill
-                label="队列健康"
-                value={data.queueHealth.label}
-                tone={queueHealthTone}
-                icon={queueHealthIcon}
-              />
-              <StatusPill
-                label="下一步"
-                value={data.queueHealth.nextStep}
-                tone="neutral"
-                icon={<ArrowRight size={18} aria-hidden="true" />}
-              />
-            </div>
-          </div>
-        </Panel>
+          primaryLabel={primaryActionLabel}
+          primaryHref={primaryActionHref}
+          steps={[
+            {
+              index: "1",
+              title: "确认店铺",
+              detail: "没有连接时，先去店铺页。"
+            },
+            {
+              index: "2",
+              title: "创建内容任务",
+              detail: "把主题、语言和发布策略一次选好。"
+            },
+            {
+              index: "3",
+              title: "查看结果",
+              detail: "文章页看收录准备，复盘页看低 CTR 和下滑词。"
+            }
+          ]}
+          statusLabel="当前起点"
+          statusValue={healthyStores > 0 ? "可以建任务" : "先连店铺"}
+          statusTone={healthyStores > 0 ? "good" : "warn"}
+          statusHint="你现在应该优先做的只有一件事。首页负责告诉你下一步，Agent 中心负责告诉你卡在哪个智能体，文章页负责告诉你能不能发。"
+          badgeLabel={data.queueHealth.label}
+        />
 
         <div className="grid grid--metrics">
           <StatusPill

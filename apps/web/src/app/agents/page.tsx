@@ -18,6 +18,7 @@ import {
   Workflow
 } from "lucide-react";
 import { Badge, EmptyState, ErrorState, PageHeader, Panel, StatusPill } from "@/components/ui";
+import { StartPathPanel } from "@/components/start-path-panel";
 import {
   formatPriorityKind,
   getDashboardView,
@@ -157,34 +158,44 @@ export default async function AgentsPage() {
         <ErrorState error={performance.error} title="复盘读取失败" />
         <ErrorState error={research.error} title="研究状态读取失败" />
 
-        <Panel
+        <StartPathPanel
           title="现在从这里开始"
           description="系统只给一个主动作，其他页面都是这个动作的支撑。"
-          action={
-            <Link href={nextAction.href} className="button button--primary">
-              {nextAction.label}
-              <ArrowRight size={16} aria-hidden="true" />
-            </Link>
-          }
-        >
-          <div className="agent-command">
-            <div>
-              <strong>{nextAction.title}</strong>
-              <p className="muted">{nextAction.description}</p>
-            </div>
-            <div className="agent-command__flow" aria-label="Agent workflow">
-              <span>研究</span>
-              <ArrowRight size={15} aria-hidden="true" />
-              <span>写作</span>
-              <ArrowRight size={15} aria-hidden="true" />
-              <span>质检</span>
-              <ArrowRight size={15} aria-hidden="true" />
-              <span>发布</span>
-              <ArrowRight size={15} aria-hidden="true" />
-              <span>复盘</span>
-            </div>
-          </div>
-        </Panel>
+          primaryLabel={nextAction.label}
+          primaryHref={nextAction.href}
+          steps={[
+            {
+              index: "研",
+              title: "研究",
+              detail: "先找选题和证据。"
+            },
+            {
+              index: "写",
+              title: "写作",
+              detail: "把证据变成文章。"
+            },
+            {
+              index: "检",
+              title: "质检",
+              detail: "让 SEO Gate 和 Humanizer 过线。"
+            },
+            {
+              index: "发",
+              title: "发布",
+              detail: "上线后才能谈收录。"
+            },
+            {
+              index: "复",
+              title: "复盘",
+              detail: "用 Search Console 继续优化。"
+            }
+          ]}
+          statusLabel="当前起点"
+          statusValue={nextAction.title}
+          statusTone={queueHealth.tone}
+          statusHint={nextAction.description}
+          badgeLabel={visiblePythonSnapshot?.orchestration_mode ?? "bootstrap"}
+        />
 
         {visiblePythonSnapshot ? (
           <Panel title="Python Agent Snapshot" description="由 Python 后端根据店铺、选题、证据和阻塞项推导的智能体编排状态。">
