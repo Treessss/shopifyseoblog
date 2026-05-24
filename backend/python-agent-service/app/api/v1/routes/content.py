@@ -4,12 +4,14 @@ from app.core.config import Settings, get_settings
 from app.schemas.content import (
     ArticleQualityGate,
     ArticleQualityInput,
+    ContentArticleBrief,
     ContentArticleBlueprint,
     ArticleRepairPlan,
     ArticleRepairPlanInput,
     ContentReadinessDoctrine,
 )
 from app.schemas.workflow import ContentWorkflowPlan, ContentWorkflowRequest
+from app.services.content_brief import get_content_article_brief
 from app.services.content_blueprint import get_content_article_blueprint
 from app.services.quality_gate import evaluate_article_quality
 from app.services.readiness_doctrine import get_content_readiness_doctrine
@@ -22,6 +24,14 @@ router = APIRouter()
 @router.get("/article-blueprint", response_model=ContentArticleBlueprint)
 def article_blueprint() -> ContentArticleBlueprint:
     return get_content_article_blueprint()
+
+
+@router.post("/article-brief", response_model=ContentArticleBrief)
+def article_brief(
+    request: ContentWorkflowRequest,
+    settings: Settings = Depends(get_settings),
+) -> ContentArticleBrief:
+    return get_content_article_brief(request, settings)
 
 
 @router.get("/readiness-doctrine", response_model=ContentReadinessDoctrine)

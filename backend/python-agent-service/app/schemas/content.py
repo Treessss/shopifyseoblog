@@ -93,6 +93,40 @@ class ContentArticleBlueprint(BaseModel):
     doctrine_sources: list[str] = Field(default_factory=list)
 
 
+class ContentArticleBriefSection(BaseModel):
+    key: str
+    heading: str
+    agent_role: AgentRole
+    purpose: str
+    target_words: int = Field(ge=0)
+    must_have: list[str] = Field(default_factory=list)
+    avoid: list[str] = Field(default_factory=list)
+
+
+class ContentArticleBrief(BaseModel):
+    mode: str
+    topic: str
+    primary_keyword: str
+    audience: str
+    search_intent: str
+    summary: str
+    opening_angle: str
+    title_options: list[str] = Field(default_factory=list)
+    meta_title_options: list[str] = Field(default_factory=list)
+    meta_description_options: list[str] = Field(default_factory=list)
+    h1: str
+    sections: list[ContentArticleBriefSection] = Field(default_factory=list)
+    faq_questions: list[str] = Field(default_factory=list)
+    internal_link_plan: list[str] = Field(default_factory=list)
+    external_reference_plan: list[str] = Field(default_factory=list)
+    humanizer_notes: list[str] = Field(default_factory=list)
+    seo_rules: list[str] = Field(default_factory=list)
+    publish_rules: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    next_step: str
+    doctrine_sources: list[str] = Field(default_factory=list)
+
+
 class ArticleRepairMode(StrEnum):
     pre_publish_repair = "pre_publish_repair"
     publish_and_index = "publish_and_index"

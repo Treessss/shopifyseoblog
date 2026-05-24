@@ -192,6 +192,40 @@ export interface PythonContentArticleBlueprint {
   doctrine_sources: string[];
 }
 
+export interface PythonContentArticleBriefSection {
+  key: string;
+  heading: string;
+  agent_role: string;
+  purpose: string;
+  target_words: number;
+  must_have: string[];
+  avoid: string[];
+}
+
+export interface PythonContentArticleBrief {
+  mode: string;
+  topic: string;
+  primary_keyword: string;
+  audience: string;
+  search_intent: string;
+  summary: string;
+  opening_angle: string;
+  title_options: string[];
+  meta_title_options: string[];
+  meta_description_options: string[];
+  h1: string;
+  sections: PythonContentArticleBriefSection[];
+  faq_questions: string[];
+  internal_link_plan: string[];
+  external_reference_plan: string[];
+  humanizer_notes: string[];
+  seo_rules: string[];
+  publish_rules: string[];
+  blockers: string[];
+  next_step: string;
+  doctrine_sources: string[];
+}
+
 export interface PythonSeoBoardRecommendation {
   title: string;
   reason: string;
@@ -278,6 +312,17 @@ export async function getPythonContentReadinessDoctrine(): Promise<PythonContent
 export async function getPythonContentArticleBlueprint(): Promise<PythonContentArticleBlueprint | null> {
   if (!pythonAgentServiceEnabled()) return null;
   return pythonAgentFetch<PythonContentArticleBlueprint>("/api/v1/content/article-blueprint");
+}
+
+export async function getPythonContentArticleBrief(
+  request: PythonWorkflowPlanRequest
+): Promise<PythonContentArticleBrief | null> {
+  if (!pythonAgentServiceEnabled()) return null;
+  return pythonAgentFetch<PythonContentArticleBrief>("/api/v1/content/article-brief", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request)
+  });
 }
 
 export async function getPythonSeoBoard(): Promise<PythonSeoBoard | null> {

@@ -1,24 +1,45 @@
 import Link from "next/link";
 import { ArrowRight, CheckCircle2, FileText, Globe2, ListTodo, Search, ShieldCheck, Sparkles } from "lucide-react";
+import { ContentBriefPanel } from "@/components/content-brief-panel";
 import { Badge, ErrorState, PageHeader, Panel, StatusPill } from "@/components/ui";
 import {
+  getPythonContentArticleBrief,
   getPythonContentArticleBlueprint,
   getPythonContentReadinessDoctrine,
   type PythonContentArticleBlueprint,
+  type PythonContentArticleBrief,
   type PythonContentReadinessDoctrine,
   type PythonContentReadinessStage
 } from "@/lib/agent-center/python-agent-client";
 import { getDashboardView, getSearchConsoleView } from "@/lib/admin-client";
 
 export default async function ContentRulesPage() {
-  const [dashboard, searchConsole, pythonDoctrine, pythonBlueprint] = await Promise.all([
+  const [dashboard, searchConsole] = await Promise.all([
     getDashboardView(),
-    getSearchConsoleView(),
+    getSearchConsoleView()
+  ]);
+  const briefRequest = {
+    organization_id: "preview",
+    store_id: dashboard.data.stores[0]?.id ?? "preview-store",
+    locale: dashboard.data.stores[0]?.locale ?? "zh-CN",
+    source_type: "manual_topic" as const,
+    topic: dashboard.data.articles[0]?.title ?? "Shopify SEO buying guide",
+    primary_keyword: dashboard.data.articles[0]?.primaryKeyword ?? "Shopify SEO",
+    publish_policy: "manual_review" as const,
+    target_word_count: 1600,
+    available_internal_links: dashboard.data.articles.length,
+    available_external_references: searchConsole.data.snapshots.length,
+    recent_topic_count: dashboard.data.campaigns.length,
+    search_console_connected: searchConsole.data.properties.some((property) => property.status === "active")
+  };
+  const [pythonDoctrine, pythonBlueprint, pythonBrief] = await Promise.all([
     getPythonContentReadinessDoctrine(),
-    getPythonContentArticleBlueprint()
+    getPythonContentArticleBlueprint(),
+    getPythonContentArticleBrief(briefRequest)
   ]);
   const doctrine = pythonDoctrine ?? FALLBACK_CONTENT_READINESS_DOCTRINE;
   const blueprint = pythonBlueprint ?? FALLBACK_CONTENT_ARTICLE_BLUEPRINT;
+  const brief = pythonBrief ?? FALLBACK_CONTENT_ARTICLE_BRIEF;
   const healthyStores = dashboard.data.stores.filter((store) => store.statusTone === "good").length;
   const readyArticles = dashboard.data.articles.filter((article) => article.status === "ready_to_publish");
   const publishedArticles = dashboard.data.articles.filter((article) => article.status === "published");
@@ -165,6 +186,8 @@ export default async function ContentRulesPage() {
             ))}
           </div>
         </Panel>
+
+        <ContentBriefPanel brief={brief} />
 
         <div className="grid grid--two">
           <Panel title="SEO 规则" description="这些规则会在生成、修复和审核里反复引用。">
@@ -366,6 +389,83 @@ const FALLBACK_CONTENT_ARTICLE_BLUEPRINT: PythonContentArticleBlueprint = {
     "TheCraigHewitt/seomachine: research -> write -> optimize -> performance-review workflow"
   ]
 };
+
+const FALLBACK_CONTENT_ARTICLE_BRIEF: PythonContentArticleBrief = {
+  mode: "new_article",
+  topic: "Shopify SEO buying guide",
+  primary_keyword: "Shopify SEO",
+  audience: "Readers looking for a practical buying guide.",
+  search_intent: "Informational with buying signals",
+  summary: "Use this brief to draft a human-style Shopify SEO article that answers the question fast and stays grounded in evidence.",
+  opening_angle: "Lead with the direct answer, then expand into evidence and practical trade-offs.",
+  title_options: [
+    "How to Shopify SEO",
+    "Shopify SEO: A Practical SEO Guide",
+    "What to Know Before You Buy Shopify SEO"
+  ],
+  meta_title_options: [
+    "How to Shopify SEO | Shopify Guide",
+    "Shopify SEO Buying Guide | Shopify",
+    "Shopify SEO: Human SEO Brief | Shopify"
+  ],
+  meta_description_options: [
+    "Read a human-style Shopify SEO guide built for informational intent, strong structure, and SEO readiness.",
+    "Use this brief to turn Shopify SEO into a useful, searchable Shopify article."
+  ],
+  h1: "How to Shopify SEO",
+  sections: FALLBACK_CONTENT_ARTICLE_BLUEPRINT.outline.map((section) => ({
+    key: section.key,
+    heading: fallbackBriefHeading(section.key),
+    agent_role: section.agent_role,
+    purpose: section.purpose,
+    target_words: section.target_words,
+    must_have: section.must_have,
+    avoid: section.avoid
+  })),
+  faq_questions: [
+    "What is the fastest way to choose Shopify SEO?",
+    "What should I verify before I publish this article?",
+    "When should I refresh the article after launch?"
+  ],
+  internal_link_plan: [
+    "Plan one product link, one collection link, and one related article link once the catalog is synced."
+  ],
+  external_reference_plan: [
+    "Cite approved external sources for any factual or trend-based claim.",
+    "Tie every citation to one specific sentence or decision point."
+  ],
+  humanizer_notes: [
+    "Start with the answer, not with a long preamble.",
+    "Prefer short, concrete verbs and specific examples over abstract phrasing."
+  ],
+  seo_rules: [
+    "Put the primary keyword in the title, first 100 words, and one H2 where it fits naturally.",
+    "Use 3-5 substantive H2 sections with descriptive headings."
+  ],
+  publish_rules: [
+    "Publish only when the quality gate, helpful-content review, and humanizer review all pass.",
+    "Do not mark the article as rank-ready without Search Console evidence."
+  ],
+  blockers: [],
+  next_step: "Use the brief to draft the article, then run the quality gate before publish.",
+  doctrine_sources: [
+    "Google Search Central: Creating helpful, reliable, people-first content",
+    "Google Search Central: SEO starter guide",
+    "ericosiu/ai-marketing-skills: seo-ops, content-ops humanizer, and content quality rubrics"
+  ]
+};
+
+function fallbackBriefHeading(sectionKey: string) {
+  const headings: Record<string, string> = {
+    answer_first_intro: "Quick answer",
+    verified_facts: "What is confirmed about Shopify SEO",
+    decision_support: "How to choose Shopify SEO",
+    faq_section: "FAQ",
+    publish_check: "Before you publish",
+    post_publish_review: "After launch"
+  };
+  return headings[sectionKey] ?? sectionKey.replaceAll("_", " ");
+}
 
 const FALLBACK_CONTENT_READINESS_DOCTRINE: PythonContentReadinessDoctrine = {
   default_sequence: ["publish_ready", "index_ready", "rank_ready"],
