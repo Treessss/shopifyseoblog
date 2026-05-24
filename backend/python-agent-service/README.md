@@ -18,6 +18,7 @@ Available bootstrap endpoints:
 - `GET /api/v1/agents`
 - `GET /api/v1/content/readiness-doctrine`
 - `POST /api/v1/content/workflow-plan`
+- `POST /api/v1/content/workflow-execution-plan`
 - `POST /api/v1/content/quality-gate`
 - `POST /api/v1/content/repair-plan`
 

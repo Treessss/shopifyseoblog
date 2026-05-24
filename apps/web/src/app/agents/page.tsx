@@ -28,12 +28,14 @@ import {
 } from "@/lib/admin-client";
 import {
   createPythonAgentSnapshot,
+  createPythonWorkflowExecutionPlan,
   createPythonWorkflowPlan,
   getPythonAgentSnapshot,
   getPythonIntegrationHealth,
   getPythonSeoBoard,
   type PythonWorkflowPlanRequest
 } from "@/lib/agent-center/python-agent-client";
+import { PythonExecutionPlanPanel } from "@/components/python-execution-plan-panel";
 
 export default async function AgentsPage() {
   const [dashboard, priorities, performance, research] = await Promise.all([
@@ -61,9 +63,10 @@ export default async function AgentsPage() {
     recent_topic_count: priorities.data.items.length,
     search_console_connected: dashboard.data.stores.length > 0
   };
-  const [pythonPlan, plannedPythonSnapshot] = await Promise.all([
+  const [pythonPlan, plannedPythonSnapshot, pythonExecutionPlan] = await Promise.all([
     createPythonWorkflowPlan(workflowRequest),
-    createPythonAgentSnapshot(workflowRequest)
+    createPythonAgentSnapshot(workflowRequest),
+    createPythonWorkflowExecutionPlan(workflowRequest)
   ]);
   const visiblePythonSnapshot = plannedPythonSnapshot ?? pythonSnapshot;
   const queueHealth = dashboard.data.queueHealth;
@@ -279,6 +282,8 @@ export default async function AgentsPage() {
             </div>
           </Panel>
         ) : null}
+
+        {pythonExecutionPlan ? <PythonExecutionPlanPanel plan={pythonExecutionPlan} /> : null}
 
         {pythonIntegrationHealth ? (
           <Panel title="Python Integration Health" description="前后端分离迁移里，Python 后端已经接管或仍需接管的企业级依赖。">

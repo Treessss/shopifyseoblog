@@ -99,6 +99,53 @@ export interface PythonWorkflowPlan {
   next_step: string;
 }
 
+export interface PythonWorkflowExecutionRetryPolicy {
+  max_attempts: number;
+  backoff_strategy: string;
+  initial_delay_seconds: number;
+  manual_review_after_failures: boolean;
+}
+
+export interface PythonWorkflowExecutionTask {
+  id: string;
+  stage_key: string;
+  title: string;
+  agent_role: string;
+  status: "pending" | "ready" | "blocked" | "completed";
+  objective: string;
+  depends_on: string[];
+  required_inputs: string[];
+  required_integrations: string[];
+  output_artifacts: string[];
+  quality_gate?: string | null;
+  retry_policy: PythonWorkflowExecutionRetryPolicy;
+  blocking_reasons: string[];
+  handoff_note: string;
+  queue_position: number;
+  estimated_minutes: number;
+}
+
+export interface PythonWorkflowExecutionPlan {
+  mode: string;
+  topic: string;
+  primary_keyword: string;
+  publish_policy: string;
+  idempotency_key: string;
+  runtime_status: string;
+  summary: string;
+  next_step: string;
+  active_task_id?: string | null;
+  ready_task_count: number;
+  pending_task_count: number;
+  blocked_task_count: number;
+  tasks: PythonWorkflowExecutionTask[];
+  workflow_blockers: string[];
+  runtime_blockers: string[];
+  integration_health: PythonIntegrationHealthSummary;
+  required_integrations: string[];
+  doctrine_sources: string[];
+}
+
 export interface PythonQualityGateRequest {
   title: string;
   body_html: string;
@@ -293,6 +340,17 @@ export async function createPythonWorkflowPlan(
 ): Promise<PythonWorkflowPlan | null> {
   if (!pythonAgentServiceEnabled()) return null;
   return pythonAgentFetch<PythonWorkflowPlan>("/api/v1/content/workflow-plan", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request)
+  });
+}
+
+export async function createPythonWorkflowExecutionPlan(
+  request: PythonWorkflowPlanRequest & { idempotency_key?: string | null }
+): Promise<PythonWorkflowExecutionPlan | null> {
+  if (!pythonAgentServiceEnabled()) return null;
+  return pythonAgentFetch<PythonWorkflowExecutionPlan>("/api/v1/content/workflow-execution-plan", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(request)

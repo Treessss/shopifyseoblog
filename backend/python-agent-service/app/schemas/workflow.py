@@ -2,7 +2,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
-from app.schemas.agents import AgentRole
+from app.schemas.agents import AgentRole, IntegrationHealthSummary
 
 
 class SourceType(StrEnum):
@@ -63,3 +63,54 @@ class ContentWorkflowPlan(BaseModel):
     publish_policy: PublishPolicy
     blockers: list[str] = Field(default_factory=list)
     next_step: str
+
+
+class WorkflowExecutionRetryPolicy(BaseModel):
+    max_attempts: int = Field(default=2, ge=1, le=10)
+    backoff_strategy: str = "exponential"
+    initial_delay_seconds: int = Field(default=120, ge=0, le=3600)
+    manual_review_after_failures: bool = True
+
+
+class ContentWorkflowExecutionRequest(ContentWorkflowRequest):
+    idempotency_key: str | None = None
+
+
+class ContentWorkflowExecutionTask(BaseModel):
+    id: str
+    stage_key: str
+    title: str
+    agent_role: AgentRole
+    status: WorkflowStepStatus
+    objective: str
+    depends_on: list[str] = Field(default_factory=list)
+    required_inputs: list[str] = Field(default_factory=list)
+    required_integrations: list[str] = Field(default_factory=list)
+    output_artifacts: list[str] = Field(default_factory=list)
+    quality_gate: str | None = None
+    retry_policy: WorkflowExecutionRetryPolicy
+    blocking_reasons: list[str] = Field(default_factory=list)
+    handoff_note: str
+    queue_position: int = Field(default=0, ge=0)
+    estimated_minutes: int = Field(default=0, ge=0, le=480)
+
+
+class ContentWorkflowExecutionPlan(BaseModel):
+    mode: str
+    topic: str
+    primary_keyword: str
+    publish_policy: PublishPolicy
+    idempotency_key: str
+    runtime_status: str
+    summary: str
+    next_step: str
+    active_task_id: str | None = None
+    ready_task_count: int = 0
+    pending_task_count: int = 0
+    blocked_task_count: int = 0
+    tasks: list[ContentWorkflowExecutionTask] = Field(default_factory=list)
+    workflow_blockers: list[str] = Field(default_factory=list)
+    runtime_blockers: list[str] = Field(default_factory=list)
+    integration_health: IntegrationHealthSummary
+    required_integrations: list[str] = Field(default_factory=list)
+    doctrine_sources: list[str] = Field(default_factory=list)

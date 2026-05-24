@@ -10,12 +10,18 @@ from app.schemas.content import (
     ArticleRepairPlanInput,
     ContentReadinessDoctrine,
 )
-from app.schemas.workflow import ContentWorkflowPlan, ContentWorkflowRequest
+from app.schemas.workflow import (
+    ContentWorkflowExecutionPlan,
+    ContentWorkflowExecutionRequest,
+    ContentWorkflowPlan,
+    ContentWorkflowRequest,
+)
 from app.services.content_brief import get_content_article_brief
 from app.services.content_blueprint import get_content_article_blueprint
 from app.services.quality_gate import evaluate_article_quality
 from app.services.readiness_doctrine import get_content_readiness_doctrine
 from app.services.repair_planner import get_article_repair_plan
+from app.services.workflow_execution import get_content_workflow_execution_plan
 from app.services.workflow_planner import build_content_workflow_plan
 
 router = APIRouter()
@@ -61,3 +67,11 @@ def workflow_plan(
     settings: Settings = Depends(get_settings),
 ) -> ContentWorkflowPlan:
     return build_content_workflow_plan(request, settings)
+
+
+@router.post("/workflow-execution-plan", response_model=ContentWorkflowExecutionPlan)
+def workflow_execution_plan(
+    request: ContentWorkflowExecutionRequest,
+    settings: Settings = Depends(get_settings),
+) -> ContentWorkflowExecutionPlan:
+    return get_content_workflow_execution_plan(request, settings)

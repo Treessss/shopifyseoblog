@@ -1709,6 +1709,10 @@ button.list-item {
   background: rgba(255, 255, 255, 0.68);
 }
 
+.readiness-check--execution {
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+}
+
 .readiness-check__mark {
   display: inline-flex;
   width: 32px;
@@ -1723,6 +1727,27 @@ button.list-item {
 .readiness-check__mark--passed {
   background: var(--good-bg);
   color: var(--good);
+}
+
+.readiness-check__mark--pending {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.readiness-check__mark--danger {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.execution-task-meta {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  min-width: 74px;
+}
+
+.execution-task-meta span {
+  font-size: 12px;
 }
 
 .readiness-check strong,
@@ -2083,6 +2108,14 @@ button.list-item {
   .agent-grid,
   .readiness-checks {
     grid-template-columns: 1fr;
+  }
+
+  .readiness-check--execution {
+    grid-template-columns: 34px minmax(0, 1fr);
+  }
+
+  .execution-task-meta {
+    justify-items: start;
   }
 
   .span-2 {
