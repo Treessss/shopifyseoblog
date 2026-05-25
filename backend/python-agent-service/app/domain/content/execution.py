@@ -29,11 +29,14 @@ def build_content_workflow_execution_plan(
     ready_task_count = sum(1 for task in tasks if task.status == WorkflowStepStatus.ready)
     pending_task_count = sum(1 for task in tasks if task.status == WorkflowStepStatus.pending)
     blocked_task_count = sum(1 for task in tasks if task.status == WorkflowStepStatus.blocked)
+    required_blocked_task_count = sum(
+        1 for task in tasks if task.status == WorkflowStepStatus.blocked and not _is_deferred_task(task)
+    )
 
     runtime_status = "ready"
-    if blocked_task_count > 0:
+    if required_blocked_task_count > 0:
         runtime_status = "blocked"
-    elif pending_task_count > 0:
+    elif pending_task_count > 0 or blocked_task_count > 0:
         runtime_status = "degraded"
 
     return ContentWorkflowExecutionPlan(
@@ -72,12 +75,17 @@ def _runtime_blockers(
     workflow_plan: ContentWorkflowPlan,
 ) -> list[str]:
     blockers: list[str] = []
-    if integration_health.blocked_count > 0:
+    blocking_keys = {
+        integration.key
+        for integration in integration_health.integrations
+        if integration.status == "blocked" and not _is_optional_integration(integration.key)
+    }
+    if blocking_keys:
         blockers.extend(
             [
                 f"{integration.label} is {integration.status}: {integration.next_step}"
                 for integration in integration_health.integrations
-                if integration.status != "ready"
+                if integration.status != "ready" and integration.key in blocking_keys
             ]
         )
     if not workflow_plan.workflow:
@@ -100,7 +108,7 @@ def _execution_tasks(
             integration = integration_map.get(integration_key)
             if integration and integration.status != "ready":
                 blocking_reasons.append(integration.summary)
-        if runtime_blockers and step.key in {"draft", "publish_guard", "performance_review"}:
+        if runtime_blockers and step.key in {"draft", "publish_guard"}:
             blocking_reasons.extend(runtime_blockers)
         task_status = step.status
         if blocking_reasons:
@@ -133,13 +141,19 @@ def _execution_tasks(
     return tasks
 
 
+def _is_optional_integration(key: str) -> bool:
+    return key == "search_console"
+
+
 def _required_integrations_for_role(role: AgentRole) -> list[str]:
     if role == AgentRole.publisher_guard:
         return ["shopify", "storage", "queue"]
     if role == AgentRole.growth_analyst:
         return ["search_console", "storage"]
-    if role == AgentRole.writer:
+    if role in {AgentRole.writer, AgentRole.shopping_guide_editor, AgentRole.image_director}:
         return ["queue", "storage"]
+    if role == AgentRole.fact_checker:
+        return ["storage"]
     return ["storage"]
 
 
@@ -158,6 +172,13 @@ def _retry_policy_for_role(role: AgentRole) -> WorkflowExecutionRetryPolicy:
             initial_delay_seconds=180,
             manual_review_after_failures=True,
         )
+    if role in {AgentRole.fact_checker, AgentRole.image_director}:
+        return WorkflowExecutionRetryPolicy(
+            max_attempts=2,
+            backoff_strategy="fixed",
+            initial_delay_seconds=90,
+            manual_review_after_failures=True,
+        )
     return WorkflowExecutionRetryPolicy()
 
 
@@ -165,7 +186,10 @@ def _output_artifacts_for_stage(stage_key: str) -> list[str]:
     mapping = {
         "research": ["research_brief", "keyword_evidence", "citation_candidates"],
         "keyword_strategy": ["keyword_plan", "cannibalization_warnings"],
+        "topic_strategy": ["topic_angle", "funnel_strategy", "differentiation_rules"],
         "draft": ["article_html", "seo_title", "meta_description"],
+        "fact_check": ["fact_check_report", "claim_risks", "citation_gaps"],
+        "image_direction": ["cover_image_plan", "image_alt_text", "visual_constraints"],
         "expert_panel": ["expert_panel_score", "revision_brief"],
         "publish_guard": ["publish_decision", "next_action"],
         "performance_review": ["quick_wins", "refresh_tasks", "memory_updates"],
@@ -178,8 +202,14 @@ def _handoff_note(stage_key: str, role: AgentRole, workflow_plan: ContentWorkflo
         return f"Collect evidence for {workflow_plan.topic} before the next agent writes."
     if stage_key == "keyword_strategy":
         return "Use research_brief and recent_topics to refine search intent."
+    if stage_key == "topic_strategy":
+        return "Choose the angle and differentiation rules before drafting."
     if stage_key == "draft":
         return "Draft the article using the brief and evidence chain."
+    if stage_key == "fact_check":
+        return "Verify claims, citations, and links before expert review."
+    if stage_key == "image_direction":
+        return "Prepare image direction and alt text before publish guard."
     if stage_key == "expert_panel":
         return "Score the draft and prepare a revision brief before publish guard."
     if stage_key == "publish_guard":
@@ -193,7 +223,10 @@ def _estimated_minutes(stage_key: str) -> int:
     return {
         "research": 25,
         "keyword_strategy": 15,
+        "topic_strategy": 10,
         "draft": 60,
+        "fact_check": 15,
+        "image_direction": 10,
         "expert_panel": 20,
         "publish_guard": 10,
         "performance_review": 15,
@@ -227,12 +260,12 @@ def _execution_next_step(
 ) -> str:
     if runtime_blockers:
         return "Resolve runtime blockers before queueing the execution plan."
-    first_blocked = next((task for task in tasks if task.status == WorkflowStepStatus.blocked), None)
-    if first_blocked:
-        return f"Unblock {first_blocked.title}."
     first_ready = next((task for task in tasks if task.status == WorkflowStepStatus.ready), None)
     if first_ready:
         return f"Queue {first_ready.title} and hand it to {first_ready.agent_role.value}."
+    first_blocked = next((task for task in tasks if task.status == WorkflowStepStatus.blocked), None)
+    if first_blocked:
+        return f"Unblock {first_blocked.title}."
     return workflow_plan.next_step
 
 
@@ -252,3 +285,7 @@ def _unique(items: list[str]) -> list[str]:
             seen.add(item)
             result.append(item)
     return result
+
+
+def _is_deferred_task(task: ContentWorkflowExecutionTask) -> bool:
+    return task.stage_key == "performance_review" and "search_console" in task.required_integrations

@@ -6,7 +6,11 @@ from pydantic import BaseModel, Field
 class AgentRole(StrEnum):
     researcher = "researcher"
     keyword_planner = "keyword_planner"
+    topic_strategist = "topic_strategist"
     writer = "writer"
+    shopping_guide_editor = "shopping_guide_editor"
+    fact_checker = "fact_checker"
+    image_director = "image_director"
     seo_editor = "seo_editor"
     publisher_guard = "publisher_guard"
     growth_analyst = "growth_analyst"

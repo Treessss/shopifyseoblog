@@ -8,6 +8,7 @@ import {
   PageHeader,
   Panel,
   SelectField,
+  TextAreaField,
   StatusPill,
   TableEmpty
 } from "@/components/ui";
@@ -23,7 +24,7 @@ export default async function SearchConsolePage({ searchParams }: PageProps) {
   const { data, error } = await getSearchConsoleView();
   const notice = readFormNotice(params);
   const defaultStore = data.stores[0];
-  const defaultSiteUrl = defaultStore?.defaultSiteUrl ?? "https://your-store.myshopify.com/";
+  const defaultSiteUrl = defaultStore?.defaultSiteUrl ?? "https://your-store.example.com/";
 
   return (
     <>
@@ -112,10 +113,10 @@ export default async function SearchConsolePage({ searchParams }: PageProps) {
             </div>
             <div className="list-item">
               <div>
-                <strong>OAuth client ID / secret</strong>
+                <strong>Google OAuth JSON</strong>
                 <small className="muted">
-                  去 Google Cloud Console 的 <code>Google Auth platform {'>'} Clients</code>，
-                  创建 OAuth 2.0 Client ID 后，把页面给你的 client ID 和 secret 复制进来。
+                  按 Google quickstart 下载的 OAuth client JSON 和 token JSON 直接粘贴到表单里。
+                  不需要手抄 client id 和 secret；系统会从 JSON 里拆出凭据。
                 </small>
               </div>
               <a
@@ -181,7 +182,7 @@ export default async function SearchConsolePage({ searchParams }: PageProps) {
                       </td>
                       <td>
                         <strong>{property.store}</strong>
-                        <div className="muted code">{property.storeDomain}</div>
+                        <div className="muted code">{property.publishedSiteUrl}</div>
                       </td>
                       <td>
                         <Badge tone={property.statusTone}>{property.status}</Badge>
@@ -237,7 +238,7 @@ export default async function SearchConsolePage({ searchParams }: PageProps) {
                 value={defaultSiteUrl}
                 required
                 placeholder="https://example.com/"
-                hint="URL-prefix property 用完整网址，Domain property 用 sc-domain:example.com。"
+                hint="请填真实发布域名，不要用 myshopify.com。URL-prefix property 用完整网址，Domain property 用 sc-domain:example.com。"
               />
               <SelectField
                 label="状态"
@@ -257,17 +258,31 @@ export default async function SearchConsolePage({ searchParams }: PageProps) {
                 value="https://www.googleapis.com/auth/webmasters.readonly"
                 placeholder="https://www.googleapis.com/auth/webmasters.readonly"
               />
-              <Field label="OAuth client ID" name="googleClientId" placeholder="Google Auth platform > Clients 里复制" />
-              <Field label="OAuth client secret" name="googleClientSecret" placeholder="从 OAuth client 详情复制，不是 API key" />
-              <Field label="Access token" name="accessToken" placeholder="可直接填 access token" />
-              <Field label="Refresh token" name="refreshToken" placeholder="OAuth refresh token" />
+              <TextAreaField
+                label="OAuth client JSON"
+                name="googleCredentialsJson"
+                rows={8}
+                placeholder={`{ "installed": { "client_id": "...", "client_secret": "..." } }`}
+                hint="粘贴 Google 下载的 OAuth client JSON。系统会自动读取 client_id 和 client_secret。"
+              />
+              <TextAreaField
+                label="Token JSON"
+                name="googleTokenJson"
+                rows={8}
+                placeholder={`{ "access_token": "...", "refresh_token": "...", "expiry": "2026-05-23T00:00:00.000Z" }`}
+                hint="粘贴 quickstart 生成的 token.json。里面的 refresh token 才能让后台自动刷新。"
+              />
+              <Field label="OAuth client ID" name="googleClientId" placeholder="可选：从 JSON 拆出后也可手工覆盖" />
+              <Field label="OAuth client secret" name="googleClientSecret" placeholder="可选：从 JSON 拆出后也可手工覆盖" />
+              <Field label="Access token" name="accessToken" placeholder="可选：直接填 access token" />
+              <Field label="Refresh token" name="refreshToken" placeholder="可选：OAuth refresh token" />
               <Field label="Token expires at" name="tokenExpiresAt" placeholder="2026-05-23T00:00:00.000Z" />
               <div className="span-2 form-actions">
                 <button className="button button--primary" type="submit">
                   <KeyRound size={16} aria-hidden="true" />
                   保存站点
                 </button>
-                <span className="muted">只保存 API key 不会让同步成功；同步需要 OAuth refresh token。</span>
+                <span className="muted">只保存 API key 不会让同步成功；同步需要 OAuth JSON 或 refresh token。</span>
               </div>
             </form>
           </Panel>

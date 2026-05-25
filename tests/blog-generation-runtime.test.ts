@@ -178,8 +178,21 @@ describe("blog generation runtime helpers", () => {
     expect(rows.map((row) => row.sequence)).toEqual([1, 2, 3]);
     expect(rows.map((row) => row.stepType)).toEqual(["stage", "tool_call", "reflection_task"]);
     expect(rows[0]).toMatchObject({ title: "research · researcher", status: "passed" });
-    expect(rows[1]).toMatchObject({ title: "工具调用 · trend_discovery", status: "warning", evidenceIds: ["evidence-1"] });
-    expect(rows[2]).toMatchObject({ status: "failed", warnings: ["Add stronger internal links."] });
+    expect(rows[1]).toMatchObject({
+      title: "工具调用 · trend_discovery",
+      status: "warning",
+      evidenceIds: ["evidence-1"],
+      dependsOnStepKey: "stage-research",
+      idempotencyKey: "agent-run-1:tool-trends",
+      maxAttempts: 3,
+      canResume: true
+    });
+    expect(rows[2]).toMatchObject({
+      status: "failed",
+      warnings: ["Add stronger internal links."],
+      dependsOnStepKey: "tool-trends",
+      maxAttempts: 2
+    });
   });
 
   it("maps existing article keywords into cannibalization risks", () => {

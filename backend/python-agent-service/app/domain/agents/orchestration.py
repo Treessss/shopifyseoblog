@@ -287,8 +287,10 @@ def _blockers_for_role(role: AgentRole, plan: ContentWorkflowPlan) -> list[str]:
         return [blocker for blocker in plan.blockers if blocker in {"topic", "internal_links", "external_references", "recent_topics"}]
     if role == AgentRole.keyword_planner:
         return [blocker for blocker in plan.blockers if blocker in {"topic", "recent_topics"}]
-    if role == AgentRole.writer:
+    if role in {AgentRole.writer, AgentRole.shopping_guide_editor, AgentRole.topic_strategist}:
         return [blocker for blocker in plan.blockers if blocker in {"topic", "internal_links", "external_references"}]
+    if role == AgentRole.fact_checker:
+        return [blocker for blocker in plan.blockers if blocker in {"external_references"}]
     if role == AgentRole.growth_analyst:
         return [blocker for blocker in plan.blockers if blocker == "search_console"]
     return []
@@ -298,7 +300,10 @@ def _ordered_roles() -> list[AgentRole]:
     return [
         AgentRole.researcher,
         AgentRole.keyword_planner,
-        AgentRole.writer,
+        AgentRole.topic_strategist,
+        AgentRole.shopping_guide_editor,
+        AgentRole.fact_checker,
+        AgentRole.image_director,
         AgentRole.seo_editor,
         AgentRole.publisher_guard,
         AgentRole.growth_analyst,

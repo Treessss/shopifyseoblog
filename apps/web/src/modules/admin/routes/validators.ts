@@ -159,6 +159,22 @@ export async function parseQueueArticleRepairRequest(
 
 export async function parseSaveSearchConsolePropertyRequest(request: Request): Promise<SaveSearchConsolePropertyInput> {
   const body = await readRequestObject(request);
+  const credentialsJson = parseGoogleCredentialsJson(body.googleCredentialsJson);
+  const tokenJson = parseGoogleTokenJson(body.googleTokenJson);
+  const googleClientId = optionalString(body.googleClientId) ?? credentialsJson.googleClientId ?? tokenJson.googleClientId;
+  const googleClientSecret =
+    optionalString(body.googleClientSecret) ?? credentialsJson.googleClientSecret ?? tokenJson.googleClientSecret;
+  const accessToken = optionalString(body.accessToken) ?? tokenJson.accessToken;
+  const refreshToken = optionalString(body.refreshToken) ?? tokenJson.refreshToken;
+  const tokenExpiresAt = optionalDateString(body.tokenExpiresAt, "tokenExpiresAt") ?? tokenJson.tokenExpiresAt;
+
+  if (body.googleCredentialsJson && (!googleClientId || !googleClientSecret)) {
+    throw new AdminApiError(
+      400,
+      "GOOGLE_CREDENTIALS_JSON_INVALID",
+      "googleCredentialsJson must contain client_id and client_secret in the installed or web client payload."
+    );
+  }
 
   return {
     id: optionalString(body.id),
@@ -167,11 +183,13 @@ export async function parseSaveSearchConsolePropertyRequest(request: Request): P
     status: optionalEnum(body.status, ["active", "needs_auth", "disconnected", "archived"] as const, "status") ?? "active",
     permissionLevel: optionalString(body.permissionLevel),
     scopes: stringList(body.scopes),
-    googleClientId: optionalString(body.googleClientId),
-    googleClientSecret: optionalString(body.googleClientSecret),
-    accessToken: optionalString(body.accessToken),
-    refreshToken: optionalString(body.refreshToken),
-    tokenExpiresAt: optionalDateString(body.tokenExpiresAt, "tokenExpiresAt")
+    googleCredentialsJson: optionalString(body.googleCredentialsJson),
+    googleTokenJson: optionalString(body.googleTokenJson),
+    googleClientId,
+    googleClientSecret,
+    accessToken,
+    refreshToken,
+    tokenExpiresAt
   };
 }
 
@@ -319,6 +337,74 @@ function requiredString(body: Record<string, unknown>, key: string) {
 
 function optionalString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function parseGoogleCredentialsJson(value: unknown): {
+  googleClientId?: string;
+  googleClientSecret?: string;
+} {
+  const raw = optionalString(value);
+  if (!raw) return {};
+
+  const record = parseJsonRecord(raw, "googleCredentialsJson");
+  const clientRecord = nestedRecord(record, "installed") ?? nestedRecord(record, "web") ?? record;
+
+  return {
+    googleClientId: stringFromRecord(clientRecord, "client_id", "clientId"),
+    googleClientSecret: stringFromRecord(clientRecord, "client_secret", "clientSecret")
+  };
+}
+
+function parseGoogleTokenJson(value: unknown): {
+  googleClientId?: string;
+  googleClientSecret?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  tokenExpiresAt?: string;
+} {
+  const raw = optionalString(value);
+  if (!raw) return {};
+
+  const record = parseJsonRecord(raw, "googleTokenJson");
+  const tokenRecord = nestedRecord(record, "credentials") ?? record;
+  const expiry = stringFromRecord(tokenRecord, "expiry", "token_expiry", "tokenExpiresAt", "expiresAt");
+
+  return {
+    googleClientId: stringFromRecord(tokenRecord, "client_id", "clientId"),
+    googleClientSecret: stringFromRecord(tokenRecord, "client_secret", "clientSecret"),
+    accessToken: stringFromRecord(tokenRecord, "access_token", "accessToken", "token"),
+    refreshToken: stringFromRecord(tokenRecord, "refresh_token", "refreshToken"),
+    tokenExpiresAt: expiry ? normalizeIsoDate(expiry, "googleTokenJson") : undefined
+  };
+}
+
+function parseJsonRecord(raw: string, key: string): Record<string, unknown> {
+  try {
+    return asRecord(JSON.parse(raw) as unknown);
+  } catch {
+    throw new AdminApiError(400, "INVALID_JSON", `${key} must be valid JSON.`);
+  }
+}
+
+function nestedRecord(record: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  const value = record[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function stringFromRecord(record: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = optionalString(record[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function normalizeIsoDate(value: string, key: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new AdminApiError(400, `${key.toUpperCase()}_INVALID`, `${key} must be a valid ISO date string.`);
+  }
+  return parsed.toISOString();
 }
 
 function stringList(value: unknown) {

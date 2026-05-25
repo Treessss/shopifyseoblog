@@ -30,8 +30,8 @@ def test_workflow_execution_plan_blocks_when_runtime_is_not_configured() -> None
     assert plan.tasks[0].id == "new_article:research"
     assert plan.tasks[0].status == "blocked"
     assert plan.tasks[0].required_integrations == ["storage"]
-    assert plan.tasks[2].required_integrations == ["queue", "storage"]
-    assert plan.tasks[4].retry_policy.max_attempts == 1
+    assert plan.tasks[3].required_integrations == ["queue", "storage"]
+    assert plan.tasks[7].retry_policy.max_attempts == 1
     assert plan.next_step == "Resolve runtime blockers before queueing the execution plan."
 
 
@@ -63,9 +63,37 @@ def test_workflow_execution_plan_ready_when_evidence_and_runtime_are_ready() -> 
     assert plan.idempotency_key == "custom-key"
     assert plan.blocked_task_count == 0
     assert plan.pending_task_count == 0
-    assert plan.ready_task_count == 6
+    assert plan.ready_task_count == 9
     assert plan.active_task_id == "new_article:research"
     assert plan.tasks[-1].required_integrations == ["search_console", "storage"]
+    assert plan.next_step == "Queue Research and evidence collection and hand it to researcher."
+
+
+def test_workflow_execution_plan_degrades_but_creates_without_search_console() -> None:
+    plan = get_content_workflow_execution_plan(
+        ContentWorkflowExecutionRequest(
+            organization_id="org_1",
+            store_id="store_1",
+            topic="phone case buying guide",
+            primary_keyword="phone case",
+            available_internal_links=4,
+            available_external_references=2,
+            recent_topic_count=5,
+            search_console_connected=False,
+        ),
+        Settings(
+            shopify_store_domain="example.myshopify.com",
+            shopify_admin_access_token="shpat_test",
+            redis_url="redis://localhost:6379",
+            database_url="postgres://local",
+        ),
+    )
+
+    assert plan.runtime_status == "degraded"
+    assert plan.ready_task_count == 8
+    assert plan.blocked_task_count == 1
+    assert plan.tasks[-1].stage_key == "performance_review"
+    assert plan.tasks[-1].status == "blocked"
     assert plan.next_step == "Queue Research and evidence collection and hand it to researcher."
 
 

@@ -292,7 +292,7 @@ export async function runAgentContentPipeline(
   stages.push(
     stage(
       "content_brief",
-      "writer",
+      "shopping_guide_editor",
       briefStageStart,
       { topic: topicSelectionV2.selected.topic },
       contentBrief,
@@ -347,7 +347,7 @@ export async function runAgentContentPipeline(
   stages.push(
     stage(
       "draft_generation",
-      "writer",
+      "shopping_guide_editor",
       draftStageStart,
       { topic: topicSelectionV2.selected.topic, primaryKeyword: topicSelectionV2.selected.primaryKeyword },
       {
@@ -917,7 +917,7 @@ function summarizeToolDecision(toolName: string, output: unknown, warnings: stri
 function buildReflectionTasks(reflection: ReflectionReport, evidence: KeywordEvidenceItem[]): AgentReflectionTaskDraft[] {
   return reflection.revisions.map((revision) => ({
     priority: revision.priority,
-    agentRole: revision.priority === "P0" ? "seo_editor" : "writer",
+    agentRole: revision.priority === "P0" ? "seo_editor" : "shopping_guide_editor",
     instruction: revision.instruction,
     acceptanceCheck:
       revision.priority === "P0"

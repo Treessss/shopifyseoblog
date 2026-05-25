@@ -136,8 +136,12 @@ enum AgentRole {
   keyword_planner
   topic_strategist
   writer
+  shopping_guide_editor
+  fact_checker
+  image_director
   seo_editor
   publisher_guard
+  growth_analyst
 }
 
 enum AgentToolCallStatus {
@@ -164,6 +168,33 @@ enum SearchConsolePropertyStatus {
 
 enum SeoPerformanceSource {
   google_search_console
+}
+
+enum InternalLinkPageType {
+  home
+  product
+  collection
+  blog_article
+  blog_index
+  page
+  unknown
+}
+
+enum ContentGoalStatus {
+  draft
+  active
+  paused
+  completed
+  archived
+}
+
+enum ContentCalendarItemStatus {
+  planned
+  queued
+  in_progress
+  published
+  skipped
+  blocked
 }
 
 enum PublishEvent {
@@ -207,29 +238,33 @@ model Organization {
   createdAt DateTime           @default(now())
   updatedAt DateTime           @updatedAt
 
-  memberships          Membership[]
-  stores               ShopifyStore[]
-  localeConfigs        LocaleConfig[]
-  aiProviderConfigs    AiProviderConfig[]
-  brandVoices          BrandVoice[]
-  campaigns            BlogCampaign[]
-  articles             BlogArticle[]
-  articleTranslations  ArticleTranslation[]
-  generatedAssets      GeneratedAsset[]
-  publishJobs          PublishJob[]
-  publishLogs          PublishLog[]
-  auditLogs            AuditLog[]
-  productSnapshots     ProductSnapshot[]
-  collectionSnapshots  CollectionSnapshot[]
-  seoTopicRuns         SeoTopicRun[]
-  agentMemories        AgentMemory[]
-  agentToolCalls       AgentToolCall[]
-  agentReflectionTasks AgentReflectionTask[]
-  agentEvidence        AgentEvidence[]
-  agentSteps           AgentStep[]
+  memberships             Membership[]
+  stores                  ShopifyStore[]
+  localeConfigs           LocaleConfig[]
+  aiProviderConfigs       AiProviderConfig[]
+  brandVoices             BrandVoice[]
+  campaigns               BlogCampaign[]
+  articles                BlogArticle[]
+  articleTranslations     ArticleTranslation[]
+  generatedAssets         GeneratedAsset[]
+  publishJobs             PublishJob[]
+  publishLogs             PublishLog[]
+  auditLogs               AuditLog[]
+  productSnapshots        ProductSnapshot[]
+  collectionSnapshots     CollectionSnapshot[]
+  seoTopicRuns            SeoTopicRun[]
+  agentMemories           AgentMemory[]
+  agentToolCalls          AgentToolCall[]
+  agentReflectionTasks    AgentReflectionTask[]
+  agentEvidence           AgentEvidence[]
+  agentSteps              AgentStep[]
   searchConsoleProperties SearchConsoleProperty[]
   seoPerformanceSnapshots ArticleSeoPerformanceSnapshot[]
   seoQueryPerformanceRows ArticleSeoQueryPerformance[]
+  internalLinkNodes       InternalLinkNode[]
+  internalLinkEdges       InternalLinkEdge[]
+  contentGoals            ContentGoal[]
+  contentCalendarItems    ContentCalendarItem[]
 
   @@index([status])
 }
@@ -293,28 +328,32 @@ model ShopifyStore {
   createdAt                    DateTime    @default(now())
   updatedAt                    DateTime    @updatedAt
 
-  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  localeConfigs        LocaleConfig[]
-  aiProviderConfigs    AiProviderConfig[]
-  brandVoices          BrandVoice[]
-  campaigns            BlogCampaign[]
-  articles             BlogArticle[]
-  articleTranslations  ArticleTranslation[]
-  generatedAssets      GeneratedAsset[]
-  publishJobs          PublishJob[]
-  publishLogs          PublishLog[]
-  auditLogs            AuditLog[]
-  productSnapshots     ProductSnapshot[]
-  collectionSnapshots  CollectionSnapshot[]
-  seoTopicRuns         SeoTopicRun[]
-  agentMemories        AgentMemory[]
-  agentToolCalls       AgentToolCall[]
-  agentReflectionTasks AgentReflectionTask[]
-  agentEvidence        AgentEvidence[]
-  agentSteps           AgentStep[]
+  organization            Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  localeConfigs           LocaleConfig[]
+  aiProviderConfigs       AiProviderConfig[]
+  brandVoices             BrandVoice[]
+  campaigns               BlogCampaign[]
+  articles                BlogArticle[]
+  articleTranslations     ArticleTranslation[]
+  generatedAssets         GeneratedAsset[]
+  publishJobs             PublishJob[]
+  publishLogs             PublishLog[]
+  auditLogs               AuditLog[]
+  productSnapshots        ProductSnapshot[]
+  collectionSnapshots     CollectionSnapshot[]
+  seoTopicRuns            SeoTopicRun[]
+  agentMemories           AgentMemory[]
+  agentToolCalls          AgentToolCall[]
+  agentReflectionTasks    AgentReflectionTask[]
+  agentEvidence           AgentEvidence[]
+  agentSteps              AgentStep[]
   searchConsoleProperties SearchConsoleProperty[]
   seoPerformanceSnapshots ArticleSeoPerformanceSnapshot[]
   seoQueryPerformanceRows ArticleSeoQueryPerformance[]
+  internalLinkNodes       InternalLinkNode[]
+  internalLinkEdges       InternalLinkEdge[]
+  contentGoals            ContentGoal[]
+  contentCalendarItems    ContentCalendarItem[]
 
   @@index([organizationId, status])
 }
@@ -424,6 +463,7 @@ model BlogCampaign {
   agentReflectionTasks AgentReflectionTask[]
   agentEvidence        AgentEvidence[]
   agentSteps           AgentStep[]
+  contentCalendarItems ContentCalendarItem[]
 
   @@index([organizationId, status])
   @@index([storeId, locale, status])
@@ -463,21 +503,24 @@ model BlogArticle {
   createdAt          DateTime      @default(now())
   updatedAt          DateTime      @updatedAt
 
-  organization         Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  store                ShopifyStore          @relation(fields: [storeId], references: [id], onDelete: Cascade)
-  campaign             BlogCampaign?         @relation(fields: [campaignId], references: [id], onDelete: SetNull)
-  translations         ArticleTranslation[]
-  assets               GeneratedAsset[]
-  publishJobs          PublishJob[]
-  publishLogs          PublishLog[]
-  seoTopicRuns         SeoTopicRun[]
-  agentMemories        AgentMemory[]
-  agentToolCalls       AgentToolCall[]
-  agentReflectionTasks AgentReflectionTask[]
-  agentEvidence        AgentEvidence[]
-  agentSteps           AgentStep[]
+  organization            Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store                   ShopifyStore                    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  campaign                BlogCampaign?                   @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  translations            ArticleTranslation[]
+  assets                  GeneratedAsset[]
+  publishJobs             PublishJob[]
+  publishLogs             PublishLog[]
+  seoTopicRuns            SeoTopicRun[]
+  agentMemories           AgentMemory[]
+  agentToolCalls          AgentToolCall[]
+  agentReflectionTasks    AgentReflectionTask[]
+  agentEvidence           AgentEvidence[]
+  agentSteps              AgentStep[]
   seoPerformanceSnapshots ArticleSeoPerformanceSnapshot[]
   seoQueryPerformanceRows ArticleSeoQueryPerformance[]
+  internalLinkNodes       InternalLinkNode[]
+  internalLinkEdges       InternalLinkEdge[]
+  contentCalendarItems    ContentCalendarItem[]
 
   @@unique([storeId, locale, handle])
   @@index([organizationId, status])
@@ -658,33 +701,43 @@ model AgentReflectionTask {
 }
 
 model AgentStep {
-  id             String              @id @default(cuid())
-  organizationId String
-  storeId        String
-  topicRunId     String?
-  campaignId     String?
-  articleId      String?
-  runId          String
-  sequence       Int
-  stepType       String
-  stepKey        String
-  stage          String?
-  agentRole      AgentRole?
-  status         AgentToolCallStatus @default(passed)
-  title          String
-  summary        String?             @db.Text
-  decision       String?             @db.Text
-  input          Json?
-  output         Json?
-  evidence       Json?
-  evidenceIds    String[]            @default([])
-  warnings       String[]            @default([])
-  error          String?             @db.Text
-  startedAt      DateTime?
-  completedAt    DateTime?
-  latencyMs      Int?
-  metadata       Json?
-  createdAt      DateTime            @default(now())
+  id                String              @id @default(cuid())
+  organizationId    String
+  storeId           String
+  topicRunId        String?
+  campaignId        String?
+  articleId         String?
+  runId             String
+  sequence          Int
+  stepType          String
+  stepKey           String
+  stage             String?
+  agentRole         AgentRole?
+  status            AgentToolCallStatus @default(passed)
+  attempt           Int                 @default(1)
+  maxAttempts       Int                 @default(3)
+  dependsOnStepKey  String?
+  idempotencyKey    String?
+  leaseOwner        String?
+  lockedAt          DateTime?
+  lastHeartbeatAt   DateTime?
+  nextRetryAt       DateTime?
+  resumedFromStepId String?
+  canResume         Boolean             @default(true)
+  title             String
+  summary           String?             @db.Text
+  decision          String?             @db.Text
+  input             Json?
+  output            Json?
+  evidence          Json?
+  evidenceIds       String[]            @default([])
+  warnings          String[]            @default([])
+  error             String?             @db.Text
+  startedAt         DateTime?
+  completedAt       DateTime?
+  latencyMs         Int?
+  metadata          Json?
+  createdAt         DateTime            @default(now())
 
   organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
@@ -694,9 +747,11 @@ model AgentStep {
 
   @@unique([topicRunId, sequence])
   @@index([runId, sequence])
+  @@index([runId, status, nextRetryAt])
   @@index([articleId, sequence])
   @@index([storeId, status, createdAt])
   @@index([topicRunId, stepType])
+  @@index([storeId, stepKey, createdAt])
 }
 
 model AgentEvidence {
@@ -737,23 +792,23 @@ model AgentEvidence {
 }
 
 model SearchConsoleProperty {
-  id                         String                      @id @default(cuid())
-  organizationId             String
-  storeId                    String
-  siteUrl                    String
-  status                     SearchConsolePropertyStatus @default(active)
-  permissionLevel            String?
-  scopes                     String[]                    @default([])
-  googleClientId             String?
+  id                          String                      @id @default(cuid())
+  organizationId              String
+  storeId                     String
+  siteUrl                     String
+  status                      SearchConsolePropertyStatus @default(active)
+  permissionLevel             String?
+  scopes                      String[]                    @default([])
+  googleClientId              String?
   googleClientSecretEncrypted String?
-  accessTokenEncrypted       String?
-  refreshTokenEncrypted      String?
-  tokenExpiresAt             DateTime?
-  lastSyncedAt               DateTime?
-  lastSyncError              String?                     @db.Text
-  metadata                   Json?
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
+  accessTokenEncrypted        String?
+  refreshTokenEncrypted       String?
+  tokenExpiresAt              DateTime?
+  lastSyncedAt                DateTime?
+  lastSyncError               String?                     @db.Text
+  metadata                    Json?
+  createdAt                   DateTime                    @default(now())
+  updatedAt                   DateTime                    @updatedAt
 
   organization Organization                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   store        ShopifyStore                    @relation(fields: [storeId], references: [id], onDelete: Cascade)
@@ -766,27 +821,27 @@ model SearchConsoleProperty {
 }
 
 model ArticleSeoPerformanceSnapshot {
-  id             String               @id @default(cuid())
-  organizationId String
-  storeId        String
-  articleId      String
-  propertyId     String
-  source         SeoPerformanceSource @default(google_search_console)
-  pageUrl        String               @db.Text
-  startDate      DateTime
-  endDate        DateTime
-  dataState      String               @default("final")
-  clicks         Float                @default(0)
-  impressions    Float                @default(0)
-  ctr            Float                @default(0)
-  position       Float?
-  queryCount     Int                  @default(0)
-  topQuery       String?
+  id               String               @id @default(cuid())
+  organizationId   String
+  storeId          String
+  articleId        String
+  propertyId       String
+  source           SeoPerformanceSource @default(google_search_console)
+  pageUrl          String               @db.Text
+  startDate        DateTime
+  endDate          DateTime
+  dataState        String               @default("final")
+  clicks           Float                @default(0)
+  impressions      Float                @default(0)
+  ctr              Float                @default(0)
+  position         Float?
+  queryCount       Int                  @default(0)
+  topQuery         String?
   performanceScore Float?
-  syncedAt       DateTime             @default(now())
-  metadata       Json?
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
+  syncedAt         DateTime             @default(now())
+  metadata         Json?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 
   organization Organization                 @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   store        ShopifyStore                 @relation(fields: [storeId], references: [id], onDelete: Cascade)
@@ -834,6 +889,125 @@ model ArticleSeoQueryPerformance {
   @@index([propertyId, startDate, endDate])
   @@index([articleId, impressions])
   @@index([query])
+}
+
+model InternalLinkNode {
+  id                 String               @id @default(cuid())
+  organizationId     String
+  storeId            String
+  articleId          String?
+  pageType           InternalLinkPageType @default(unknown)
+  sourceType         SourceType?
+  sourceId           String?
+  locale             String?
+  url                String               @db.Text
+  canonicalUrl       String?              @db.Text
+  title              String?
+  handle             String?
+  authorityScore     Float                @default(0)
+  inboundLinkCount   Int                  @default(0)
+  outboundLinkCount  Int                  @default(0)
+  anchorDistribution Json?
+  metadata           Json?
+  lastCrawledAt      DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  organization Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  article      BlogArticle?       @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  outgoing     InternalLinkEdge[] @relation("InternalLinkFromNode")
+  incoming     InternalLinkEdge[] @relation("InternalLinkToNode")
+
+  @@unique([storeId, url])
+  @@index([organizationId, pageType])
+  @@index([storeId, pageType, authorityScore])
+  @@index([articleId])
+  @@index([sourceType, sourceId])
+}
+
+model InternalLinkEdge {
+  id             String   @id @default(cuid())
+  organizationId String
+  storeId        String
+  fromNodeId     String
+  toNodeId       String
+  articleId      String?
+  anchorText     String
+  placement      String?
+  confidence     Float    @default(75)
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  fromNode     InternalLinkNode @relation("InternalLinkFromNode", fields: [fromNodeId], references: [id], onDelete: Cascade)
+  toNode       InternalLinkNode @relation("InternalLinkToNode", fields: [toNodeId], references: [id], onDelete: Cascade)
+  article      BlogArticle?     @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@unique([storeId, fromNodeId, toNodeId, anchorText])
+  @@index([organizationId, storeId])
+  @@index([fromNodeId])
+  @@index([toNodeId])
+  @@index([articleId])
+}
+
+model ContentGoal {
+  id             String            @id @default(cuid())
+  organizationId String
+  storeId        String
+  title          String
+  status         ContentGoalStatus @default(draft)
+  metric         String            @default("organic_impressions")
+  baselineValue  Float             @default(0)
+  targetValue    Float             @default(0)
+  currentValue   Float             @default(0)
+  startDate      DateTime
+  endDate        DateTime
+  strategy       Json?
+  metadata       Json?
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization Organization          @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore          @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  items        ContentCalendarItem[]
+
+  @@index([organizationId, status])
+  @@index([storeId, status, startDate, endDate])
+}
+
+model ContentCalendarItem {
+  id             String                    @id @default(cuid())
+  organizationId String
+  storeId        String
+  goalId         String?
+  campaignId     String?
+  articleId      String?
+  dueDate        DateTime
+  topic          String
+  primaryKeyword String?
+  actionType     String                    @default("new_article")
+  status         ContentCalendarItemStatus @default(planned)
+  priority       String                    @default("medium")
+  plannedByRole  AgentRole?
+  inputs         Json?
+  output         Json?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  organization Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store        ShopifyStore  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  goal         ContentGoal?  @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  campaign     BlogCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  article      BlogArticle?  @relation(fields: [articleId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, dueDate])
+  @@index([storeId, status, dueDate])
+  @@index([goalId])
+  @@index([campaignId])
+  @@index([articleId])
 }
 
 model ArticleTranslation {

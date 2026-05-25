@@ -15,8 +15,8 @@ def test_content_blueprint_has_expected_outline_and_sources() -> None:
         "publish_check",
         "post_publish_review",
     ]
-    assert blueprint.outline[0].agent_role == AgentRole.writer
-    assert blueprint.outline[1].agent_role == AgentRole.researcher
+    assert blueprint.outline[0].agent_role == AgentRole.shopping_guide_editor
+    assert blueprint.outline[1].agent_role == AgentRole.fact_checker
     assert blueprint.outline[-1].agent_role == AgentRole.growth_analyst
     assert "Title and meta" in " ".join(blueprint.seo_rules)
     assert "banned AI vocabulary" in " ".join(blueprint.humanizer_rules)

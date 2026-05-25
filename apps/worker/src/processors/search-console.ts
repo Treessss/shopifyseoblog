@@ -399,27 +399,45 @@ async function resolveSearchConsoleProperty(input: { organizationId: string; sto
 
   if (property) return property;
 
+  const store = await prisma.shopifyStore.findFirst({
+    where: {
+      id: input.storeId,
+      organizationId: input.organizationId
+    },
+    select: {
+      id: true,
+      myshopifyDomain: true,
+      metadata: true
+    }
+  });
+
+  const publishedSiteUrl = store ? resolvePublishedSiteUrlFromStore(store) : undefined;
   const envSiteUrl = process.env.GSC_SITE_URL?.trim();
-  if (envSiteUrl) {
+  const siteUrl = publishedSiteUrl ?? envSiteUrl;
+  if (siteUrl) {
     return prisma.searchConsoleProperty.upsert({
       where: {
         storeId_siteUrl: {
           storeId: input.storeId,
-          siteUrl: envSiteUrl
+          siteUrl
         }
       },
       update: {
         organizationId: input.organizationId,
         status: "active",
-        metadata: toPrismaJson({ authSource: "environment" })
+        metadata: toPrismaJson({
+          authSource: publishedSiteUrl ? "store_metadata" : "environment"
+        })
       },
       create: {
         organizationId: input.organizationId,
         storeId: input.storeId,
-        siteUrl: envSiteUrl,
+        siteUrl,
         status: "active",
         scopes: ["https://www.googleapis.com/auth/webmasters.readonly"],
-        metadata: toPrismaJson({ authSource: "environment" })
+        metadata: toPrismaJson({
+          authSource: publishedSiteUrl ? "store_metadata" : "environment"
+        })
       }
     });
   }
@@ -573,6 +591,34 @@ async function findArticleForSearchConsoleSync(organizationId: string, storeId: 
   return article;
 }
 
+function resolvePublishedSiteUrlFromStore(store: { myshopifyDomain: string; metadata?: unknown }): string | undefined {
+  const metadata = isRecord(store.metadata) ? store.metadata : {};
+  const candidate =
+    stringValue(metadata.primaryDomainUrl) ??
+    stringValue(metadata.shopUrl) ??
+    stringValue(metadata.primaryDomainHost);
+
+  if (candidate) {
+    const normalized = normalizeStorefrontHostFromValue(candidate);
+    if (normalized) return `https://${normalized}`;
+  }
+
+  return store.myshopifyDomain ? `https://${normalizeStorefrontHostFromValue(store.myshopifyDomain) ?? store.myshopifyDomain}` : undefined;
+}
+
+function normalizeStorefrontHostFromValue(value: string): string | undefined {
+  const trimmed = value.trim().replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
+  return trimmed || undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 export function resolveSearchConsoleDateRange(input: { startDate?: string; endDate?: string; days?: number }, now = new Date()): SearchConsoleDateRange {
   if (input.startDate && input.endDate) {
     return { startDate: input.startDate, endDate: input.endDate };
@@ -694,8 +740,12 @@ async function persistSearchConsoleAgentStep(
       stepType: "tool_call",
       stepKey: `gsc-performance-${payload.snapshotId}`,
       stage: "seo_performance",
-      agentRole: "publisher_guard",
+      agentRole: "growth_analyst",
       status: payload.metrics.impressions > 0 ? "passed" : "warning",
+      attempt: 1,
+      maxAttempts: 3,
+      idempotencyKey: `gsc:${property.id}:${article.id}:${payload.dateRange.startDate}:${payload.dateRange.endDate}`,
+      canResume: true,
       title: "Google Search Console 效果同步",
       summary: `同步 ${payload.dateRange.startDate} 至 ${payload.dateRange.endDate} 的自然搜索表现。`,
       decision:

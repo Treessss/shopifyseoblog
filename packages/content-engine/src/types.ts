@@ -316,7 +316,17 @@ export type AgentStageName =
   | "quality_reflection";
 
 export type AgentStageStatus = "passed" | "warning" | "failed" | "skipped";
-export type AgentRole = "researcher" | "keyword_planner" | "topic_strategist" | "writer" | "seo_editor" | "publisher_guard";
+export type AgentRole =
+  | "researcher"
+  | "keyword_planner"
+  | "topic_strategist"
+  | "writer"
+  | "shopping_guide_editor"
+  | "fact_checker"
+  | "image_director"
+  | "seo_editor"
+  | "publisher_guard"
+  | "growth_analyst";
 
 export interface AgentToolPlan {
   id: string;

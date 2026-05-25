@@ -519,6 +519,85 @@ export default async function ArticleReviewPage({ params }: PageProps) {
               </div>
             </Panel>
 
+            <Panel
+              title="GSC 自然流量表现"
+              description="接入 Search Console 后，这里会把真实 query、曝光、点击、CTR 和平均排名变成复盘证据；未接入时不影响继续创作。"
+              action={
+                <form action={`/api/admin/articles/${article.id}/search-console`} method="post">
+                  <button className="button button--ghost button--small" type="submit" disabled={!canSyncSearchConsole}>
+                    <Search size={14} aria-hidden="true" />
+                    同步
+                  </button>
+                </form>
+              }
+            >
+              {article.seoPerformance ? (
+                <div className="stack stack--tight">
+                  <div className="insight-strip">
+                    <StatusPill label="Clicks" value={article.seoPerformance.clicks} tone={article.seoPerformance.clicks > 0 ? "good" : "neutral"} icon={<Gauge size={18} aria-hidden="true" />} />
+                    <StatusPill label="Impressions" value={article.seoPerformance.impressions} tone={article.seoPerformance.impressions > 0 ? "good" : "warn"} icon={<ScanSearch size={18} aria-hidden="true" />} />
+                    <StatusPill label="CTR" value={formatPercent(article.seoPerformance.ctr)} tone={article.seoPerformance.ctr >= 0.02 ? "good" : "warn"} icon={<Gauge size={18} aria-hidden="true" />} />
+                    <StatusPill label="Avg position" value={formatPosition(article.seoPerformance.position)} tone={(article.seoPerformance.position ?? 99) <= 10 ? "good" : "warn"} icon={<ScanSearch size={18} aria-hidden="true" />} />
+                  </div>
+                  <div className="readiness-summary">
+                    <div>
+                      <strong>{article.seoPerformance.topQuery ?? "暂无主查询"}</strong>
+                      <small className="muted">
+                        {shortDate(article.seoPerformance.startDate)} ~ {shortDate(article.seoPerformance.endDate)} · {article.seoPerformance.queryCount} 个 query · synced {shortDate(article.seoPerformance.syncedAt)}
+                      </small>
+                    </div>
+                    <Badge tone={(article.seoPerformance.performanceScore ?? 0) >= 70 ? "good" : "warn"}>
+                      {article.seoPerformance.performanceScore ?? "暂无"} 分
+                    </Badge>
+                  </div>
+                  {article.seoPerformance.recommendations.length > 0 ? (
+                    <div className="list">
+                      {article.seoPerformance.recommendations.map((item) => (
+                        <div className="list-item" key={item}>
+                          <strong>{item}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Query</th>
+                          <th>Clicks</th>
+                          <th>Impressions</th>
+                          <th>CTR</th>
+                          <th>Position</th>
+                          <th>机会</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {article.seoPerformance.queries.map((query) => (
+                          <tr key={query.query}>
+                            <td>{query.query}</td>
+                            <td>{query.clicks}</td>
+                            <td>{query.impressions}</td>
+                            <td>{formatPercent(query.ctr)}</td>
+                            <td>{formatPosition(query.position)}</td>
+                            <td>
+                              <Badge tone={query.opportunity === "quick_win" ? "good" : query.opportunity === "low_ctr" ? "warn" : "neutral"}>
+                                {formatGscOpportunity(query.opportunity)}
+                              </Badge>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <EmptyState
+                  title="还没有 GSC 表现数据"
+                  description="文章创作和发布可以继续；等你配置 Search Console OAuth 后，再同步真实曝光、点击和查询词。"
+                />
+              )}
+            </Panel>
+
             <ArticleAgentCenter
               article={article}
               qualityReport={qualityReport}
@@ -844,12 +923,34 @@ function formatAgentRole(role: string) {
   const labels: Record<string, string> = {
     researcher: "Research Agent",
     keyword_planner: "Keyword Planner",
+    topic_strategist: "SEO Strategist",
     writer: "Writer Agent",
+    shopping_guide_editor: "Shopping Guide Editor",
+    fact_checker: "Fact Checker",
+    image_director: "Image Director",
     seo_editor: "SEO Gate Agent",
     publisher_guard: "Publisher Guard",
     growth_analyst: "Growth Analyst"
   };
   return labels[role] ?? role;
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(value > 0 && value < 0.01 ? 2 : 1)}%`;
+}
+
+function formatPosition(value: number | null) {
+  return value === null ? "暂无" : value.toFixed(1);
+}
+
+function shortDate(value: string) {
+  return value ? value.slice(0, 10) : "暂无";
+}
+
+function formatGscOpportunity(value: string) {
+  if (value === "quick_win") return "4-20 位机会";
+  if (value === "low_ctr") return "低 CTR";
+  return "观察";
 }
 
 function formatRepairPriority(priority: PythonRepairPlanTask["priority"]) {

@@ -3136,6 +3136,20 @@ async function publishArticle(
       authorName: publishAuthorName(store),
       storefrontHost
     });
+    const prePublishValidation = buildPrePublishValidationReport(preparedArticle.article, {
+      shopifyBlogId,
+      authorName: preparedArticle.authorName,
+      coverImage: preparedArticle.coverImage,
+      storefrontHost
+    });
+    await persistPrePublishValidationStep({
+      organizationId: job.data.organizationId,
+      storeId: store.id,
+      articleId: article.id,
+      publishJobId: publishJob.id,
+      report: prePublishValidation
+    });
+    assertPrePublishValidation(prePublishValidation, article.id);
     const published = await publishToShopify(client, preparedArticle.article, shopifyBlogId, {
       authorName: preparedArticle.authorName,
       coverImage: preparedArticle.coverImage
@@ -3155,6 +3169,7 @@ async function publishArticle(
       );
     }
     const publishedAt = dateValue(published.publishedAt) ?? new Date();
+    const canonicalUrl = buildCanonicalUrl(storefrontHost, published);
 
     await prisma.blogArticle.update({
       where: { id: article.id },
@@ -3164,11 +3179,23 @@ async function publishArticle(
         shopifyArticleId: published.id,
         handle: published.handle ?? article.handle,
         title: published.title ?? article.title,
-        canonicalUrl: buildCanonicalUrl(storefrontHost, published),
+        canonicalUrl,
         publishedAt,
         failureReason: null
       }
     });
+    if (canonicalUrl) {
+      await persistArticleInternalLinkGraph({
+        organizationId: job.data.organizationId,
+        storeId: store.id,
+        articleId: article.id,
+        locale: article.locale,
+        title: published.title ?? article.title ?? "Untitled article",
+        handle: published.handle ?? article.handle,
+        pageUrl: canonicalUrl,
+        bodyHtml: preparedArticle.article.bodyHtml ?? ""
+      });
+    }
     await completePublishJob(publishJob.id, {
       articleId: article.id,
       shopifyArticleId: published.id,
@@ -3471,10 +3498,316 @@ function validatePublishInputs(
   }
 }
 
+interface PrePublishValidationCheck {
+  key: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+interface PrePublishValidationReport {
+  passed: boolean;
+  score: number;
+  checks: PrePublishValidationCheck[];
+  blockers: string[];
+}
+
+function buildPrePublishValidationReport(
+  article: PublishableArticleRow,
+  input: {
+    shopifyBlogId: string;
+    authorName: string;
+    coverImage?: ShopifyArticleImageInput;
+    storefrontHost: string;
+  }
+): PrePublishValidationReport {
+  const bodyHtml = article.bodyHtml ?? "";
+  const linkUrls = extractRawAnchorHrefs(bodyHtml);
+  const imageUrls = extractImageSources(bodyHtml);
+  const checks: PrePublishValidationCheck[] = [
+    check("shopify_blog", "Shopify blog target", Boolean(input.shopifyBlogId), "Shopify blog ID must be configured."),
+    check("title", "Title", Boolean(article.title?.trim()), "Article title is required."),
+    check("body_html", "HTML body", bodyHtml.trim().length >= 400, "Article body must contain substantive HTML."),
+    check("html_structure", "HTML structure", hasPublishableHtmlStructure(bodyHtml), "Body must include headings and must not contain scripts."),
+    check("meta_description", "Meta description", Boolean((article.seoDescription ?? article.summary)?.trim()), "Meta description or summary is required."),
+    check("author", "Author", Boolean(input.authorName.trim()), "Publish author must be resolvable from the store."),
+    check("slug", "Slug/handle", Boolean(article.handle?.trim() || article.title?.trim()), "Shopify needs a handle or title to create a stable slug."),
+    check("links", "Links", linkUrls.every(isPublishableHref), "All href values must be absolute HTTP(S), mailto, tel, or relative anchors."),
+    check(
+      "images",
+      "Images",
+      imageUrls.every(isPublicHttpUrl),
+      "Every image src/srcset URL must be public HTTP(S) after upload preparation."
+    ),
+    check(
+      "cover_image",
+      "Cover image",
+      imageUrls.length === 0 || Boolean(input.coverImage?.url),
+      "If the article includes images, a Shopify-ready cover image must be selected."
+    ),
+    check(
+      "shopify_image_urls",
+      "Shopify image URLs",
+      imageUrls.every((url) => isShopifyHostedImage(url, input.storefrontHost, input.storefrontHost)),
+      "Prepared image URLs should be hosted on Shopify or the storefront domain."
+    )
+  ];
+  const blockers = checks.filter((item) => !item.passed).map((item) => `${item.label}: ${item.detail}`);
+
+  return {
+    passed: blockers.length === 0,
+    score: Math.round((checks.filter((item) => item.passed).length / checks.length) * 100),
+    checks,
+    blockers
+  };
+}
+
+function assertPrePublishValidation(report: PrePublishValidationReport, articleId: string): void {
+  if (report.passed) return;
+  throw domainError("PRE_PUBLISH_VALIDATION_FAILED", "Pre-publish validation failed; the article was not published.", {
+    retryable: false,
+    details: {
+      articleId,
+      score: report.score,
+      blockers: report.blockers
+    }
+  });
+}
+
+async function persistPrePublishValidationStep(input: {
+  organizationId: string;
+  storeId: string;
+  articleId: string;
+  publishJobId: string;
+  report: PrePublishValidationReport;
+}) {
+  const sequence = (await prisma.agentStep.count({ where: { articleId: input.articleId } })) + 1;
+  await prisma.agentStep.create({
+    data: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      articleId: input.articleId,
+      runId: `publish:${input.publishJobId}`,
+      sequence,
+      stepType: "stage",
+      stepKey: `pre-publish-validation-${input.publishJobId}`,
+      stage: "publish_guard",
+      agentRole: "publisher_guard",
+      status: input.report.passed ? "passed" : "failed",
+      attempt: 1,
+      maxAttempts: 1,
+      idempotencyKey: `publish:${input.publishJobId}:pre-publish-validation`,
+      canResume: false,
+      title: "发布前真实可访问校验",
+      summary: `检查链接、图片、meta、author、slug、canonical 准备和 HTML 结构，得分 ${input.report.score}/100。`,
+      decision: input.report.passed ? "发布前校验通过，可以提交 Shopify。" : "发布前校验失败，已阻止发布。",
+      input: toPrismaJson({ publishJobId: input.publishJobId }),
+      output: toPrismaJson(input.report),
+      evidence: toPrismaJson(input.report.checks),
+      warnings: input.report.blockers,
+      startedAt: new Date(),
+      completedAt: new Date(),
+      metadata: toPrismaJson({ source: "pre_publish_validation" })
+    }
+  });
+}
+
+function check(key: string, label: string, passed: boolean, detail: string): PrePublishValidationCheck {
+  return { key, label, passed, detail };
+}
+
+function hasPublishableHtmlStructure(bodyHtml: string): boolean {
+  return /<h[1-3]\b/i.test(bodyHtml) && !/<script\b/i.test(bodyHtml);
+}
+
+function extractRawAnchorHrefs(bodyHtml: string): string[] {
+  const urls: string[] = [];
+  for (const match of bodyHtml.matchAll(/<a\b[^>]*\shref=(["'])(.*?)\1/gi)) {
+    urls.push(decodeHtmlAttribute(match[2] ?? "").trim());
+  }
+  return urls.filter(Boolean);
+}
+
+function isPublishableHref(value: string): boolean {
+  return (
+    /^https?:\/\//i.test(value) ||
+    /^mailto:/i.test(value) ||
+    /^tel:/i.test(value) ||
+    value.startsWith("#") ||
+    value.startsWith("/")
+  );
+}
+
 function buildCanonicalUrl(shopDomain: string, article: ShopifyArticle): string | null {
   const blogHandle = article.blog?.handle;
   if (!blogHandle || !article.handle) return null;
   return `https://${shopDomain}/blogs/${blogHandle}/${article.handle}`;
+}
+
+async function persistArticleInternalLinkGraph(input: {
+  organizationId: string;
+  storeId: string;
+  articleId: string;
+  locale: string;
+  title: string;
+  handle: string | null;
+  pageUrl: string;
+  bodyHtml: string;
+}) {
+  const fromNode = await prisma.internalLinkNode.upsert({
+    where: {
+      storeId_url: {
+        storeId: input.storeId,
+        url: input.pageUrl
+      }
+    },
+    update: {
+      articleId: input.articleId,
+      pageType: "blog_article",
+      sourceType: "manual_topic",
+      sourceId: input.articleId,
+      locale: input.locale,
+      title: input.title,
+      handle: input.handle,
+      canonicalUrl: input.pageUrl,
+      lastCrawledAt: new Date()
+    },
+    create: {
+      organizationId: input.organizationId,
+      storeId: input.storeId,
+      articleId: input.articleId,
+      pageType: "blog_article",
+      sourceType: "manual_topic",
+      sourceId: input.articleId,
+      locale: input.locale,
+      url: input.pageUrl,
+      canonicalUrl: input.pageUrl,
+      title: input.title,
+      handle: input.handle,
+      lastCrawledAt: new Date()
+    }
+  });
+  const anchors = extractAnchorTargets(input.bodyHtml, input.pageUrl).filter((anchor) => anchor.url !== input.pageUrl);
+  const anchorDistribution = countAnchors(anchors.map((anchor) => anchor.anchorText));
+
+  await prisma.internalLinkEdge.deleteMany({ where: { fromNodeId: fromNode.id } });
+
+  const toNodes = [];
+  for (const anchor of anchors) {
+    const toNode = await prisma.internalLinkNode.upsert({
+      where: {
+        storeId_url: {
+          storeId: input.storeId,
+          url: anchor.url
+        }
+      },
+      update: {
+        pageType: inferInternalLinkPageType(anchor.url),
+        title: anchor.anchorText,
+        lastCrawledAt: new Date()
+      },
+      create: {
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        pageType: inferInternalLinkPageType(anchor.url),
+        url: anchor.url,
+        title: anchor.anchorText,
+        lastCrawledAt: new Date()
+      }
+    });
+    toNodes.push({ anchor, toNode });
+  }
+
+  if (toNodes.length > 0) {
+    await prisma.internalLinkEdge.createMany({
+      data: toNodes.map(({ anchor, toNode }) => ({
+        organizationId: input.organizationId,
+        storeId: input.storeId,
+        fromNodeId: fromNode.id,
+        toNodeId: toNode.id,
+        articleId: input.articleId,
+        anchorText: anchor.anchorText,
+        placement: anchor.placement,
+        confidence: anchor.anchorText.length >= 8 ? 85 : 60,
+        metadata: toPrismaJson({ sourceUrl: input.pageUrl, targetUrl: anchor.url })
+      })),
+      skipDuplicates: true
+    });
+  }
+
+  const outboundLinkCount = await prisma.internalLinkEdge.count({ where: { fromNodeId: fromNode.id } });
+  await prisma.internalLinkNode.update({
+    where: { id: fromNode.id },
+    data: {
+      outboundLinkCount,
+      anchorDistribution: toPrismaJson(anchorDistribution),
+      authorityScore: Math.min(100, 30 + outboundLinkCount * 4)
+    }
+  });
+
+  await Promise.all(
+    toNodes.map(async ({ toNode }) => {
+      const inboundLinkCount = await prisma.internalLinkEdge.count({ where: { toNodeId: toNode.id } });
+      await prisma.internalLinkNode.update({
+        where: { id: toNode.id },
+        data: {
+          inboundLinkCount,
+          authorityScore: Math.min(100, 20 + inboundLinkCount * 8)
+        }
+      });
+    })
+  );
+}
+
+function extractAnchorTargets(bodyHtml: string, baseUrl: string): Array<{ url: string; anchorText: string; placement: string }> {
+  const targets: Array<{ url: string; anchorText: string; placement: string }> = [];
+  for (const match of bodyHtml.matchAll(/<a\b[^>]*\shref=(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi)) {
+    const href = decodeHtmlAttribute(match[2] ?? "").trim();
+    const url = normalizePublishGraphUrl(href, baseUrl);
+    if (!url) continue;
+    targets.push({
+      url,
+      anchorText: stripHtmlForReview(match[3] ?? "").slice(0, 160) || "Related page",
+      placement: "body"
+    });
+  }
+  return targets;
+}
+
+function normalizePublishGraphUrl(value: string, baseUrl: string): string | null {
+  try {
+    const url = new URL(value, baseUrl);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.hash = "";
+    url.search = "";
+    return url.toString().replace(/\/+$/g, "");
+  } catch {
+    return null;
+  }
+}
+
+function inferInternalLinkPageType(url: string): "home" | "product" | "collection" | "blog_article" | "blog_index" | "page" | "unknown" {
+  try {
+    const path = new URL(url).pathname;
+    if (path.includes("/products/")) return "product";
+    if (path.includes("/collections/")) return "collection";
+    if (path.includes("/blogs/") && path.split("/").length >= 5) return "blog_article";
+    if (path.includes("/blogs/")) return "blog_index";
+    if (path === "/" || path === "") return "home";
+    return "page";
+  } catch {
+    return "unknown";
+  }
+}
+
+function countAnchors(anchorTexts: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const anchor of anchorTexts) {
+    const key = anchor.trim().toLowerCase();
+    if (!key) continue;
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function publishAuthorName(store: { name: string | null; myshopifyDomain: string }): string {
@@ -5732,6 +6065,16 @@ export interface AgentStepPersistenceRow {
   stage?: string | null;
   agentRole?: AgentRole | null;
   status: "passed" | "warning" | "failed" | "skipped";
+  attempt?: number;
+  maxAttempts?: number;
+  dependsOnStepKey?: string | null;
+  idempotencyKey?: string | null;
+  leaseOwner?: string | null;
+  lockedAt?: Date | null;
+  lastHeartbeatAt?: Date | null;
+  nextRetryAt?: Date | null;
+  resumedFromStepId?: string | null;
+  canResume?: boolean;
   title: string;
   summary?: string | null;
   decision?: string | null;
@@ -5858,9 +6201,14 @@ export function buildAgentStepRows(input: {
 
   return rows
     .sort((left, right) => (left.sortTime ?? 0) - (right.sortTime ?? 0) || left.sortRank - right.sortRank)
-    .map(({ sortTime: _sortTime, sortRank: _sortRank, ...row }, index) => ({
+    .map(({ sortTime: _sortTime, sortRank: _sortRank, ...row }, index, sortedRows) => ({
       ...row,
-      sequence: index + 1
+      sequence: index + 1,
+      attempt: row.attempt ?? 1,
+      maxAttempts: row.maxAttempts ?? maxAttemptsForAgentStep(row.stepType, row.stage),
+      dependsOnStepKey: row.dependsOnStepKey ?? (index > 0 ? sortedRows[index - 1]?.stepKey ?? null : null),
+      idempotencyKey: row.idempotencyKey ?? `${input.agentRunId}:${row.stepKey}`,
+      canResume: row.canResume ?? true
     }));
 }
 
@@ -5868,6 +6216,13 @@ function readableAgentStepTitle(type: AgentStepPersistenceRow["stepType"], name:
   if (type === "stage") return `${name} · ${role ?? "agent"}`;
   if (type === "tool_call") return `工具调用 · ${name}`;
   return name;
+}
+
+function maxAttemptsForAgentStep(type: AgentStepPersistenceRow["stepType"], stage?: string | null): number {
+  if (type === "reflection_task") return 2;
+  if (stage === "publish_guard") return 1;
+  if (stage === "seo_performance") return 3;
+  return 3;
 }
 
 export function buildAgentMemoryPersistenceData(input: {

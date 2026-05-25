@@ -26,7 +26,7 @@ def build_content_article_blueprint() -> ContentArticleBlueprint:
             ContentArticleBlueprintSection(
                 key="answer_first_intro",
                 title="Answer-first intro",
-                agent_role=AgentRole.writer,
+                agent_role=AgentRole.shopping_guide_editor,
                 purpose="Open with the direct answer, why it matters, and what the reader will get.",
                 target_words=160,
                 must_have=[
@@ -44,7 +44,7 @@ def build_content_article_blueprint() -> ContentArticleBlueprint:
             ContentArticleBlueprintSection(
                 key="verified_facts",
                 title="Verified facts and context",
-                agent_role=AgentRole.researcher,
+                agent_role=AgentRole.fact_checker,
                 purpose="Separate confirmed facts from unknowns and anchor the article in real store evidence.",
                 target_words=320,
                 must_have=[
@@ -62,7 +62,7 @@ def build_content_article_blueprint() -> ContentArticleBlueprint:
             ContentArticleBlueprintSection(
                 key="decision_support",
                 title="Decision support",
-                agent_role=AgentRole.writer,
+                agent_role=AgentRole.shopping_guide_editor,
                 purpose="Help the reader choose, compare, or skip with practical trade-offs.",
                 target_words=380,
                 must_have=[

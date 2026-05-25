@@ -14,6 +14,7 @@ import type {
   AdminArticleOverview,
   AdminArticleIndexReadiness,
   AdminArticleReviewOverview,
+  AdminArticleSeoPerformanceOverview,
   AdminArticleAssetOverview,
   AdminBrandVoiceProfile,
   AdminCampaignOverview,
@@ -315,7 +316,8 @@ export async function getSearchConsole(input: AdminRequestContextInput): Promise
       id: store.id,
       name: store.name,
       domain: store.myshopifyDomain,
-      defaultSiteUrl: toUrlPrefixSiteUrl(store.myshopifyDomain)
+      publishedSiteUrl: publishedSiteUrlFromStore(store),
+      defaultSiteUrl: toUrlPrefixSiteUrl(publishedSiteUrlFromStore(store))
     }))
   };
 }
@@ -1164,8 +1166,68 @@ function mapArticleReview(article: ArticleReviewRow, timezone: string): AdminArt
     generationMetadata: enrichedGenerationMetadata,
     assets: article.assets.map(mapArticleAsset),
     logs: article.publishLogs.map((log) => mapPublishLog(log, timezone)),
-    repairJob: mapArticleRepairJob(article)
+    repairJob: mapArticleRepairJob(article),
+    seoPerformance: mapArticleSeoPerformance(article.seoPerformanceSnapshots?.[0] ?? null)
   };
+}
+
+function mapArticleSeoPerformance(
+  snapshot: ArticleReviewRow["seoPerformanceSnapshots"][number] | null | undefined
+): AdminArticleSeoPerformanceOverview | null {
+  if (!snapshot) return null;
+  const queries = (snapshot.queryRows ?? []).map((query) => ({
+    query: query.query,
+    clicks: query.clicks,
+    impressions: query.impressions,
+    ctr: query.ctr,
+    position: query.position,
+    opportunity: searchConsoleQueryOpportunity(query)
+  }));
+
+  return {
+    snapshotId: snapshot.id,
+    propertyId: snapshot.property.id,
+    siteUrl: snapshot.property.siteUrl,
+    pageUrl: snapshot.pageUrl,
+    startDate: snapshot.startDate.toISOString(),
+    endDate: snapshot.endDate.toISOString(),
+    dataState: snapshot.dataState,
+    clicks: snapshot.clicks,
+    impressions: snapshot.impressions,
+    ctr: snapshot.ctr,
+    position: snapshot.position,
+    queryCount: snapshot.queryCount,
+    topQuery: snapshot.topQuery,
+    performanceScore: snapshot.performanceScore,
+    syncedAt: snapshot.syncedAt.toISOString(),
+    queries,
+    recommendations: buildArticleSeoPerformanceRecommendations(snapshot, queries)
+  };
+}
+
+function searchConsoleQueryOpportunity(query: { clicks: number; impressions: number; ctr: number; position: number | null }) {
+  if ((query.position ?? 99) >= 4 && (query.position ?? 99) <= 20 && query.impressions >= 10) return "quick_win" as const;
+  if (query.impressions >= 20 && query.ctr < 0.01) return "low_ctr" as const;
+  return "observe" as const;
+}
+
+function buildArticleSeoPerformanceRecommendations(
+  snapshot: ArticleReviewRow["seoPerformanceSnapshots"][number],
+  queries: NonNullable<AdminArticleSeoPerformanceOverview>["queries"]
+): string[] {
+  const recommendations: string[] = [];
+  const quickWins = queries.filter((query) => query.opportunity === "quick_win");
+  const lowCtr = queries.filter((query) => query.opportunity === "low_ctr");
+  if (quickWins.length > 0) {
+    recommendations.push(`优先强化 ${quickWins[0]?.query}：它已经在 4-20 位附近，有机会通过标题、H2 和内链推到首页。`);
+  }
+  if (lowCtr.length > 0) {
+    recommendations.push(`重写标题和 meta：${lowCtr[0]?.query} 有曝光但 CTR 偏低。`);
+  }
+  if (snapshot.impressions === 0) {
+    recommendations.push("暂未获得曝光：先补内链、检查 canonical，并等待更多抓取数据。");
+  }
+  return recommendations;
 }
 
 function summarizeBrandVoice(
@@ -1440,11 +1502,13 @@ function mapBrandVoice(profile: BrandVoiceRow): AdminBrandVoiceProfile {
 }
 
 function mapSearchConsoleProperty(property: SearchConsolePropertyRow): AdminSearchConsolePropertyOverview {
+  const publishedSiteUrl = publishedSiteUrlFromStore(property.store);
+
   return {
     id: property.id,
     storeId: property.store.id,
     store: property.store.name,
-    storeDomain: property.store.myshopifyDomain,
+    publishedSiteUrl,
     siteUrl: property.siteUrl,
     status: property.status,
     statusTone: searchConsolePropertyTone(property.status),
@@ -1463,7 +1527,38 @@ function mapSearchConsoleProperty(property: SearchConsolePropertyRow): AdminSear
 }
 
 function toUrlPrefixSiteUrl(host: string): string {
-  return `https://${host.replace(/^https?:\/\//i, "").replace(/\/+$/g, "")}/`;
+  const normalized = host.replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
+  return normalized.endsWith("/") ? normalized : `https://${normalized}/`;
+}
+
+function publishedSiteUrlFromStore(store: { myshopifyDomain: string; metadata?: unknown }): string {
+  const metadata = asRecord(store.metadata);
+  const candidate = stringValue(metadata.primaryDomainUrl) ?? stringValue(metadata.shopUrl);
+  const candidateHost =
+    hostFromUrl(candidate) ??
+    normalizePublishedHost(stringValue(metadata.primaryDomainHost)) ??
+    undefined;
+
+  if (candidateHost) {
+    return `https://${candidateHost}`;
+  }
+
+  return `https://${store.myshopifyDomain.replace(/^https?:\/\//i, "").replace(/\/+$/g, "")}`;
+}
+
+function normalizePublishedHost(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  const normalized = value.replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
+  return normalized || undefined;
+}
+
+function hostFromUrl(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return normalizePublishedHost(new URL(value).hostname);
+  } catch {
+    return undefined;
+  }
 }
 
 function mapSearchConsoleSnapshot(snapshot: SearchConsoleSnapshotRow): AdminSearchConsoleSnapshotOverview {

@@ -59,7 +59,7 @@ export function planAgentTools(
       : []),
     toolPlan(
       "research",
-      "researcher",
+      "fact_checker",
       "external_citation_planner",
       "Select approved external references from trend evidence and demand sources so every article cites real sources.",
       true,
@@ -89,7 +89,7 @@ export function planAgentTools(
     ),
     toolPlan(
       "content_brief",
-      "writer",
+      "shopping_guide_editor",
       "content_brief_builder",
       "Create an evidence-backed article brief with required modules, links, image references, and claims policy.",
       true,
@@ -99,7 +99,7 @@ export function planAgentTools(
     ),
     toolPlan(
       "draft_generation",
-      "writer",
+      "shopping_guide_editor",
       "article_generator",
       "Generate Shopify-compatible HTML from the brief while avoiding reusable guide templates.",
       true,
@@ -123,7 +123,7 @@ export function planAgentTools(
     plans.push(
       toolPlan(
         "draft_generation",
-        "writer",
+        "image_director",
         "image_prompt_director",
         "Create a product-image-grounded scene prompt for generated blog imagery.",
         false,

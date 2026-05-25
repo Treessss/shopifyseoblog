@@ -16,8 +16,15 @@ def build_content_workflow_plan(request: ContentWorkflowRequest, settings: Setti
     research_status = _step_status(blockers, blocked_by=["topic"])
     keyword_status = _step_status(blockers, blocked_by=["topic", "recent_topics"])
     draft_status = _step_status(blockers, blocked_by=["topic", "internal_links", "external_references"])
+    topic_strategy_status = WorkflowStepStatus.ready if keyword_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending
+    fact_check_status = WorkflowStepStatus.ready if draft_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending
+    image_direction_status = WorkflowStepStatus.ready if draft_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending
     expert_panel_status = (
-        WorkflowStepStatus.ready if draft_status != WorkflowStepStatus.blocked and keyword_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending
+        WorkflowStepStatus.ready
+        if draft_status != WorkflowStepStatus.blocked
+        and keyword_status == WorkflowStepStatus.ready
+        and fact_check_status == WorkflowStepStatus.ready
+        else WorkflowStepStatus.pending
     )
     publish_guard_status = WorkflowStepStatus.ready if expert_panel_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending
     performance_review_status = (
@@ -49,14 +56,44 @@ def build_content_workflow_plan(request: ContentWorkflowRequest, settings: Setti
             quality_gate="Primary keyword must fit one clear search intent.",
         ),
         ContentWorkflowStep(
+            key="topic_strategy",
+            title="SEO strategy and angle selection",
+            agent_role=AgentRole.topic_strategist,
+            status=topic_strategy_status if keyword_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending,
+            objective="Choose the SERP angle, funnel stage, differentiation promise, and non-cannibalizing topic frame.",
+            required_inputs=["keyword_plan", "cannibalization_warnings", "agent_memory"],
+            outputs=["topic_angle", "funnel_strategy", "differentiation_rules"],
+            quality_gate="Selected angle must not duplicate existing keyword intent.",
+        ),
+        ContentWorkflowStep(
             key="draft",
             title="Human-like article draft",
-            agent_role=AgentRole.writer,
-            status=draft_status if keyword_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending,
+            agent_role=AgentRole.shopping_guide_editor,
+            status=draft_status if topic_strategy_status == WorkflowStepStatus.ready else WorkflowStepStatus.pending,
             objective="Draft a buyer-useful article with answer-first intro, sections, FAQ, and decision support.",
-            required_inputs=["keyword_plan", "research_brief", "brand_voice"],
+            required_inputs=["keyword_plan", "research_brief", "brand_voice", "topic_angle"],
             outputs=["article_html", "seo_title", "meta_description"],
             quality_gate="Avoid generic AI patterns, title formulas, unsupported superlatives, and thin examples.",
+        ),
+        ContentWorkflowStep(
+            key="fact_check",
+            title="Fact and citation check",
+            agent_role=AgentRole.fact_checker,
+            status=fact_check_status,
+            objective="Verify product claims, citation coverage, link safety, and unsupported assertions before review.",
+            required_inputs=["article_html", "research_brief", "external_references"],
+            outputs=["fact_check_report", "claim_risks", "citation_gaps"],
+            quality_gate="No unsupported claims, invented specs, broken citations, or unsafe internal links.",
+        ),
+        ContentWorkflowStep(
+            key="image_direction",
+            title="Image direction",
+            agent_role=AgentRole.image_director,
+            status=image_direction_status,
+            objective="Prepare cover image direction, alt text, and product-grounded visual constraints.",
+            required_inputs=["product_images", "content_brief", "article_html"],
+            outputs=["cover_image_plan", "image_alt_text", "visual_constraints"],
+            quality_gate="Images must be product-grounded, accessible, and safe for Shopify publishing.",
         ),
         ContentWorkflowStep(
             key="expert_panel",
@@ -130,7 +167,7 @@ def _next_step(workflow: list[ContentWorkflowStep], blockers: list[str]) -> str:
     if "external_references" in blockers:
         return "Collect approved external references before publishing."
     if "search_console" in blockers:
-        return "Connect Search Console before the performance review stage."
+        return "Run the content workflow now; connect Search Console later for post-publish performance review."
     first_blocked = next((step for step in workflow if step.status == WorkflowStepStatus.blocked), None)
     if first_blocked:
         return f"Unblock {first_blocked.title}."

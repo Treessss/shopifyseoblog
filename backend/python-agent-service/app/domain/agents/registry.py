@@ -14,9 +14,29 @@ def default_agent_registry() -> list[AgentDescriptor]:
             responsibility="Build primary, secondary, and long-tail keyword plans from evidence.",
         ),
         AgentDescriptor(
+            role=AgentRole.topic_strategist,
+            name="SEO Strategist Agent",
+            responsibility="Choose the angle, funnel stage, and differentiation strategy before drafting.",
+        ),
+        AgentDescriptor(
             role=AgentRole.writer,
             name="Writer Agent",
-            responsibility="Draft human-like ecommerce SEO articles grounded in store data.",
+            responsibility="Maintain legacy article-writing compatibility while specialized editors take over new flows.",
+        ),
+        AgentDescriptor(
+            role=AgentRole.shopping_guide_editor,
+            name="Shopping Guide Editor Agent",
+            responsibility="Draft buyer-useful ecommerce articles with concrete choose/skip guidance.",
+        ),
+        AgentDescriptor(
+            role=AgentRole.fact_checker,
+            name="Fact Checker Agent",
+            responsibility="Verify product claims, external references, links, and unsupported assertions.",
+        ),
+        AgentDescriptor(
+            role=AgentRole.image_director,
+            name="Image Director Agent",
+            responsibility="Plan cover images, alt text, and product-grounded visual direction.",
         ),
         AgentDescriptor(
             role=AgentRole.seo_editor,

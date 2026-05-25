@@ -246,6 +246,36 @@ export interface AdminArticleReviewOverview extends AdminArticleOverview {
   assets: AdminArticleAssetOverview[];
   logs: AdminLogEntry[];
   repairJob: QueuedJobSummary | null;
+  seoPerformance: AdminArticleSeoPerformanceOverview | null;
+}
+
+export interface AdminArticleSeoPerformanceQuery {
+  query: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number | null;
+  opportunity: "quick_win" | "low_ctr" | "observe";
+}
+
+export interface AdminArticleSeoPerformanceOverview {
+  snapshotId: string;
+  propertyId: string;
+  siteUrl: string;
+  pageUrl: string;
+  startDate: string;
+  endDate: string;
+  dataState: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  position: number | null;
+  queryCount: number;
+  topQuery: string | null;
+  performanceScore: number | null;
+  syncedAt: string;
+  queries: AdminArticleSeoPerformanceQuery[];
+  recommendations: string[];
 }
 
 export interface AdminLogEntry {
@@ -315,7 +345,7 @@ export interface AdminSearchConsolePropertyOverview {
   id: string;
   storeId: string;
   store: string;
-  storeDomain: string;
+  publishedSiteUrl: string;
   siteUrl: string;
   status: SearchConsolePropertyStatus;
   statusTone: "good" | "warn" | "danger" | "neutral";
@@ -362,6 +392,7 @@ export interface AdminSearchConsoleView {
     id: string;
     name: string;
     domain: string;
+    publishedSiteUrl: string;
     defaultSiteUrl: string;
   }>;
 }
@@ -732,6 +763,8 @@ export interface SaveSearchConsolePropertyInput {
   status: SearchConsolePropertyStatus;
   permissionLevel?: string;
   scopes: string[];
+  googleCredentialsJson?: string;
+  googleTokenJson?: string;
   googleClientId?: string;
   googleClientSecret?: string;
   accessToken?: string;

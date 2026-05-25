@@ -141,7 +141,8 @@ export function findSearchConsoleProperties(organizationId: string, take = 50) {
         select: {
           id: true,
           name: true,
-          myshopifyDomain: true
+          myshopifyDomain: true,
+          metadata: true
         }
       },
       snapshots: {
@@ -308,6 +309,10 @@ export function findPriorityDashboardArticles(organizationId: string, take = 100
         orderBy: { syncedAt: "desc" },
         take: 3,
         include: {
+          queryRows: {
+            orderBy: [{ impressions: "desc" }, { clicks: "desc" }],
+            take: 8
+          },
           property: {
             select: {
               id: true,
@@ -948,13 +953,17 @@ export function findArticleForReview(organizationId: string, articleId: string) 
       seoPerformanceSnapshots: {
         orderBy: { syncedAt: "desc" },
         take: 1,
-        select: {
-          syncedAt: true,
-          clicks: true,
-          impressions: true,
-          ctr: true,
-          position: true,
-          performanceScore: true
+        include: {
+          queryRows: {
+            orderBy: [{ impressions: "desc" }, { clicks: "desc" }],
+            take: 8
+          },
+          property: {
+            select: {
+              id: true,
+              siteUrl: true
+            }
+          }
         }
       },
       seoTopicRuns: {

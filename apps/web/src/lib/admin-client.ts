@@ -13,6 +13,7 @@ import type {
   AdminResearchTopicRunAction,
   AdminResearchTrend,
   AdminResearchView,
+  AdminArticleSeoPerformanceOverview,
   AdminSearchConsolePropertyOverview,
   AdminSearchConsoleSnapshotOverview,
   AdminSearchConsoleView
@@ -160,6 +161,7 @@ export interface AdminArticleReviewView extends AdminArticleView {
   assets: AdminArticleAssetView[];
   logs: AdminLogView[];
   repairJob: AdminArticleRepairJobView | null;
+  seoPerformance: AdminArticleSeoPerformanceOverview | null;
 }
 
 export interface AdminArticleRepairJobView {
@@ -240,14 +242,36 @@ export interface AdminPageView<T> {
 
 async function getBaseUrl() {
   const configured = process.env.APP_URL?.trim().replace(/\/$/, "");
-  if (configured) return configured;
-
   const headerList = await headers();
   const host = headerList.get("x-forwarded-host") ?? headerList.get("host");
-  if (!host) return "http://localhost:3000";
+  const proto = headerList.get("x-forwarded-proto") ?? (host?.includes("localhost") ? "http" : "https");
+  const requestBaseUrl = host ? `${proto}://${host}` : null;
 
-  const proto = headerList.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
-  return `${proto}://${host}`;
+  if (configured) {
+    return requestBaseUrl && shouldUseRequestBaseUrlForLocalDev(configured, host) ? requestBaseUrl : configured;
+  }
+
+  return requestBaseUrl ?? "http://localhost:3000";
+}
+
+function shouldUseRequestBaseUrlForLocalDev(configuredBaseUrl: string, requestHost: string | null) {
+  if (!requestHost) return false;
+
+  try {
+    const configured = new URL(configuredBaseUrl);
+    return isLocalHost(configured.hostname) && isLocalHost(hostnameFromHeader(requestHost)) && configured.host !== requestHost;
+  } catch {
+    return false;
+  }
+}
+
+function hostnameFromHeader(host: string) {
+  if (host.startsWith("[")) return host.slice(1, host.indexOf("]"));
+  return host.split(":")[0] ?? host;
+}
+
+function isLocalHost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
 }
 
 export async function adminFetch<T>(path: string, init?: RequestInit): Promise<AdminFetchResult<T>> {
@@ -551,6 +575,16 @@ function pickNumber(record: Record<string, unknown>, keys: string[], fallback = 
   return fallback;
 }
 
+function pickNullableNumber(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (value === null) return null;
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
 function pickBoolean(record: Record<string, unknown>, keys: string[], fallback = false) {
   for (const key of keys) {
     const value = record[key];
@@ -836,7 +870,45 @@ function normalizeArticleReview(record: Record<string, unknown>): AdminArticleRe
     generationMetadata: record.generationMetadata ?? null,
     assets: normalizeArticleAssets(unwrapCollection(record.assets, ["assets", "items", "data"])),
     logs: normalizeLogs(unwrapCollection(record.logs, ["logs", "items", "data"])),
-    repairJob: normalizeArticleRepairJob(record.repairJob)
+    repairJob: normalizeArticleRepairJob(record.repairJob),
+    seoPerformance: normalizeArticleSeoPerformance(record.seoPerformance)
+  };
+}
+
+function normalizeArticleSeoPerformance(value: unknown): AdminArticleSeoPerformanceOverview | null {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return null;
+  const queries: AdminArticleSeoPerformanceOverview["queries"] = unwrapCollection(record.queries, ["queries", "items", "data"]).map((item) => {
+    const query = asRecord(item);
+    const opportunity = pickString(query, ["opportunity"], "observe");
+    return {
+      query: pickString(query, ["query"], ""),
+      clicks: pickNumber(query, ["clicks"], 0),
+      impressions: pickNumber(query, ["impressions"], 0),
+      ctr: pickNumber(query, ["ctr"], 0),
+      position: pickNullableNumber(query, ["position"]),
+      opportunity: opportunity === "quick_win" || opportunity === "low_ctr" ? opportunity : "observe"
+    };
+  });
+
+  return {
+    snapshotId: pickString(record, ["snapshotId", "id"], ""),
+    propertyId: pickString(record, ["propertyId"], ""),
+    siteUrl: pickString(record, ["siteUrl"], ""),
+    pageUrl: pickString(record, ["pageUrl"], ""),
+    startDate: pickString(record, ["startDate"], ""),
+    endDate: pickString(record, ["endDate"], ""),
+    dataState: pickString(record, ["dataState"], "final"),
+    clicks: pickNumber(record, ["clicks"], 0),
+    impressions: pickNumber(record, ["impressions"], 0),
+    ctr: pickNumber(record, ["ctr"], 0),
+    position: pickNullableNumber(record, ["position"]),
+    queryCount: pickNumber(record, ["queryCount"], queries.length),
+    topQuery: pickString(record, ["topQuery"], "") || null,
+    performanceScore: pickNullableNumber(record, ["performanceScore"]),
+    syncedAt: pickString(record, ["syncedAt"], ""),
+    queries,
+    recommendations: pickStringArray(record, ["recommendations"])
   };
 }
 
@@ -960,17 +1032,17 @@ function normalizeSearchConsoleProperties(input: unknown[]): AdminSearchConsoleP
     const record = asRecord(item);
     const store = pickRecord(record, ["store", "shopifyStore"]);
     const storeName = pickString(record, ["storeName", "store"], pickString(store, ["name"], "未绑定店铺"));
-    const storeDomain = pickString(
+    const publishedSiteUrl = pickString(
       record,
-      ["storeDomain", "myshopifyDomain"],
-      pickString(store, ["myshopifyDomain", "domain"], "")
+      ["publishedSiteUrl", "siteUrl", "storePublishedSiteUrl"],
+      ""
     );
 
     return {
       id: pickString(record, ["id", "propertyId"], `search-console-property-${index}`),
       storeId: pickString(record, ["storeId"], pickString(store, ["id"], "")),
       store: storeName,
-      storeDomain,
+      publishedSiteUrl,
       siteUrl: pickString(record, ["siteUrl"], ""),
       status: normalizeSearchConsoleStatus(pickString(record, ["status"], "active")),
       statusTone: normalizeTone(pickString(record, ["statusTone"], pickString(record, ["status"], "neutral"))),
@@ -993,12 +1065,18 @@ function normalizeSearchConsoleStores(input: unknown[]): AdminSearchConsoleView[
   return input.map((item, index) => {
     const record = asRecord(item);
     const domain = pickString(record, ["domain", "myshopifyDomain"], "");
+    const publishedSiteUrl = pickString(record, ["publishedSiteUrl"], pickString(record, ["defaultSiteUrl"], ""));
 
     return {
       id: pickString(record, ["id", "storeId"], `search-console-store-${index}`),
       name: pickString(record, ["name", "storeName"], domain || "未命名店铺"),
       domain,
-      defaultSiteUrl: pickString(record, ["defaultSiteUrl", "siteUrl"], domain ? `https://${domain}/` : "")
+      publishedSiteUrl,
+      defaultSiteUrl: pickString(
+        record,
+        ["defaultSiteUrl", "siteUrl"],
+        publishedSiteUrl ? `${publishedSiteUrl.replace(/\/+$/g, "")}/` : domain ? `https://${domain}/` : ""
+      )
     };
   });
 }
